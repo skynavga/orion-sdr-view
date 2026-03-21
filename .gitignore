@@ -1,0 +1,22 @@
+
+# files
+.DS_Store
+*~
+*.bak
+*.patch
+*.pyc
+
+# directories
+/screenshots
+/target
+/tmp
+/.mypy_cache
+
+# python specific
+.pytest_cache/
+.venv/
+__pycache__/
+
+# maturin develop output
+/python/orion_sdr/*.so
+/python/orion_sdr/*.pyd
