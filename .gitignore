@@ -1,0 +1,10 @@
+# files
+.DS_Store
+*~
+*.bak
+*.patch
+
+# directories
+/screenshots
+/target
+/tmp
