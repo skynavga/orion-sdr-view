@@ -1,7 +1,23 @@
 [package]
 name = "orion-sdr-view"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2024"
+description = "Keyboard-driven SDR spectrum viewer: live spectrum, persistence, and waterfall display."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/skynavga/orion-sdr-view"
+readme = "README.md"
+keywords = ["sdr", "dsp", "radio", "spectrum", "waterfall"]
+categories = ["visualization", "science", "multimedia"]
+include = [
+    "src/**/*",
+    "assets/**/*",
+    "tests/**/*",
+    "Cargo.toml",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE-MIT",
+    "LICENSE-APACHE",
+]
 
 [[bin]]
 name = "orion-sdr-view"
