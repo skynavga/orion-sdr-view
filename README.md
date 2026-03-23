@@ -23,7 +23,9 @@ and waterfall from a configurable signal source.
 
 ### AM-DSB Image Source with Markers
 
-<img alt="AM-DSB Input Source" src="./docs/images/source-am-dsb.png" width="33%">
+<a href="./docs/images/source-am-dsb.png">
+  <img alt="AM-DSB Input Source" src="./docs/images/source-am-dsb.png" width="66%">
+</a>
 
 ## Building
 
