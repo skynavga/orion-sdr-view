@@ -1,7 +1,6 @@
 ---
 name: release
 description: Push the prepared orion-sdr-view release tag and publish to crates.io. Run release-prep first.
-disable-model-invocation: true
 allowed-tools: Bash
 argument-hint: <version>  (e.g. 0.0.2)
 ---
