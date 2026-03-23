@@ -19,6 +19,12 @@ and waterfall from a configurable signal source.
 - macOS or Linux (uses OpenGL via `eframe` glow backend)
 - [orion-sdr](https://crates.io/crates/orion-sdr) 0.0.16 (pulled automatically from crates.io)
 
+## Screen Shots
+
+### AM-DSB Image Source with Markers
+
+<img alt="AM-DSB Input Source" src="./docs/images/source-am-dsb.png" width="33%">
+
 ## Building
 
 ```sh
