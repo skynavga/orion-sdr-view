@@ -4,6 +4,35 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.4] - 2026-03-27
+
+### Added
+
+- PSK31 signal source (BPSK31 and QPSK31 modes) with pre-rendered looping playback and configurable
+  carrier, loop gap, and noise amplitude; configurable via `sources.psk31` in YAML
+- `M` key cycles source mode (BPSK31 ↔ QPSK31 for PSK31; no-op for other sources)
+- `N` key cycles AM DSB audio input (Morse / Voice / Custom) without opening settings
+- `L` key toggles source lock: source freq/carrier tracks display center continuously
+- HUD now shows source sub-mode (`mode b`/`mode q` for PSK31, `aud m`/`aud v`/`aud c` for AM DSB)
+  and `L` flag when source is locked
+- Coarse/fine/extra-fine pan snap: `Shift+←/→` snaps to 100 Hz; `Ctrl+Shift+←/→` snaps to 10 Hz;
+  all pan keys implicitly step zoom in by 0.1× when at full span
+- Fine zoom: `Shift+↑/↓` steps zoom ratio by ±0.1×
+- dB reference shift reassigned to `[`/`]` (±5 dB)
+- `step_zoom` with ratio-based zoom steps (coarse ±0.5×, fine ±0.1×); coarse steps snap to nearest
+  0.5× boundary first for consistent increments
+- Zoom ratio display in HUD uses rounded value from `zoom_ratio()`
+
+### Changed
+
+- Bumped `orion-sdr` dependency 0.0.16 → 0.0.26
+- Default freq/carrier for all sources changed to 12000 Hz (nyquist/2), aligned with initial
+  primary marker position
+- `↑`/`↓` zoom now steps by ±0.5× ratio instead of ×1.5 factor
+- `Shift+↑/↓` reassigned from dB shift to fine zoom (±0.1×); dB shift moved to `[`/`]`
+- `Ctrl+Shift+←/→` reassigned from fine marker movement to extra-fine pan (10 Hz snap);
+  coarse marker movement (`Ctrl+←/→`) retained
+
 ## [0.0.3] - 2026-03-23
 
 ### Changed
