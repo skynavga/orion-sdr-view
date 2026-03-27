@@ -14,7 +14,7 @@ use freqview::{FreqMarker, FreqView};
 use persistence::PersistenceRenderer;
 use settings::SettingsState;
 use signal::TestSignalGen;
-use source::{AmDsbSource, BuiltinAudio, SignalSource, TestToneSource, load_builtin};
+use source::{AmDsbSource, BuiltinAudio, Psk31Mode, Psk31Source, SignalSource, TestToneSource, load_builtin};
 use spectrum::{RingBuffer, SpectrumProcessor};
 use waterfall::WaterfallDisplay;
 
@@ -43,15 +43,17 @@ const SAMPLES_PER_FRAME: usize = (SAMPLE_RATE / 60.0) as usize;
 enum SourceMode {
     TestTone,
     AmDsb,
+    Psk31,
 }
 
 impl SourceMode {
-    const ALL: &'static [SourceMode] = &[SourceMode::TestTone, SourceMode::AmDsb];
+    const ALL: &'static [SourceMode] = &[SourceMode::TestTone, SourceMode::AmDsb, SourceMode::Psk31];
 
     fn label(self) -> &'static str {
         match self {
             SourceMode::TestTone => "Test Tone",
             SourceMode::AmDsb => "AM DSB",
+            SourceMode::Psk31 => "PSK31",
         }
     }
 
@@ -108,6 +110,9 @@ struct ViewApp {
 
     // Settings popover
     settings: SettingsState,
+
+    // When true, source freq/carrier tracks center_hz on every display change.
+    source_locked: bool,
 }
 
 impl ViewApp {
@@ -164,6 +169,8 @@ impl ViewApp {
             active_marker: None,
 
             settings: SettingsState::from_config(&cfg),
+
+            source_locked: false,
         }
     }
 
@@ -187,6 +194,34 @@ impl ViewApp {
         )
     }
 
+    /// When source_locked, write center_hz into the active source's freq/carrier
+    /// setting rows and call sync_settings() to propagate immediately.
+    fn lock_source_to_center(&mut self) {
+        if !self.source_locked { return; }
+        let hz = FreqView::snap_hz(self.freq_view.center_hz, 10.0);
+        match self.source_mode {
+            SourceMode::TestTone => self.settings.set_freq_hz(hz),
+            SourceMode::AmDsb    => self.settings.set_am_carrier_hz(hz),
+            SourceMode::Psk31    => self.settings.set_psk31_carrier_hz(hz),
+        }
+        self.sync_settings();
+    }
+
+    /// Build a fresh Psk31Source from current settings values.
+    fn make_psk31_source(&self) -> Psk31Source {
+        let mode = match self.settings.psk31_mode_str() {
+            "QPSK31" => Psk31Mode::Qpsk31,
+            _        => Psk31Mode::Bpsk31,
+        };
+        Psk31Source::new(
+            self.settings.psk31_carrier_hz(),
+            self.settings.psk31_loop_gap_secs(),
+            self.settings.psk31_noise_amp(),
+            mode,
+            SAMPLE_RATE,
+        )
+    }
+
     /// Switch the active source to `mode`, constructing a new source box.
     fn switch_source(&mut self, mode: SourceMode) {
         self.source_mode = mode;
@@ -198,7 +233,8 @@ impl ViewApp {
                     SAMPLE_RATE,
                 )))
             }
-            SourceMode::AmDsb => Box::new(self.make_am_source()),
+            SourceMode::AmDsb  => Box::new(self.make_am_source()),
+            SourceMode::Psk31  => Box::new(self.make_psk31_source()),
         };
         self.settings.set_source_mode(mode as usize);
     }
@@ -226,9 +262,14 @@ impl ViewApp {
 
         let mut quit = false;
         let mut toggle_source = false;
+        let mut cycle_mode = false;
+        let mut cycle_audio = false;
+        let mut toggle_lock = false;
+        // When non-zero, snap center_hz to this grid after applying pan_delta.
+        let mut snap_pan_grid: f32 = 0.0;
         // Frequency pan/zoom deltas to apply after the closure.
         let mut pan_delta: f32 = 0.0;
-        let mut zoom_factor: f32 = 1.0;
+        let mut zoom_delta: f32 = 0.0;  // added to zoom ratio; +0.5 coarse, +0.1 fine
         let mut freq_reset = false;
         let mut db_shift: f32 = 0.0;
         // Marker actions
@@ -260,6 +301,9 @@ impl ViewApp {
                 }
             }
             if i.key_pressed(egui::Key::E) { self.envelope_visible ^= true; }
+            if i.key_pressed(egui::Key::L) { toggle_lock = true; }
+            if i.key_pressed(egui::Key::M) { cycle_mode = true; }
+            if i.key_pressed(egui::Key::N) { cycle_audio = true; }
             if i.key_pressed(egui::Key::P) { self.peak_hold_visible ^= true; }
             if i.key_pressed(egui::Key::S) { self.settings.visible ^= true; }
             if i.key_pressed(egui::Key::H) { self.show_help ^= true; }
@@ -280,15 +324,12 @@ impl ViewApp {
             if i.key_pressed(egui::Key::Tab) { cycle_active_marker = true; }
 
             // ── Active marker movement ───────────────────────────────────────
-            // Ctrl+←/→: coarse (1/8 span); Ctrl+Shift+←/→: fine (1/40 span).
+            // Ctrl+←/→: coarse (1/8 span).
             // Alt+←/→ (Option on Mac): very fine — one FFT bin width.
+            // (Ctrl+Shift+←/→ is reserved for extra-fine pan.)
             let bin_hz = self.freq_view.nyquist / (FFT_SIZE / 2) as f32;
-            if i.modifiers.ctrl {
-                let step = if i.modifiers.shift {
-                    self.freq_view.span_hz / 40.0
-                } else {
-                    self.freq_view.span_hz / 8.0
-                };
+            if i.modifiers.ctrl && !i.modifiers.shift {
+                let step = self.freq_view.span_hz / 8.0;
                 if i.key_down(egui::Key::ArrowLeft)  { marker_delta -= step; }
                 if i.key_down(egui::Key::ArrowRight) { marker_delta += step; }
             } else if i.modifiers.alt {
@@ -304,26 +345,63 @@ impl ViewApp {
             if i.key_pressed(egui::Key::Q) { quit = true; }
 
             // ── Frequency pan ────────────────────────────────────────────────
-            // Left/Right: coarse pan; Shift+Left/Right: fine pan.
-            // Ctrl/Alt+Left/Right reserved for marker movement — skip pan when either held.
-            if !i.modifiers.ctrl && !i.modifiers.alt {
-                let pan_step  = self.freq_view.span_hz / 8.0;
-                let fine_step = self.freq_view.span_hz / 40.0;
-                if i.key_down(egui::Key::ArrowLeft) {
-                    if i.modifiers.shift { pan_delta -= fine_step; } else { pan_delta -= pan_step; }
-                }
-                if i.key_down(egui::Key::ArrowRight) {
-                    if i.modifiers.shift { pan_delta += fine_step; } else { pan_delta += pan_step; }
+            // Left/Right:             coarse pan (span/8, auto-repeat)
+            // Shift+Left/Right:       fine pan, snap to nearest 100 Hz (auto-repeat)
+            // Ctrl+Shift+Left/Right:  extra-fine pan:
+            //   key_pressed (first hit) → snap to nearest 10 Hz
+            //   key_down (held)         → snap to nearest 100 Hz
+            // Alt+Left/Right reserved for marker movement — skip pan when alt held.
+            if !i.modifiers.alt {
+                if i.modifiers.ctrl && i.modifiers.shift {
+                    // Extra-fine pan: 10 Hz per keypress.
+                    let left  = i.key_pressed(egui::Key::ArrowLeft);
+                    let right = i.key_pressed(egui::Key::ArrowRight);
+                    let arrow = left || right;
+                    if arrow && self.freq_view.span_hz >= self.freq_view.nyquist {
+                        self.freq_view.step_zoom(0.1);
+                    }
+                    if left  { pan_delta -= 10.0; }
+                    if right { pan_delta += 10.0; }
+                    if arrow { snap_pan_grid = 10.0; }
+                } else if !i.modifiers.ctrl {
+                    if i.modifiers.shift {
+                        // Fine pan: snap to 100 Hz. Zoom in first if at full span.
+                        let arrow = i.key_pressed(egui::Key::ArrowLeft) || i.key_pressed(egui::Key::ArrowRight);
+                        if arrow && self.freq_view.span_hz >= self.freq_view.nyquist {
+                            self.freq_view.step_zoom(0.1);
+                        }
+                        if i.key_pressed(egui::Key::ArrowLeft)  { pan_delta -= 100.0; }
+                        if i.key_pressed(egui::Key::ArrowRight) { pan_delta += 100.0; }
+                        if arrow { snap_pan_grid = 100.0; }
+                    } else {
+                        let arrow = i.key_down(egui::Key::ArrowLeft) || i.key_down(egui::Key::ArrowRight);
+                        if arrow && self.freq_view.span_hz >= self.freq_view.nyquist {
+                            self.freq_view.step_zoom(0.1);
+                        }
+                        let pan_step = self.freq_view.span_hz / 8.0;
+                        if i.key_down(egui::Key::ArrowLeft)  { pan_delta -= pan_step; }
+                        if i.key_down(egui::Key::ArrowRight) { pan_delta += pan_step; }
+                    }
                 }
             }
 
             // ── Frequency zoom ───────────────────────────────────────────────
-            // Up/Down: zoom in/out; Shift+Up/Down: shift dB reference ±5 dB.
+            // Up/Down: zoom ±0.5; Shift+Up/Down: fine zoom ±0.1.
+            // [ / ]: shift dB reference ±5 dB.
             if i.key_pressed(egui::Key::ArrowUp) {
-                if i.modifiers.shift { db_shift += 5.0; } else { zoom_factor *= 1.5; }
+                if i.modifiers.shift { zoom_delta += 0.1; } else { zoom_delta += 0.5; }
             }
             if i.key_pressed(egui::Key::ArrowDown) {
-                if i.modifiers.shift { db_shift -= 5.0; } else { zoom_factor /= 1.5; }
+                if i.modifiers.shift { zoom_delta -= 0.1; } else { zoom_delta -= 0.5; }
+            }
+            for e in &i.events {
+                if let egui::Event::Text(s) = e {
+                    match s.as_str() {
+                        "[" => db_shift -= 5.0,
+                        "]" => db_shift += 5.0,
+                        _ => {}
+                    }
+                }
             }
             for e in &i.events {
                 if let egui::Event::Text(s) = e {
@@ -332,13 +410,25 @@ impl ViewApp {
             }
         });
 
-        // Apply pan/zoom/reset
-        if pan_delta != 0.0 { self.freq_view.pan(pan_delta); }
-        if (zoom_factor - 1.0).abs() > 0.01 { self.freq_view.zoom(zoom_factor); }
+        // Apply pan/zoom/span/reset
+        if pan_delta != 0.0 {
+            self.freq_view.pan(pan_delta);
+            if snap_pan_grid > 0.0 {
+                self.freq_view.center_hz = FreqView::snap_hz(self.freq_view.center_hz, snap_pan_grid);
+            }
+        }
+        if zoom_delta.abs() > 0.001 { self.freq_view.step_zoom(zoom_delta); }
         if freq_reset { self.freq_view.reset(); }
+
+        if toggle_lock {
+            self.source_locked ^= true;
+        }
 
         // Update primary marker to track center
         self.markers[0].hz = self.freq_view.center_hz;
+
+        // If source is locked to marker, sync freq/carrier to center_hz
+        self.lock_source_to_center();
 
         // Shift+A/B: snap to center, enable, make active
         if place_marker_a {
@@ -393,6 +483,22 @@ impl ViewApp {
 
         if toggle_source {
             self.switch_source(self.source_mode.next());
+            self.lock_source_to_center();
+        }
+        if cycle_mode {
+            match self.source_mode {
+                SourceMode::Psk31 => {
+                    self.settings.cycle_psk31_mode();
+                    self.sync_settings();
+                }
+                _ => {}
+            }
+        }
+        if cycle_audio {
+            if self.source_mode == SourceMode::AmDsb {
+                self.settings.cycle_am_audio();
+                self.reload_builtin_audio();
+            }
         }
         if quit {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -475,6 +581,21 @@ impl ViewApp {
             }
             am.noise_amp = self.settings.am_noise_amp();
         }
+
+        if let Some(psk31) = self.source.as_any_mut().downcast_mut::<Psk31Source>() {
+            let new_mode = match self.settings.psk31_mode_str() {
+                "QPSK31" => Psk31Mode::Qpsk31,
+                _        => Psk31Mode::Bpsk31,
+            };
+            let carrier_changed = (psk31.carrier_hz - self.settings.psk31_carrier_hz()).abs() > 0.01;
+            let mode_changed    = psk31.mode != new_mode;
+            psk31.carrier_hz    = self.settings.psk31_carrier_hz();
+            psk31.noise_amp     = self.settings.psk31_noise_amp();
+            psk31.loop_gap_secs = self.settings.psk31_loop_gap_secs();
+            psk31.mode          = new_mode;
+            if carrier_changed || mode_changed { psk31.render(); }
+            psk31.update_loop_gap();
+        }
     }
 
     fn draw_hud(&self, ctx: &egui::Context) {
@@ -482,8 +603,7 @@ impl ViewApp {
             // Build the status string first so we can centre it.
             let center  = self.freq_view.center_hz;
             let span    = self.freq_view.span_hz;
-            let nyquist = self.freq_view.nyquist;
-            let zoom_ratio = nyquist / span;
+            let zoom_ratio = self.freq_view.zoom_ratio();
             let center_str = if center >= 1000.0 {
                 format!("{:.2}kHz", center / 1000.0)
             } else {
@@ -494,7 +614,7 @@ impl ViewApp {
             } else {
                 format!("{:.0}Hz", span)
             };
-            let zoom_str = if (zoom_ratio - 1.0).abs() < 0.05 {
+            let zoom_str = if (zoom_ratio - 1.0).abs() < 0.01 {
                 "1×".to_owned()
             } else {
                 format!("{:.1}×", zoom_ratio)
@@ -524,15 +644,28 @@ impl ViewApp {
             let cycling = self.source_mode == SourceMode::TestTone && self.signal_gen.cycling;
             let modes: String = {
                 let mut flags = Vec::new();
-                if cycling            { flags.push("C"); }
+                if cycling                 { flags.push("C"); }
                 if self.envelope_visible   { flags.push("E"); }
+                if self.source_locked      { flags.push("L"); }
                 if self.peak_hold_visible  { flags.push("P"); }
                 if flags.is_empty() { String::new() }
                 else { format!(" ({})", flags.join(",")) }
             };
+            let submode_str: String = match self.source_mode {
+                SourceMode::AmDsb => match self.settings.am_audio_str() {
+                    "Voice"  => "  aud v".to_owned(),
+                    "Custom" => "  aud c".to_owned(),
+                    _        => "  aud m".to_owned(),
+                },
+                SourceMode::Psk31 => match self.settings.psk31_mode_str() {
+                    "QPSK31" => "  mode q".to_owned(),
+                    _        => "  mode b".to_owned(),
+                },
+                _ => String::new(),
+            };
             let status = format!(
-                "{}{}  ctr {}  span {}  zoom {}  ref {:.0}dB{}",
-                self.source_mode.label(), modes, center_str, span_str, zoom_str, self.db_max, marker_str
+                "{}{}{}  ctr {}  span {}  zoom {}  ref {:.0}dB{}",
+                self.source_mode.label(), modes, submode_str, center_str, span_str, zoom_str, self.db_max, marker_str
             );
 
             // Three-section bar: left (title/hints) | centre (status) | —
@@ -906,20 +1039,21 @@ impl ViewApp {
             ("Keyboard shortcuts", 0),
             ("Panes & Sources", 1),
             ("1 / 2 / 3\ttoggle Spectrum / Persistence / Waterfall", 2),
-            ("I\tselect next input source", 2),
+            ("I / M / N\tselect next source / mode / audio input", 2),
             ("C / E / P\tcycle amplitude  |  envelope  |  peak hold", 2),
+            ("L\tlock source freq/carrier to display center", 2),
             ("Frequency Pan / Zoom", 1),
             ("← / →\tpan left / right", 2),
-            ("Shift+← / Shift+→\tfine pan left / right", 2),
-            ("↑ / ↓\tzoom in / out", 2),
-            ("Shift+↑ / Shift+↓\tref level ±5 dB", 2),
+            ("Shift+← / →\tfine pan, snap 100 Hz", 2),
+            ("Ctrl+Shift+← / →\textra-fine pan, snap 10 Hz", 2),
+            ("↑ / ↓ | Shift+↑ / ↓\tzoom | fine zoom (in / out)", 2),
+            ("[ / ]\tref level ±5 dB", 2),
             ("R\treset to full view (0 – Nyquist)", 2),
             ("Markers", 1),
             ("A / B (shift)\tplace marker A / B at center, select it", 2),
             ("a / b\ttoggle marker A / B; select when enabling", 2),
             ("Tab\tcycle active marker: A → B → none", 2),
             ("Ctrl+← / →\tmove active marker (coarse)", 2),
-            ("Ctrl+Shift+← / →\tmove active marker (fine)", 2),
             ("Alt+← / →\tmove active marker (one bin)", 2),
             ("Display", 1),
             ("S\topen/close settings popover", 2),

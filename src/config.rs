@@ -26,9 +26,18 @@ pub struct AmDsbConfig {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct Psk31Config {
+    pub mode:          Option<String>,
+    pub carrier_hz:    Option<f32>,
+    pub loop_gap_secs: Option<f32>,
+    pub noise_amp:     Option<f32>,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct SourcesConfig {
     pub test_tone: Option<TestToneConfig>,
     pub am_dsb:    Option<AmDsbConfig>,
+    pub psk31:     Option<Psk31Config>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -49,12 +58,12 @@ pub struct Defaults;
 impl Defaults {
     pub const DB_MIN:        f32 = -80.0;
     pub const DB_MAX:        f32 = -20.0;
-    pub const FREQ_HZ:       f32 = 3_000.0;
+    pub const FREQ_HZ:       f32 = 12_000.0;
     pub const NOISE_AMP:     f32 = 0.05;
     pub const AMP_MAX:       f32 = 0.65;
     pub const RAMP_SECS:     f32 = 3.0;
     pub const PAUSE_SECS:    f32 = 7.0;
-    pub const CARRIER_HZ:    f32 = 10_000.0;
+    pub const CARRIER_HZ:    f32 = 12_000.0;
     pub const MOD_INDEX:     f32 = 1.0;
     pub const LOOP_GAP_SECS: f32 = 7.0;
     pub const AM_NOISE_AMP:  f32 = 0.05;
@@ -165,6 +174,30 @@ impl ViewConfig {
         self.sources.as_ref()
             .and_then(|s| s.am_dsb.as_ref())
             .and_then(|a| a.noise_amp)
+            .unwrap_or(Defaults::AM_NOISE_AMP)
+    }
+    pub fn psk31_mode(&self) -> &str {
+        self.sources.as_ref()
+            .and_then(|s| s.psk31.as_ref())
+            .and_then(|p| p.mode.as_deref())
+            .unwrap_or("BPSK31")
+    }
+    pub fn psk31_carrier_hz(&self) -> f32 {
+        self.sources.as_ref()
+            .and_then(|s| s.psk31.as_ref())
+            .and_then(|p| p.carrier_hz)
+            .unwrap_or(Defaults::CARRIER_HZ)
+    }
+    pub fn psk31_loop_gap_secs(&self) -> f32 {
+        self.sources.as_ref()
+            .and_then(|s| s.psk31.as_ref())
+            .and_then(|p| p.loop_gap_secs)
+            .unwrap_or(Defaults::LOOP_GAP_SECS)
+    }
+    pub fn psk31_noise_amp(&self) -> f32 {
+        self.sources.as_ref()
+            .and_then(|s| s.psk31.as_ref())
+            .and_then(|p| p.noise_amp)
             .unwrap_or(Defaults::AM_NOISE_AMP)
     }
 }

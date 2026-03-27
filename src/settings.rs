@@ -101,18 +101,22 @@ impl Row {
 }
 
 // ── Source tab row indices ─────────────────────────────────────────────────
-const SRC_FREQ:      usize = 0;
-const SRC_NOISE:     usize = 1;
-const SRC_AMP_MAX:   usize = 2;
-const SRC_RAMP:      usize = 3;
-const SRC_PAUSE:     usize = 4;
-const SRC_SOURCE:    usize = 5;  // toggle: Test Tone / AM DSB
-const SRC_AM_AUDIO:  usize = 6;  // toggle: Morse / Voice / Custom
-const SRC_CARRIER:   usize = 7;
-const SRC_MOD_IDX:   usize = 8;
-const SRC_LOOP_GAP:  usize = 9;
-const SRC_AM_NOISE:  usize = 10;
-const SRC_WAV_FILE:  usize = 11;
+const SRC_FREQ:           usize = 0;
+const SRC_NOISE:          usize = 1;
+const SRC_AMP_MAX:        usize = 2;
+const SRC_RAMP:           usize = 3;
+const SRC_PAUSE:          usize = 4;
+const SRC_SOURCE:         usize = 5;  // toggle: Test Tone / AM DSB / PSK31
+const SRC_AM_AUDIO:       usize = 6;  // toggle: Morse / Voice / Custom
+const SRC_CARRIER:        usize = 7;
+const SRC_MOD_IDX:        usize = 8;
+const SRC_LOOP_GAP:       usize = 9;
+const SRC_AM_NOISE:       usize = 10;
+const SRC_WAV_FILE:       usize = 11;
+const SRC_PSK31_MODE:     usize = 12;
+const SRC_PSK31_CARRIER:  usize = 13;
+const SRC_PSK31_LOOP_GAP: usize = 14;
+const SRC_PSK31_NOISE:    usize = 15;
 
 // ── HandleKeysResult ──────────────────────────────────────────────────────
 
@@ -161,7 +165,7 @@ impl SettingsState {
             source_rows: vec![
                 // Test tone fields (SRC_FREQ..=SRC_PAUSE)
                 Row::Num(NumField {
-                    label: "Frequency", value: freq_hz, default: 3000.0,
+                    label: "Frequency", value: freq_hz, default: 12000.0,
                     step: 100.0, min: 100.0, max: 23_900.0, unit: " Hz",
                 }),
                 Row::Num(NumField {
@@ -183,7 +187,7 @@ impl SettingsState {
                 // Source selector (SRC_SOURCE)
                 Row::Toggle(ToggleField {
                     label: "Source",
-                    options: &["Test Tone", "AM DSB"],
+                    options: &["Test Tone", "AM DSB", "PSK31"],
                     index: 0, default: 0,
                 }),
                 // AM DSB fields (SRC_AM_AUDIO..=SRC_WAV_FILE)
@@ -193,7 +197,7 @@ impl SettingsState {
                     index: 0, default: 0,
                 }),
                 Row::Num(NumField {
-                    label: "Carrier Hz", value: 10000.0, default: 10000.0,
+                    label: "Carrier Hz", value: 12000.0, default: 12000.0,
                     step: 100.0, min: 100.0, max: 23_900.0, unit: " Hz",
                 }),
                 Row::Num(NumField {
@@ -212,6 +216,24 @@ impl SettingsState {
                     label: "WAV file",
                     value: String::new(),
                     status: None,
+                }),
+                // PSK31 fields (SRC_PSK31_MODE..=SRC_PSK31_NOISE)
+                Row::Toggle(ToggleField {
+                    label: "Mode",
+                    options: &["BPSK31", "QPSK31"],
+                    index: 0, default: 0,
+                }),
+                Row::Num(NumField {
+                    label: "Carrier", value: 12000.0, default: 12000.0,
+                    step: 100.0, min: 100.0, max: 22000.0, unit: " Hz",
+                }),
+                Row::Num(NumField {
+                    label: "Loop gap", value: 7.0, default: 7.0,
+                    step: 0.5, min: 0.5, max: 30.0, unit: " s",
+                }),
+                Row::Num(NumField {
+                    label: "Noise", value: 0.05, default: 0.05,
+                    step: 0.01, min: 0.0, max: 1.0, unit: "",
                 }),
             ],
         }
@@ -235,10 +257,20 @@ impl SettingsState {
             }
         }
 
-        patch(&mut s.source_rows[SRC_CARRIER],  cfg.carrier_hz());
-        patch(&mut s.source_rows[SRC_MOD_IDX],  cfg.mod_index());
-        patch(&mut s.source_rows[SRC_LOOP_GAP], cfg.loop_gap_secs());
-        patch(&mut s.source_rows[SRC_AM_NOISE], cfg.am_noise_amp());
+        patch(&mut s.source_rows[SRC_CARRIER],        cfg.carrier_hz());
+        patch(&mut s.source_rows[SRC_MOD_IDX],        cfg.mod_index());
+        patch(&mut s.source_rows[SRC_LOOP_GAP],       cfg.loop_gap_secs());
+        patch(&mut s.source_rows[SRC_AM_NOISE],       cfg.am_noise_amp());
+        patch(&mut s.source_rows[SRC_PSK31_CARRIER],  cfg.psk31_carrier_hz());
+        patch(&mut s.source_rows[SRC_PSK31_LOOP_GAP], cfg.psk31_loop_gap_secs());
+        patch(&mut s.source_rows[SRC_PSK31_NOISE],    cfg.psk31_noise_amp());
+
+        // Patch PSK31 mode toggle
+        let psk31_mode_idx = match cfg.psk31_mode() { "QPSK31" => 1, _ => 0 };
+        if let Row::Toggle(f) = &mut s.source_rows[SRC_PSK31_MODE] {
+            f.index   = psk31_mode_idx;
+            f.default = psk31_mode_idx;
+        }
 
         // Also update display row defaults to match configured values
         fn patch_display(row: &mut Row, v: f32) {
@@ -256,12 +288,16 @@ impl SettingsState {
 
     // ── Source-mode helpers ───────────────────────────────────────────────
 
+    fn source_index(&self) -> usize {
+        if let Row::Toggle(f) = &self.source_rows[SRC_SOURCE] { f.index } else { 0 }
+    }
+
     fn source_is_am(&self) -> bool {
-        if let Row::Toggle(f) = &self.source_rows[SRC_SOURCE] {
-            f.index == 1
-        } else {
-            false
-        }
+        self.source_index() == 1
+    }
+
+    fn source_is_psk31(&self) -> bool {
+        self.source_index() == 2
     }
 
     pub fn am_audio_is_custom(&self) -> bool {
@@ -274,10 +310,11 @@ impl SettingsState {
 
     /// Indices of source_rows that are visible given current source selection.
     fn visible_source_rows(&self) -> Vec<usize> {
-        let am = self.source_is_am();
         let mut v = vec![SRC_SOURCE]; // Source toggle always visible
-        if am {
-            v.extend(SRC_AM_AUDIO..=SRC_WAV_FILE); // all AM DSB rows always visible
+        if self.source_is_am() {
+            v.extend(SRC_AM_AUDIO..=SRC_WAV_FILE);
+        } else if self.source_is_psk31() {
+            v.extend([SRC_PSK31_MODE, SRC_PSK31_CARRIER, SRC_PSK31_LOOP_GAP, SRC_PSK31_NOISE]);
         } else {
             v.extend(SRC_FREQ..=SRC_PAUSE);
         }
@@ -309,6 +346,21 @@ impl SettingsState {
         if let Row::Num(f) = &mut self.display_rows[1] { f.value = v.clamp(f.min, f.max); }
     }
 
+    pub fn set_freq_hz(&mut self, v: f32) {
+        if let Row::Num(f) = &mut self.source_rows[SRC_FREQ] {
+            f.value = v.clamp(f.min, f.max);
+        }
+    }
+    pub fn set_am_carrier_hz(&mut self, v: f32) {
+        if let Row::Num(f) = &mut self.source_rows[SRC_CARRIER] {
+            f.value = v.clamp(f.min, f.max);
+        }
+    }
+    pub fn set_psk31_carrier_hz(&mut self, v: f32) {
+        if let Row::Num(f) = &mut self.source_rows[SRC_PSK31_CARRIER] {
+            f.value = v.clamp(f.min, f.max);
+        }
+    }
     pub fn set_source_mode(&mut self, idx: usize) {
         if let Row::Toggle(f) = &mut self.source_rows[SRC_SOURCE] {
             f.index = idx.min(f.options.len() - 1);
@@ -364,6 +416,29 @@ impl SettingsState {
     }
     pub fn wav_path(&self) -> &str {
         if let Row::Text(f) = &self.source_rows[SRC_WAV_FILE] { &f.value } else { "" }
+    }
+    pub fn am_audio_str(&self) -> &str {
+        if let Row::Toggle(f) = &self.source_rows[SRC_AM_AUDIO] { f.value_str() } else { "Morse" }
+    }
+    pub fn cycle_am_audio(&mut self) {
+        if let Row::Toggle(f) = &mut self.source_rows[SRC_AM_AUDIO] { f.next(); }
+    }
+    pub fn cycle_psk31_mode(&mut self) {
+        if let Row::Toggle(f) = &mut self.source_rows[SRC_PSK31_MODE] {
+            f.next();
+        }
+    }
+    pub fn psk31_mode_str(&self) -> &str {
+        if let Row::Toggle(f) = &self.source_rows[SRC_PSK31_MODE] { f.value_str() } else { "BPSK31" }
+    }
+    pub fn psk31_carrier_hz(&self) -> f32 {
+        if let Row::Num(f) = &self.source_rows[SRC_PSK31_CARRIER] { f.value } else { 10000.0 }
+    }
+    pub fn psk31_loop_gap_secs(&self) -> f32 {
+        if let Row::Num(f) = &self.source_rows[SRC_PSK31_LOOP_GAP] { f.value } else { 7.0 }
+    }
+    pub fn psk31_noise_amp(&self) -> f32 {
+        if let Row::Num(f) = &self.source_rows[SRC_PSK31_NOISE] { f.value } else { 0.05 }
     }
 
     // ── Key handling ──────────────────────────────────────────────────────
