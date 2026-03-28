@@ -36,6 +36,8 @@ const FFT_SIZE: usize = 1024;
 const SAMPLE_RATE: f32 = 48_000.0;
 // Number of new samples fed per frame, targeting ~60 fps.
 const SAMPLES_PER_FRAME: usize = (SAMPLE_RATE / 60.0) as usize;
+// Fixed pixel height of the decode bar (does not participate in pane proportions).
+const DECODE_BAR_H: f32 = 28.0;
 
 // ── Source mode ───────────────────────────────────────────────────────────────
 
@@ -113,6 +115,10 @@ struct ViewApp {
 
     // When true, source freq/carrier tracks center_hz on every display change.
     source_locked: bool,
+
+    // Decode bar (pane 3): toggled by D key.
+    decode_visible: bool,
+
 }
 
 impl ViewApp {
@@ -171,6 +177,8 @@ impl ViewApp {
             settings: SettingsState::from_config(&cfg),
 
             source_locked: false,
+
+            decode_visible: false,
         }
     }
 
@@ -300,6 +308,7 @@ impl ViewApp {
                     }
                 }
             }
+            if i.key_pressed(egui::Key::D) { self.decode_visible ^= true; }
             if i.key_pressed(egui::Key::E) { self.envelope_visible ^= true; }
             if i.key_pressed(egui::Key::L) { toggle_lock = true; }
             if i.key_pressed(egui::Key::M) { cycle_mode = true; }
@@ -645,6 +654,7 @@ impl ViewApp {
             let modes: String = {
                 let mut flags = Vec::new();
                 if cycling                 { flags.push("C"); }
+                if self.decode_visible     { flags.push("D"); }
                 if self.envelope_visible   { flags.push("E"); }
                 if self.source_locked      { flags.push("L"); }
                 if self.peak_hold_visible  { flags.push("P"); }
@@ -705,43 +715,68 @@ impl ViewApp {
 
     fn draw_panes(&self, ui: &mut egui::Ui) {
         let visible_count = self.pane_visible.iter().filter(|&&v| v).count();
-        if visible_count == 0 {
-            return;
-        }
 
         let avail = ui.available_rect_before_wrap();
-        let total_h = avail.height();
+        let pane_total_h = avail.height();
 
-        let total_frac: f32 = self
-            .pane_visible
-            .iter()
-            .zip(self.pane_frac.iter())
-            .map(|(&vis, &f)| if vis { f } else { 0.0 })
-            .sum();
+        if visible_count > 0 {
+            let total_frac: f32 = self
+                .pane_visible
+                .iter()
+                .zip(self.pane_frac.iter())
+                .map(|(&vis, &f)| if vis { f } else { 0.0 })
+                .sum();
 
-        let mut y = avail.top();
-        for i in 0..3 {
-            if !self.pane_visible[i] {
-                continue;
-            }
-            let h = (self.pane_frac[i] / total_frac) * total_h;
-            let rect = egui::Rect::from_min_size(
-                egui::pos2(avail.left(), y),
-                egui::vec2(avail.width(), h),
-            );
-            let painter = ui.painter_at(rect);
-            painter.rect_filled(rect, 0.0, PANE_BG[i]);
-            match i {
-                0 => self.draw_spectrum(&painter, rect),
-                1 => {
-                    self.draw_persistence_pane(&painter, rect);
+            let mut y = avail.top();
+            for i in 0..3 {
+                if !self.pane_visible[i] {
+                    continue;
                 }
-                _ => {
-                    self.draw_waterfall_pane(&painter, rect);
+                let h = (self.pane_frac[i] / total_frac) * pane_total_h;
+                let rect = egui::Rect::from_min_size(
+                    egui::pos2(avail.left(), y),
+                    egui::vec2(avail.width(), h),
+                );
+                let painter = ui.painter_at(rect);
+                painter.rect_filled(rect, 0.0, PANE_BG[i]);
+                match i {
+                    0 => self.draw_spectrum(&painter, rect),
+                    1 => self.draw_persistence_pane(&painter, rect),
+                    _ => self.draw_waterfall_pane(&painter, rect),
                 }
+                y += h;
             }
-            y += h;
         }
+
+    }
+
+    fn draw_decode_bar(&self, painter: egui::Painter, rect: egui::Rect) {
+        const BAR_BG:    egui::Color32 = egui::Color32::from_rgb(15, 15, 30);
+        const LABEL_COL: egui::Color32 = egui::Color32::from_rgb(80, 100, 140);
+        const TEXT_COL:  egui::Color32 = egui::Color32::from_rgb(200, 200, 200);
+
+        painter.rect_filled(rect, 0.0, BAR_BG);
+
+        let font = egui::FontId::new(12.0, egui::FontFamily::Monospace);
+        let text_y = rect.center().y;
+
+        // Dim "DEC" label on the left
+        painter.text(
+            egui::pos2(rect.left() + 6.0, text_y),
+            egui::Align2::LEFT_CENTER,
+            "DEC",
+            font.clone(),
+            LABEL_COL,
+        );
+
+        // Placeholder text
+        painter.text(
+            egui::pos2(rect.left() + 40.0, text_y),
+            egui::Align2::LEFT_CENTER,
+            "waiting for signal\u{2026}",
+            font,
+            TEXT_COL,
+        );
     }
 
     fn draw_spectrum(&self, painter: &egui::Painter, rect: egui::Rect) {
@@ -1042,6 +1077,7 @@ impl ViewApp {
             ("I / M / N\tselect next source / mode / audio input", 2),
             ("C / E / P\tcycle amplitude  |  envelope  |  peak hold", 2),
             ("L\tlock source freq/carrier to display center", 2),
+            ("D\ttoggle decode bar", 2),
             ("Frequency Pan / Zoom", 1),
             ("← / →\tpan left / right", 2),
             ("Shift+← / →\tfine pan, snap 100 Hz", 2),
@@ -1114,6 +1150,14 @@ impl eframe::App for ViewApp {
 
         self.handle_keys(ctx);
         self.draw_hud(ctx);
+        if self.decode_visible {
+            egui::TopBottomPanel::bottom("decode_bar")
+                .exact_height(DECODE_BAR_H)
+                .show(ctx, |ui| {
+                    let rect = ui.available_rect_before_wrap();
+                    self.draw_decode_bar(ui.painter_at(rect), rect);
+                });
+        }
         egui::CentralPanel::default().show(ctx, |ui| {
             self.draw_panes(ui);
             if self.show_help {
@@ -1134,7 +1178,7 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("orion-sdr-view")
-            .with_inner_size([1200.0, 800.0]),
+            .with_inner_size([1200.0, 800.0 + DECODE_BAR_H]),
         ..Default::default()
     };
     eframe::run_native(
