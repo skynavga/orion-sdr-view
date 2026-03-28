@@ -14,9 +14,13 @@ call it NEW_VERSION.
 ## Step 1 — Verify preconditions
 
 - Confirm current branch is not `main`. If it is, stop and tell the user.
-- Confirm the working tree is clean (`git status`). If there are uncommitted
-  changes, stop and tell the user.
 - Confirm NEW_VERSION > OLD_VERSION (simple string check is fine).
+- Check for uncommitted changes (`git status`). If there are uncommitted
+  changes, propose a default commit message derived from the branch name and
+  staged/unstaged diff summary, then ask the user to confirm or provide an
+  alternative message. Commit all staged and unstaged tracked changes using
+  that message before proceeding. Do not include a co-author trailer. If the
+  user declines to commit, stop and tell them to resolve the working tree first.
 
 ## Step 2 — Bump version strings
 
