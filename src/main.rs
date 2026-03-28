@@ -1,4 +1,5 @@
 mod config;
+mod decode;
 mod freqview;
 mod persistence;
 mod settings;
@@ -7,8 +8,12 @@ mod source;
 mod spectrum;
 mod waterfall;
 
+use std::sync::{Arc, Mutex};
+use std::sync::mpsc;
+
 use clap::Parser;
 use config::ViewConfig;
+use decode::{DecodeConfig, DecodeMode, DecodeResult, DecodeTicker, DecodeWorker};
 use eframe::egui;
 use freqview::{FreqMarker, FreqView};
 use persistence::PersistenceRenderer;
@@ -119,6 +124,11 @@ struct ViewApp {
     // Decode bar (pane 3): toggled by D key.
     decode_visible: bool,
 
+    // Decode thread channels and shared config.
+    decode_config: Arc<Mutex<DecodeConfig>>,
+    decode_tx:     mpsc::SyncSender<Vec<f32>>,
+    decode_rx:     mpsc::Receiver<DecodeResult>,
+    decode_ticker: DecodeTicker,
 }
 
 impl ViewApp {
@@ -143,6 +153,15 @@ impl ViewApp {
         let signal_gen = TestSignalGen::new(cfg.freq_hz(), SAMPLE_RATE);
         let source: Box<dyn SignalSource> =
             Box::new(TestToneSource::new(TestSignalGen::new(cfg.freq_hz(), SAMPLE_RATE)));
+
+        // Decode thread setup.
+        let decode_config = Arc::new(Mutex::new(DecodeConfig::new(SAMPLE_RATE)));
+        let (decode_tx, sample_rx) = mpsc::sync_channel::<Vec<f32>>(4);
+        let (result_tx, decode_rx) = mpsc::sync_channel::<DecodeResult>(16);
+        {
+            let worker_cfg = Arc::clone(&decode_config);
+            std::thread::spawn(move || DecodeWorker::new(worker_cfg, sample_rx, result_tx).run());
+        }
 
         Self {
             pane_visible: [true; 3],
@@ -179,6 +198,11 @@ impl ViewApp {
             source_locked: false,
 
             decode_visible: false,
+
+            decode_config,
+            decode_tx,
+            decode_rx,
+            decode_ticker: DecodeTicker::new(),
         }
     }
 
@@ -245,6 +269,8 @@ impl ViewApp {
             SourceMode::Psk31  => Box::new(self.make_psk31_source()),
         };
         self.settings.set_source_mode(mode as usize);
+        self.sync_decode_config();
+        self.decode_ticker.reset();
     }
 
     fn handle_keys(&mut self, ctx: &egui::Context) {
@@ -605,6 +631,28 @@ impl ViewApp {
             if carrier_changed || mode_changed { psk31.render(); }
             psk31.update_loop_gap();
         }
+        self.sync_decode_config();
+    }
+
+    /// Update the shared DecodeConfig to match the current source mode and carrier.
+    fn sync_decode_config(&mut self) {
+        let mode = match self.source_mode {
+            SourceMode::Psk31 => match self.settings.psk31_mode_str() {
+                "QPSK31" => DecodeMode::Qpsk31,
+                _        => DecodeMode::Bpsk31,
+            },
+            SourceMode::AmDsb    => DecodeMode::AmDsb,
+            SourceMode::TestTone => DecodeMode::TestTone,
+        };
+        let carrier_hz = match self.source_mode {
+            SourceMode::Psk31    => self.settings.psk31_carrier_hz(),
+            SourceMode::AmDsb    => self.settings.am_carrier_hz(),
+            SourceMode::TestTone => self.settings.freq_hz(),
+        };
+        if let Ok(mut cfg) = self.decode_config.lock() {
+            cfg.mode       = mode;
+            cfg.carrier_hz = carrier_hz;
+        }
     }
 
     fn draw_hud(&self, ctx: &egui::Context) {
@@ -754,13 +802,14 @@ impl ViewApp {
         const BAR_BG:    egui::Color32 = egui::Color32::from_rgb(15, 15, 30);
         const LABEL_COL: egui::Color32 = egui::Color32::from_rgb(80, 100, 140);
         const TEXT_COL:  egui::Color32 = egui::Color32::from_rgb(200, 200, 200);
+        const DIM_COL:   egui::Color32 = egui::Color32::from_rgb(100, 100, 100);
 
         painter.rect_filled(rect, 0.0, BAR_BG);
 
-        let font = egui::FontId::new(12.0, egui::FontFamily::Monospace);
+        let font   = egui::FontId::new(12.0, egui::FontFamily::Monospace);
         let text_y = rect.center().y;
 
-        // Dim "DEC" label on the left
+        // Dim "DEC" label on the left.
         painter.text(
             egui::pos2(rect.left() + 6.0, text_y),
             egui::Align2::LEFT_CENTER,
@@ -769,13 +818,27 @@ impl ViewApp {
             LABEL_COL,
         );
 
-        // Placeholder text
+        let content_x = rect.left() + 40.0;
+        let (text, color) = match &self.decode_ticker.last_result {
+            DecodeResult::Text(_) => {
+                (self.decode_ticker.display_text().to_owned(), TEXT_COL)
+            }
+            DecodeResult::Info { modulation, center_hz, bw_hz, snr_db } => {
+                (format!("{modulation}  ctr {:.1}kHz  bw {bw_hz:.0}Hz  snr {snr_db:.1}dB",
+                    center_hz / 1000.0),
+                 TEXT_COL)
+            }
+            DecodeResult::NoSignal => {
+                ("waiting for signal\u{2026}".to_owned(), DIM_COL)
+            }
+        };
+
         painter.text(
-            egui::pos2(rect.left() + 40.0, text_y),
+            egui::pos2(content_x, text_y),
             egui::Align2::LEFT_CENTER,
-            "waiting for signal\u{2026}",
+            text,
             font,
-            TEXT_COL,
+            color,
         );
     }
 
@@ -1132,10 +1195,18 @@ impl eframe::App for ViewApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Feed new samples and process spectrum before drawing.
         let samples = self.source.next_samples(SAMPLES_PER_FRAME);
+        // Non-blocking send to decode thread; drop if channel is full.
+        let _ = self.decode_tx.try_send(samples.clone());
         for s in samples {
             self.ring_buf.push(s);
         }
         self.spectrum.process(&self.ring_buf);
+
+        // Drain decode results and update ticker.
+        while let Ok(result) = self.decode_rx.try_recv() {
+            self.decode_ticker.push_result(result);
+        }
+        self.decode_ticker.tick(1.0 / 60.0);
 
         // Update peak hold (decay slowly: 0.2 dB/frame, then latch new peaks).
         for (ph, &db) in self.peak_hold.iter_mut().zip(self.spectrum.fft_out_db.iter()) {
