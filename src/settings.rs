@@ -47,10 +47,12 @@ impl ToggleField {
     fn value_str(&self) -> &'static str { self.options[self.index] }
 }
 
-/// A text-edit field (e.g. file path).
+/// A text-edit field (e.g. file path or PSK31 message).
 struct TextField {
     label: &'static str,
     value: String,
+    /// Default value restored on R-reset. Empty string for WAV path.
+    default_value: String,
     /// None = not yet tried; Some(true) = last load ok; Some(false) = last load failed.
     status: Option<bool>,
 }
@@ -58,7 +60,7 @@ struct TextField {
 impl TextField {
     fn push_char(&mut self, c: char) { self.value.push(c); self.status = None; }
     fn pop_char(&mut self) { self.value.pop(); self.status = None; }
-    fn reset(&mut self) { self.value.clear(); self.status = None; }
+    fn reset(&mut self) { self.value = self.default_value.clone(); self.status = None; }
 }
 
 // ── Row enum — unifies the three field kinds ───────────────────────────────
@@ -113,18 +115,23 @@ const SRC_MOD_IDX:        usize = 8;
 const SRC_LOOP_GAP:       usize = 9;
 const SRC_AM_NOISE:       usize = 10;
 const SRC_WAV_FILE:       usize = 11;
-const SRC_PSK31_MODE:     usize = 12;
-const SRC_PSK31_CARRIER:  usize = 13;
-const SRC_PSK31_LOOP_GAP: usize = 14;
-const SRC_PSK31_NOISE:    usize = 15;
+const SRC_AM_REPEAT:      usize = 12;
+const SRC_PSK31_MODE:     usize = 13;
+const SRC_PSK31_CARRIER:  usize = 14;
+const SRC_PSK31_LOOP_GAP: usize = 15;
+const SRC_PSK31_NOISE:    usize = 16;
+const SRC_PSK31_MSG:      usize = 17;
+const SRC_PSK31_REPEAT:   usize = 18;
 
 // ── HandleKeysResult ──────────────────────────────────────────────────────
 
 /// Signals back to ViewApp after a key event in the settings popover.
 pub struct HandleKeysResult {
-    pub source_switched: bool,
-    pub am_audio_changed: bool,
+    pub source_switched:    bool,
+    pub am_audio_changed:   bool,
     pub wav_load_requested: bool,
+    /// True when the user pressed Enter to commit a new PSK31 message.
+    pub psk31_msg_accepted: bool,
 }
 
 // ── SettingsState ──────────────────────────────────────────────────────────
@@ -133,6 +140,10 @@ pub struct SettingsState {
     pub visible: bool,
     active_tab: usize,
     focused_row: Option<usize>,
+
+    /// In-progress edit of the PSK31 message field.  `Some(s)` while the user
+    /// is typing; committed to the row on Enter, discarded on Escape.
+    pending_psk31_msg: Option<String>,
 
     display_rows: Vec<Row>,
     source_rows: Vec<Row>,
@@ -151,6 +162,7 @@ impl SettingsState {
         Self {
             visible: false,
             active_tab: TAB_DISPLAY,
+            pending_psk31_msg: None,
             focused_row: None,
             display_rows: vec![
                 Row::Num(NumField {
@@ -215,9 +227,14 @@ impl SettingsState {
                 Row::Text(TextField {
                     label: "WAV file",
                     value: String::new(),
+                    default_value: String::new(),
                     status: None,
                 }),
-                // PSK31 fields (SRC_PSK31_MODE..=SRC_PSK31_NOISE)
+                Row::Num(NumField {
+                    label: "Repeat", value: 1.0, default: 1.0,
+                    step: 1.0, min: 1.0, max: 20.0, unit: "×",
+                }),
+                // PSK31 fields (SRC_PSK31_MODE..=SRC_PSK31_REPEAT)
                 Row::Toggle(ToggleField {
                     label: "Mode",
                     options: &["BPSK31", "QPSK31"],
@@ -228,12 +245,25 @@ impl SettingsState {
                     step: 100.0, min: 100.0, max: 22000.0, unit: " Hz",
                 }),
                 Row::Num(NumField {
-                    label: "Loop gap", value: 7.0, default: 7.0,
+                    label: "Loop gap",
+                    value:   crate::source::PSK31_DEFAULT_LOOP_GAP_SECS,
+                    default: crate::source::PSK31_DEFAULT_LOOP_GAP_SECS,
                     step: 0.5, min: 0.5, max: 30.0, unit: " s",
                 }),
                 Row::Num(NumField {
                     label: "Noise", value: 0.05, default: 0.05,
                     step: 0.01, min: 0.0, max: 1.0, unit: "",
+                }),
+                Row::Text(TextField {
+                    label: "Message",
+                    value: crate::source::PSK31_DEFAULT_TEXT.to_owned(),
+                    default_value: crate::source::PSK31_DEFAULT_TEXT.to_owned(),
+                    status: None,
+                }),
+                Row::Num(NumField {
+                    label: "Repeat", value: crate::source::PSK31_DEFAULT_REPEAT as f32,
+                    default: crate::source::PSK31_DEFAULT_REPEAT as f32,
+                    step: 1.0, min: 1.0, max: 20.0, unit: "×",
                 }),
             ],
         }
@@ -261,15 +291,24 @@ impl SettingsState {
         patch(&mut s.source_rows[SRC_MOD_IDX],        cfg.mod_index());
         patch(&mut s.source_rows[SRC_LOOP_GAP],       cfg.loop_gap_secs());
         patch(&mut s.source_rows[SRC_AM_NOISE],       cfg.am_noise_amp());
+        patch(&mut s.source_rows[SRC_AM_REPEAT],      cfg.am_msg_repeat() as f32);
         patch(&mut s.source_rows[SRC_PSK31_CARRIER],  cfg.psk31_carrier_hz());
         patch(&mut s.source_rows[SRC_PSK31_LOOP_GAP], cfg.psk31_loop_gap_secs());
         patch(&mut s.source_rows[SRC_PSK31_NOISE],    cfg.psk31_noise_amp());
+        patch(&mut s.source_rows[SRC_PSK31_REPEAT],   cfg.psk31_msg_repeat() as f32);
 
         // Patch PSK31 mode toggle
         let psk31_mode_idx = match cfg.psk31_mode() { "QPSK31" => 1, _ => 0 };
         if let Row::Toggle(f) = &mut s.source_rows[SRC_PSK31_MODE] {
             f.index   = psk31_mode_idx;
             f.default = psk31_mode_idx;
+        }
+
+        // Patch PSK31 message text
+        if let Row::Text(f) = &mut s.source_rows[SRC_PSK31_MSG] {
+            let msg = cfg.psk31_message().to_owned();
+            f.value         = msg.clone();
+            f.default_value = msg;
         }
 
         // Also update display row defaults to match configured values
@@ -312,9 +351,10 @@ impl SettingsState {
     fn visible_source_rows(&self) -> Vec<usize> {
         let mut v = vec![SRC_SOURCE]; // Source toggle always visible
         if self.source_is_am() {
-            v.extend(SRC_AM_AUDIO..=SRC_WAV_FILE);
+            v.extend(SRC_AM_AUDIO..=SRC_AM_REPEAT);
         } else if self.source_is_psk31() {
-            v.extend([SRC_PSK31_MODE, SRC_PSK31_CARRIER, SRC_PSK31_LOOP_GAP, SRC_PSK31_NOISE]);
+            v.extend([SRC_PSK31_MODE, SRC_PSK31_CARRIER, SRC_PSK31_LOOP_GAP, SRC_PSK31_NOISE,
+                      SRC_PSK31_MSG, SRC_PSK31_REPEAT]);
         } else {
             v.extend(SRC_FREQ..=SRC_PAUSE);
         }
@@ -414,6 +454,18 @@ impl SettingsState {
     pub fn am_noise_amp(&self) -> f32 {
         if let Row::Num(f) = &self.source_rows[SRC_AM_NOISE] { f.value } else { 0.05 }
     }
+    pub fn am_msg_repeat(&self) -> usize {
+        if let Row::Num(f) = &self.source_rows[SRC_AM_REPEAT] { f.value as usize } else { 1 }
+    }
+    /// Reset the repeat row default (and value) to match the newly-selected audio kind.
+    /// `audio_idx` 0 = Morse (default 1), 1 = Voice (default 3), other = 1.
+    pub fn reset_am_repeat_for_audio(&mut self, audio_idx: usize) {
+        let default = if audio_idx == 1 { 3.0 } else { 1.0 };
+        if let Row::Num(f) = &mut self.source_rows[SRC_AM_REPEAT] {
+            f.default = default;
+            f.value   = default;
+        }
+    }
     pub fn wav_path(&self) -> &str {
         if let Row::Text(f) = &self.source_rows[SRC_WAV_FILE] { &f.value } else { "" }
     }
@@ -435,19 +487,26 @@ impl SettingsState {
         if let Row::Num(f) = &self.source_rows[SRC_PSK31_CARRIER] { f.value } else { 10000.0 }
     }
     pub fn psk31_loop_gap_secs(&self) -> f32 {
-        if let Row::Num(f) = &self.source_rows[SRC_PSK31_LOOP_GAP] { f.value } else { 7.0 }
+        if let Row::Num(f) = &self.source_rows[SRC_PSK31_LOOP_GAP] { f.value } else { crate::source::PSK31_DEFAULT_LOOP_GAP_SECS }
     }
     pub fn psk31_noise_amp(&self) -> f32 {
         if let Row::Num(f) = &self.source_rows[SRC_PSK31_NOISE] { f.value } else { 0.05 }
+    }
+    pub fn psk31_message(&self) -> &str {
+        if let Row::Text(f) = &self.source_rows[SRC_PSK31_MSG] { &f.value } else { "" }
+    }
+    pub fn psk31_msg_repeat(&self) -> usize {
+        if let Row::Num(f) = &self.source_rows[SRC_PSK31_REPEAT] { f.value as usize } else { 3 }
     }
 
     // ── Key handling ──────────────────────────────────────────────────────
 
     pub fn handle_keys(&mut self, ctx: &egui::Context) -> HandleKeysResult {
         let mut result = HandleKeysResult {
-            source_switched: false,
-            am_audio_changed: false,
+            source_switched:    false,
+            am_audio_changed:   false,
             wav_load_requested: false,
+            psk31_msg_accepted: false,
         };
 
         if !self.visible {
@@ -461,6 +520,16 @@ impl SettingsState {
                 .map(|r| {
                     let vis = self.visible_source_rows();
                     vis.get(r).copied() == Some(SRC_WAV_FILE)
+                })
+                .unwrap_or(false);
+
+        // Check if focused row is the PSK31 message text field
+        let psk31_msg_row_focused = self.active_tab == TAB_SOURCE
+            && self.source_is_psk31()
+            && self.focused_row
+                .map(|r| {
+                    let vis = self.visible_source_rows();
+                    vis.get(r).copied() == Some(SRC_PSK31_MSG)
                 })
                 .unwrap_or(false);
 
@@ -497,6 +566,99 @@ impl SettingsState {
                     }
                 }
                 return;
+            }
+
+            if psk31_msg_row_focused {
+                // PSK31 message text field.
+                // When actively editing (pending is Some): intercept all input.
+                // When not editing (pending is None): only Enter starts editing;
+                //   Up/Down/Escape fall through to normal navigation below.
+                let editing = self.pending_psk31_msg.is_some();
+
+                if editing {
+                    // Editing mode: intercept all keys and return early.
+                    for e in &i.events {
+                        match e {
+                            egui::Event::Text(s) => {
+                                if let Some(pending) = &mut self.pending_psk31_msg {
+                                    for c in s.chars() {
+                                        if c >= ' ' && c <= '~' {
+                                            pending.push(c);
+                                        }
+                                    }
+                                }
+                            }
+                            egui::Event::Key { key: egui::Key::Backspace, pressed: true, .. } => {
+                                if let Some(pending) = &mut self.pending_psk31_msg {
+                                    pending.pop();
+                                }
+                            }
+                            egui::Event::Key { key: egui::Key::Enter, pressed: true, .. } => {
+                                if let Some(pending) = self.pending_psk31_msg.take() {
+                                    let committed = if pending.trim().is_empty() {
+                                        crate::source::PSK31_DEFAULT_TEXT.to_owned()
+                                    } else {
+                                        pending
+                                    };
+                                    if let Row::Text(f) = &mut self.source_rows[SRC_PSK31_MSG] {
+                                        f.value = committed;
+                                    }
+                                    result.psk31_msg_accepted = true;
+                                }
+                                self.focused_row = None;
+                            }
+                            egui::Event::Key { key: egui::Key::Escape, pressed: true, .. } => {
+                                self.pending_psk31_msg = None;
+                                self.focused_row = None;
+                            }
+                            _ => {}
+                        }
+                    }
+                    return;
+                }
+
+                // Not editing: Enter starts an edit; all other keys fall through.
+                if i.key_pressed(egui::Key::Enter) {
+                    let current = if let Row::Text(f) = &self.source_rows[SRC_PSK31_MSG] {
+                        f.value.clone()
+                    } else {
+                        String::new()
+                    };
+                    self.pending_psk31_msg = Some(current);
+                    return;
+                }
+                // Also intercept printable text so accidental typing starts editing.
+                let has_text_input = i.events.iter().any(|e| {
+                    matches!(e, egui::Event::Text(s) if !s.is_empty())
+                });
+                if has_text_input {
+                    let current = if let Row::Text(f) = &self.source_rows[SRC_PSK31_MSG] {
+                        f.value.clone()
+                    } else {
+                        String::new()
+                    };
+                    self.pending_psk31_msg = Some(current);
+                    // Re-enter so the text goes into the pending buffer this frame.
+                    for e in &i.events {
+                        if let egui::Event::Text(s) = e {
+                            if let Some(pending) = &mut self.pending_psk31_msg {
+                                for c in s.chars() {
+                                    if c >= ' ' && c <= '~' {
+                                        pending.push(c);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    return;
+                }
+                // Up/Down/Escape/etc. fall through to the normal nav handler below.
+            }
+
+            // If the PSK31 message row is no longer focused (user navigated away),
+            // discard any in-progress pending edit.
+            if self.pending_psk31_msg.is_some() {
+                self.pending_psk31_msg = None;
             }
 
             // S or Escape: close
@@ -781,51 +943,88 @@ impl SettingsState {
                     );
                 }
                 Row::Text(f) => {
-                    let builtin_placeholder = match self.am_audio_idx() {
-                        1 => "cq_voice.wav (built-in)",
-                        _ => "cq_morse.wav (built-in)",
-                    };
-                    let display = if f.value.is_empty() {
-                        builtin_placeholder.to_owned()
-                    } else {
-                        // Truncate long paths from the left
+                    if src_idx == SRC_PSK31_MSG {
+                        // PSK31 message: show pending edit (with cursor) when active,
+                        // or committed value when idle.
                         let max_chars = 28usize;
-                        if f.value.len() > max_chars {
-                            format!("…{}", &f.value[f.value.len() - max_chars..])
+                        let (raw_text, editing) = if let Some(pending) = &self.pending_psk31_msg {
+                            (format!("{}\u{258b}", pending), true) // ▋ block cursor
                         } else {
-                            f.value.clone()
-                        }
-                    };
-                    let status_suffix = match f.status {
-                        Some(true)  => "  ✓",
-                        Some(false) => "  ✗",
-                        None        => "",
-                    };
-                    let full = format!("{}{}", display, status_suffix);
-                    let text_color = if !self.wav_row_is_active() {
-                        // Row visible but inactive (built-in selected): always dimmed
-                        egui::Color32::from_gray(80)
-                    } else if f.value.is_empty() {
-                        // Placeholder: dim when not focused
-                        if focused { egui::Color32::from_gray(200) } else { egui::Color32::from_gray(120) }
-                    } else {
-                        if focused { egui::Color32::WHITE } else { val_color }
-                    };
-                    painter.text(
-                        egui::pos2(rect.left() + INDENT + 90.0, y + ROW_H / 2.0),
-                        egui::Align2::LEFT_CENTER,
-                        full,
-                        med.clone(),
-                        text_color,
-                    );
-                    if focused {
+                            (f.value.clone(), false)
+                        };
+                        let display = if raw_text.chars().count() > max_chars {
+                            let skip = raw_text.chars().count() - max_chars;
+                            format!("…{}", raw_text.chars().skip(skip).collect::<String>())
+                        } else {
+                            raw_text
+                        };
+                        let text_color = if focused || editing {
+                            egui::Color32::WHITE
+                        } else {
+                            val_color
+                        };
                         painter.text(
-                            egui::pos2(rect.right() - 14.0, y + ROW_H / 2.0),
-                            egui::Align2::RIGHT_CENTER,
-                            "↵ load",
-                            small.clone(),
-                            egui::Color32::from_gray(140),
+                            egui::pos2(rect.left() + INDENT + 90.0, y + ROW_H / 2.0),
+                            egui::Align2::LEFT_CENTER,
+                            &display,
+                            med.clone(),
+                            text_color,
                         );
+                        if focused {
+                            let hint = if editing { "\u{21b5} accept  Esc cancel" } else { "\u{21b5} edit" };
+                            painter.text(
+                                egui::pos2(rect.right() - 14.0, y + ROW_H / 2.0),
+                                egui::Align2::RIGHT_CENTER,
+                                hint,
+                                small.clone(),
+                                egui::Color32::from_gray(140),
+                            );
+                        }
+                    } else {
+                        // WAV file path: may be dimmed if built-in is active.
+                        let builtin_placeholder = match self.am_audio_idx() {
+                            1 => "cq_voice.wav (built-in)",
+                            _ => "cq_morse.wav (built-in)",
+                        };
+                        let display = if f.value.is_empty() {
+                            builtin_placeholder.to_owned()
+                        } else {
+                            let max_chars = 28usize;
+                            if f.value.len() > max_chars {
+                                format!("…{}", &f.value[f.value.len() - max_chars..])
+                            } else {
+                                f.value.clone()
+                            }
+                        };
+                        let status_suffix = match f.status {
+                            Some(true)  => "  ✓",
+                            Some(false) => "  ✗",
+                            None        => "",
+                        };
+                        let full = format!("{}{}", display, status_suffix);
+                        let text_color = if !self.wav_row_is_active() {
+                            egui::Color32::from_gray(80)
+                        } else if f.value.is_empty() {
+                            if focused { egui::Color32::from_gray(200) } else { egui::Color32::from_gray(120) }
+                        } else {
+                            if focused { egui::Color32::WHITE } else { val_color }
+                        };
+                        painter.text(
+                            egui::pos2(rect.left() + INDENT + 90.0, y + ROW_H / 2.0),
+                            egui::Align2::LEFT_CENTER,
+                            full,
+                            med.clone(),
+                            text_color,
+                        );
+                        if focused {
+                            painter.text(
+                                egui::pos2(rect.right() - 14.0, y + ROW_H / 2.0),
+                                egui::Align2::RIGHT_CENTER,
+                                "↵ load",
+                                small.clone(),
+                                egui::Color32::from_gray(140),
+                            );
+                        }
                     }
                 }
             }
@@ -851,8 +1050,21 @@ impl SettingsState {
                 })
                 .unwrap_or(false);
 
+        let psk31_msg_focused = self.active_tab == TAB_SOURCE
+            && self.source_is_psk31()
+            && self.focused_row
+                .map(|r| {
+                    let vis = self.visible_source_rows();
+                    vis.get(r).copied() == Some(SRC_PSK31_MSG)
+                })
+                .unwrap_or(false);
+
         let hint = if wav_focused {
             "type path   ↵ load   Esc deselect"
+        } else if psk31_msg_focused && self.pending_psk31_msg.is_some() {
+            "type message   ↵ accept   Esc cancel"
+        } else if psk31_msg_focused {
+            "↵ start editing   ↑↓ navigate   Esc deselect"
         } else if self.focused_row.is_some() {
             "↑↓ navigate   ◀▶ adjust   R reset field   Esc deselect"
         } else {

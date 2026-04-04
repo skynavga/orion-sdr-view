@@ -22,6 +22,8 @@ pub trait SignalSource {
     #[allow(dead_code)]
     fn sample_rate(&self) -> f32;
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
+    /// Reset playback to the beginning of the first loop cycle.
+    fn restart(&mut self) {}
 }
 
 // ── TestToneSource ────────────────────────────────────────────────────────────
@@ -46,6 +48,9 @@ impl SignalSource for TestToneSource {
         self.signal_gen.sample_rate
     }
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+    fn restart(&mut self) {
+        self.signal_gen.restart();
+    }
 }
 
 // ── BuiltinAudio ─────────────────────────────────────────────────────────────
@@ -119,6 +124,18 @@ pub fn load_wav_file(path: &Path) -> Result<(Vec<f32>, f32), String> {
     Ok((samples, fs))
 }
 
+// ── Audio normalization ───────────────────────────────────────────────────────
+
+/// Normalize audio to peak = 0.9.  Empty or silent buffers are returned as-is.
+fn normalize_audio(mut samples: Vec<f32>) -> Vec<f32> {
+    let peak = samples.iter().map(|&s| s.abs()).fold(0.0f32, f32::max);
+    if peak > 1e-6 {
+        let scale = 0.9 / peak;
+        samples.iter_mut().for_each(|s| *s *= scale);
+    }
+    samples
+}
+
 // ── AmDsbSource ───────────────────────────────────────────────────────────────
 
 /// AM DSB signal source driven by a looped audio buffer.
@@ -132,11 +149,15 @@ pub struct AmDsbSource {
     audio_rate: f32,
     /// Fractional read position into `audio` (in audio-rate samples).
     audio_pos: f32,
+    /// How many times the audio buffer has played in the current loop cycle.
+    play_count: usize,
     /// How many output-rate samples remain in the current PTT gap.
     gap_remaining: usize,
     /// Gap length in output-rate samples (recomputed when loop_gap_secs changes).
     loop_gap_samples: usize,
     pub loop_gap_secs: f32,
+    /// Number of times to play the audio buffer per loop cycle before the gap.
+    pub msg_repeat: usize,
 
     // Modulator
     chain: AudioToIqChain<AmDsbMod>,
@@ -159,17 +180,20 @@ impl AmDsbSource {
         mod_index: f32,
         loop_gap_secs: f32,
         noise_amp: f32,
+        msg_repeat: usize,
         mod_rate: f32,
     ) -> Self {
         let loop_gap_samples = (loop_gap_secs * mod_rate) as usize;
         let block = AmDsbMod::new(mod_rate, carrier_hz, 1.0, mod_index);
         Self {
-            audio,
+            audio: normalize_audio(audio),
             audio_rate,
             audio_pos: 0.0,
+            play_count: 0,
             gap_remaining: 0,
             loop_gap_samples,
             loop_gap_secs,
+            msg_repeat: msg_repeat.max(1),
             chain: AudioToIqChain::new(block),
             mod_rate,
             carrier_hz,
@@ -181,9 +205,10 @@ impl AmDsbSource {
 
     /// Replace audio buffer (e.g. after loading a user WAV file).
     pub fn set_audio(&mut self, audio: Vec<f32>, audio_rate: f32) {
-        self.audio = audio;
+        self.audio = normalize_audio(audio);
         self.audio_rate = audio_rate;
         self.audio_pos = 0.0;
+        self.play_count = 0;
         self.gap_remaining = 0;
     }
 
@@ -232,6 +257,11 @@ impl AmDsbSource {
 
 impl SignalSource for AmDsbSource {
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+    fn restart(&mut self) {
+        self.audio_pos = 0.0;
+        self.play_count = 0;
+        self.gap_remaining = 0;
+    }
 
     fn next_samples(&mut self, n: usize) -> Vec<f32> {
         let mut out = Vec::with_capacity(n);
@@ -260,7 +290,11 @@ impl SignalSource for AmDsbSource {
                     audio_chunk.push(s);
                     i += 1;
                     if wrapped {
-                        self.gap_remaining = self.loop_gap_samples;
+                        self.play_count += 1;
+                        if self.play_count >= self.msg_repeat {
+                            self.play_count = 0;
+                            self.gap_remaining = self.loop_gap_samples;
+                        }
                     }
                 }
                 // Modulate the keyed chunk; use real part to preserve carrier position
@@ -288,7 +322,9 @@ impl SignalSource for AmDsbSource {
 
 // ── Psk31Source ───────────────────────────────────────────────────────────────
 
-const PSK31_TEXT: &[u8] = b"CQ CQ DE N0GNR";
+pub const PSK31_DEFAULT_TEXT: &str = "CQ CQ CQ DE N0GNR";
+pub const PSK31_DEFAULT_REPEAT: usize = 5;
+pub const PSK31_DEFAULT_LOOP_GAP_SECS: f32 = 10.0;
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Psk31Mode { Bpsk31, Qpsk31 }
@@ -303,6 +339,10 @@ pub struct Psk31Source {
     pub loop_gap_secs: f32,
     pub noise_amp:     f32,
     pub mode:          Psk31Mode,
+    /// Text to transmit (ASCII). Repeated `msg_repeat` times per loop.
+    pub message:       String,
+    /// Number of times to repeat `message` before the silence gap.
+    pub msg_repeat:    usize,
     mod_rate:          f32,
     samples:           Vec<f32>,
     pos:               usize,
@@ -317,6 +357,8 @@ impl Psk31Source {
         loop_gap_secs: f32,
         noise_amp: f32,
         mode: Psk31Mode,
+        message: String,
+        msg_repeat: usize,
         mod_rate: f32,
     ) -> Self {
         let loop_gap_samples = (loop_gap_secs * mod_rate) as usize;
@@ -325,6 +367,8 @@ impl Psk31Source {
             loop_gap_secs,
             noise_amp,
             mode,
+            message,
+            msg_repeat: msg_repeat.max(1),
             mod_rate,
             samples: Vec::new(),
             pos: 0,
@@ -337,17 +381,26 @@ impl Psk31Source {
     }
 
     /// (Re-)render the modulated frame. Called at construction and whenever
-    /// `carrier_hz` or `mode` changes.
+    /// carrier, mode, message, or repeat count changes.
+    ///
+    /// The text fed to the modulator is `message` repeated `msg_repeat` times,
+    /// separated by a single space, all within one preamble/postamble envelope.
     pub fn render(&mut self) {
+        // Build the repeated text: "msg msg msg" (space-separated).
+        let repeated: Vec<u8> = std::iter::repeat(self.message.as_bytes())
+            .take(self.msg_repeat)
+            .collect::<Vec<_>>()
+            .join(b" ".as_ref());
+
         self.samples = match self.mode {
             Psk31Mode::Bpsk31 => {
                 let iq = Bpsk31Mod::new(self.mod_rate, self.carrier_hz, 1.0)
-                    .modulate_text(PSK31_TEXT, 64, 32);
+                    .modulate_text(&repeated, 64, 32);
                 iq.into_iter().map(|c| c.re).collect()
             }
             Psk31Mode::Qpsk31 => {
                 let iq = Qpsk31Mod::new(self.mod_rate, self.carrier_hz, 1.0)
-                    .modulate_text(PSK31_TEXT, 64, 32);
+                    .modulate_text(&repeated, 64, 32);
                 iq.into_iter().map(|c| c.re).collect()
             }
         };
@@ -370,6 +423,10 @@ impl Psk31Source {
 
 impl SignalSource for Psk31Source {
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+    fn restart(&mut self) {
+        self.pos = 0;
+        self.gap_remaining = 0;
+    }
 
     fn next_samples(&mut self, n: usize) -> Vec<f32> {
         let mut out = Vec::with_capacity(n);

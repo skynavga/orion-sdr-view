@@ -85,6 +85,14 @@ impl TestSignalGen {
         self.cycling = true;
     }
 
+    /// Reset to initial state: zero phase, full amplitude, FSM at PauseHigh.
+    pub fn restart(&mut self) {
+        self.phase = 0.0;
+        self.tone_amp = self.amp_max;
+        self.cycle_state = CycleState::PauseHigh;
+        self.samples_remaining = (self.pause_secs * self.sample_rate) as u32;
+    }
+
     /// Stop cycling: snap immediately to full amplitude.
     pub fn stop_cycling(&mut self) {
         if !self.cycling {
