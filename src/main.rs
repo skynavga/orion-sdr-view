@@ -329,6 +329,17 @@ impl ViewApp {
         )
     }
 
+    /// Full reset: restart source, reset timers, flush decode pipeline.
+    /// Call on R key, mode/message/audio cycle — anything that changes the signal.
+    fn reset_playback(&mut self) {
+        self.source.restart();
+        self.loop_timer.reset();
+        self.decode_ticker.reset();
+        self.last_block_was_signal = false;
+        while self.decode_rx.try_recv().is_ok() {}
+        let _ = self.decode_tx.try_send(Vec::new());
+    }
+
     /// Switch the active source to `mode`, constructing a new source box.
     fn switch_source(&mut self, mode: SourceMode) {
         self.source_mode = mode;
@@ -345,12 +356,7 @@ impl ViewApp {
         };
         self.settings.set_source_mode(mode as usize);
         self.sync_decode_config();
-        self.decode_ticker.reset();
-        self.loop_timer.reset();
-        self.last_block_was_signal = false;
-        // Drain stale results and flush the decode thread's accumulation buffer.
-        while self.decode_rx.try_recv().is_ok() {}
-        let _ = self.decode_tx.try_send(Vec::new());
+        self.reset_playback();
         // Text mode is only valid for PSK31; clamp if we switched away.
         if mode != SourceMode::Psk31 && self.decode_bar == DecodeBarMode::Text {
             self.decode_bar = DecodeBarMode::Info;
@@ -420,7 +426,7 @@ impl ViewApp {
                         tts.signal_gen.start_cycling();
                     }
                 }
-                let _ = self.decode_tx.try_send(Vec::new());
+                self.reset_playback();
             }
             if i.key_pressed(egui::Key::D) {
                 let has_text = self.source_mode == SourceMode::Psk31;
@@ -465,13 +471,7 @@ impl ViewApp {
                 if i.key_pressed(egui::Key::ArrowRight) { marker_delta += bin_hz; }
             }
             if i.key_pressed(egui::Key::R) && !self.settings.visible {
-                self.source.restart();
-                self.loop_timer.reset();
-                self.decode_ticker.reset();
-                self.last_block_was_signal = false;
-                // Drain stale results and send a flush token to the decode thread.
-                while self.decode_rx.try_recv().is_ok() {}
-                let _ = self.decode_tx.try_send(Vec::new());
+                self.reset_playback();
             }
             if i.key_pressed(egui::Key::Escape) {
                 self.show_help = false;
@@ -625,9 +625,7 @@ impl ViewApp {
                 SourceMode::Psk31 => {
                     self.settings.cycle_psk31_mode();
                     self.sync_settings();
-                    self.decode_ticker.reset();
-                    while self.decode_rx.try_recv().is_ok() {}
-                    let _ = self.decode_tx.try_send(Vec::new());
+                    self.reset_playback();
                 }
                 _ => {}
             }
@@ -668,8 +666,7 @@ impl ViewApp {
             am.set_audio(audio, rate);
             am.msg_repeat = self.settings.am_msg_repeat();
         }
-        // Flush decode thread state so EMA/counter restart for the new audio.
-        let _ = self.decode_tx.try_send(Vec::new());
+        self.reset_playback();
     }
 
     /// Attempt to load the WAV path from settings into the AM DSB source.
@@ -687,7 +684,7 @@ impl ViewApp {
                     }
                 }
                 self.settings.set_wav_status(true);
-                let _ = self.decode_tx.try_send(Vec::new());
+                self.reset_playback();
             }
             Err(_) => {
                 self.settings.set_wav_status(false);
@@ -763,9 +760,7 @@ impl ViewApp {
             psk31.message = self.settings.psk31_message().to_owned();
             psk31.render();
         }
-        self.decode_ticker.reset();
-        while self.decode_rx.try_recv().is_ok() {}
-        let _ = self.decode_tx.try_send(Vec::new());
+        self.reset_playback();
     }
 
     /// Update the shared DecodeConfig to match the current source mode and carrier.

@@ -8,6 +8,7 @@ and waterfall from a configurable signal source.
 
 - **Three display panes** — instantaneous spectrum, persistence density map, and scrolling waterfall
 - **Multiple signal sources** — synthetic test tone (sine + AWGN), AM DSB from looped audio, and PSK31 (BPSK31/QPSK31)
+- **Decode bar** — optional bottom bar (cycled by `D`) showing either signal info (Di mode: modulation, carrier, BW, SNR) or decoded text (Dt mode: smooth-scrolling PSK31 text ticker)
 - **Frequency pan and zoom** — keyboard-driven viewport with coarse/fine pan snap, coarse/fine zoom, and span steps
 - **Source lock** — lock source frequency/carrier to the display center marker; tracks pan, zoom, and span changes
 - **Frequency markers** — primary center marker plus two bracket markers (A/B) with label display
@@ -58,10 +59,13 @@ view:
       loop_gap_secs: 7.0
       noise_amp:     0.05
     psk31:
-      mode:          BPSK31   # or QPSK31
-      carrier_hz:    12000.0
-      loop_gap_secs: 7.0
-      noise_amp:     0.05
+      mode:           BPSK31   # or QPSK31
+      carrier_hz:     12000.0
+      loop_gap_secs:  15.0
+      noise_amp:      0.05
+      message:        "CQ CQ CQ DE N0GNR"
+      custom_message: "Custom message"
+      msg_repeat:     3
 ```
 
 All fields are optional; missing fields fall back to built-in defaults.
@@ -71,11 +75,13 @@ All fields are optional; missing fields fall back to built-in defaults.
 | Key | Action |
 | --- | --- |
 | `1` / `2` / `3` | Toggle Spectrum / Persistence / Waterfall panes |
-| `I` / `M` / `N` | Cycle input source / mode / audio input |
+| `I` / `M` / `N` | Cycle input source / mode / audio or message |
 | `C` | Toggle amplitude cycling (Test Tone only) |
+| `D` | Cycle decode bar: off → info (Di) → text (Dt) → off |
 | `E` | Toggle persistence envelope overlay |
 | `L` | Lock source freq/carrier to display center (tracks pan/zoom/span) |
 | `P` | Toggle peak hold line |
+| `R` | Reset source, timers, and decode state |
 | `S` | Open/close settings popover |
 | `H` or `?` | Toggle help overlay |
 | `Escape` | Dismiss overlays |
@@ -86,7 +92,6 @@ All fields are optional; missing fields fall back to built-in defaults.
 | `↑` / `↓` | Zoom in / out (±0.5×) |
 | `Shift+↑` / `Shift+↓` | Fine zoom in / out (±0.1×) |
 | `[` / `]` | Shift dB reference ±5 dB |
-| `R` | Reset to full view (0–Nyquist) |
 | `A` / `B` (Shift) | Place marker A / B at center |
 | `a` / `b` | Toggle marker A / B visibility |
 | `Tab` | Cycle active marker |

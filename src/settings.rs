@@ -730,11 +730,8 @@ impl SettingsState {
                 return;
             }
             if i.key_pressed(egui::Key::Escape) {
-                if self.focused_row.is_some() {
-                    self.focused_row = None;
-                } else {
-                    self.visible = false;
-                }
+                self.visible = false;
+                self.focused_row = None;
                 return;
             }
 
@@ -751,16 +748,7 @@ impl SettingsState {
 
             let n = self.n_visible_rows();
 
-            // Navigable rows: visible rows minus WAV file row when not custom
-            let nav_max = if self.active_tab == TAB_SOURCE
-                && self.source_is_am()
-                && !self.am_audio_is_custom()
-            {
-                // WAV row is last; make it unreachable via navigation
-                n.saturating_sub(2)
-            } else {
-                n.saturating_sub(1)
-            };
+            let nav_max = n.saturating_sub(1);
 
             // Up/Down: navigate
             if i.key_pressed(egui::Key::ArrowUp) {
@@ -1089,13 +1077,7 @@ impl SettingsState {
                             None        => "",
                         };
                         let full = format!("{}{}", display, status_suffix);
-                        let text_color = if !self.wav_row_is_active() {
-                            egui::Color32::from_gray(80)
-                        } else if f.value.is_empty() {
-                            if focused { egui::Color32::from_gray(200) } else { egui::Color32::from_gray(120) }
-                        } else {
-                            if focused { egui::Color32::WHITE } else { val_color }
-                        };
+                        let text_color = if focused { egui::Color32::WHITE } else { val_color };
                         painter.text(
                             egui::pos2(rect.left() + VAL_X, y + ROW_H / 2.0),
                             egui::Align2::LEFT_CENTER,
