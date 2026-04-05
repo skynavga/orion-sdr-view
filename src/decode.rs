@@ -68,21 +68,28 @@ pub enum DecodeResult {
 
 /// Minimum seconds to hold an Info result before replacing it.
 const INFO_HOLD_SECS:    f32 = 3.0;
-/// Minimum seconds to hold a Text result before replacing it.
-const TEXT_HOLD_SECS:    f32 = 10.0;
 /// Scroll speed in pixels per second.
-/// 36 px/s at 12 pt monospace (~7.2 px/char) ≈ 5 chars/s, matching a
-/// comfortable news-ticker reading pace (~300 chars/min).
-pub const SCROLL_PX_PER_SEC: f32 = 36.0;
-/// Max decoded text buffer length (chars).
-const MAX_BUF: usize = 256;
+/// 36 px/s at 12 pt monospace (~7.2 px/char) ≈ 5 chars/s.
+const SCROLL_PX_PER_SEC: f32 = 36.0;
+/// Approximate character width at 12 pt monospace.
+const CHAR_W: f32 = 7.2;
+/// Max visible text buffer length (chars).
+const MAX_BUF: usize = 512;
 
 /// Scrolling ticker state maintained on the main thread.
+///
+/// Decoded text is queued in `pending`.  `tick()` advances a smooth pixel
+/// offset; when it crosses a character-width boundary, the next character is
+/// popped from `pending` to `visible`.  The renderer shifts the visible text
+/// by the sub-character pixel fraction for jitter-free animation.
 pub struct DecodeTicker {
-    /// Accumulated decoded text, ring-capped at `MAX_BUF` chars.
-    pub buffer:  String,
-    /// Pixel scroll offset into the rendered text string (increases over time).
-    pub scroll_px: f32,
+    /// Characters waiting to be displayed, in order.
+    pending: std::collections::VecDeque<char>,
+    /// Characters already shown on screen (right-aligned, newest at right).
+    pub visible: String,
+    /// Accumulated sub-character pixel offset (0.0 .. CHAR_W).
+    /// When this reaches CHAR_W, a new character is popped from pending.
+    pub sub_px: f32,
     /// Currently displayed result.
     pub last_result: DecodeResult,
     /// Seconds the current result has been displayed.
@@ -90,48 +97,44 @@ pub struct DecodeTicker {
     /// Most recent Info result, retained independently of `last_result` so the
     /// Di bar can show signal data even while a Text hold is in effect.
     pub last_info: Option<DecodeResult>,
+    /// True while in a signal gap — drives SPACE injection in `tick()`.
+    pub in_gap: bool,
 }
 
 impl DecodeTicker {
     pub fn new() -> Self {
         Self {
-            buffer:       String::new(),
-            scroll_px:    0.0,
+            pending:      std::collections::VecDeque::new(),
+            visible:      String::new(),
+            sub_px:       0.0,
             last_result:  DecodeResult::NoSignal,
             hold_elapsed: 0.0,
             last_info:    None,
+            in_gap:       false,
         }
     }
 
     /// Integrate a new result from the decode thread.
     ///
-    /// - `Text`: always appended to the buffer; display switches to text mode
-    ///   immediately, but won't be displaced until `TEXT_HOLD_SECS` have elapsed.
-    /// - `Info` / `NoSignal`: only replaces the current result once its hold
-    ///   period has expired (prevents rapid alternation during signal gaps).
+    /// - `Text`: characters are queued in `pending` for gradual reveal.
+    /// - `Info`: updates `last_info` (for Di bar); replaces `last_result` after hold.
+    /// - `NoSignal` / `Gap`: transitions to no-signal state (Gap bypasses hold).
     pub fn push_result(&mut self, r: DecodeResult) {
         match &r {
             DecodeResult::Text(s) => {
-                // Append new text.
-                self.buffer.push_str(s);
-                if self.buffer.len() > MAX_BUF {
-                    let drop = self.buffer.len() - MAX_BUF;
-                    self.buffer.drain(..drop);
+                self.in_gap = false;
+                for c in s.chars() {
+                    self.pending.push_back(c);
                 }
-                // Switch to text mode and reset hold only if not already in text mode.
                 if !matches!(self.last_result, DecodeResult::Text(_)) {
                     self.last_result  = r;
                     self.hold_elapsed = 0.0;
                 }
-                // If already showing text, just let the buffer accumulate — don't
-                // reset hold so the scroll has time to display what's already there.
             }
             DecodeResult::Info { .. } => {
-                // Always update last_info so Di mode can show signal data even
-                // while a Text hold is in effect.
                 self.last_info = Some(r.clone());
                 let hold = match self.last_result {
-                    DecodeResult::Text(_)               => TEXT_HOLD_SECS,
+                    DecodeResult::Text(_)               => 0.0,
                     DecodeResult::Info { .. }           => INFO_HOLD_SECS,
                     DecodeResult::NoSignal | DecodeResult::Gap => 0.0,
                 };
@@ -142,7 +145,7 @@ impl DecodeTicker {
             }
             DecodeResult::NoSignal => {
                 let hold = match self.last_result {
-                    DecodeResult::Text(_)   => TEXT_HOLD_SECS,
+                    DecodeResult::Text(_)   => 0.0,
                     DecodeResult::Info {..} => INFO_HOLD_SECS,
                     DecodeResult::NoSignal | DecodeResult::Gap => 0.0,
                 };
@@ -152,33 +155,54 @@ impl DecodeTicker {
                 }
             }
             DecodeResult::Gap => {
-                // Definite silence — bypass hold and drop to NoSignal immediately.
                 self.last_result  = DecodeResult::NoSignal;
                 self.hold_elapsed = 0.0;
+                self.in_gap       = true;
             }
         }
     }
 
-    /// Advance scroll and hold timers. Call once per frame with frame delta time.
+    /// Advance the ticker.  Call once per frame with frame delta time.
+    ///
+    /// Smoothly advances pixel offset; pops characters from `pending` to
+    /// `visible` when crossing character-width boundaries.  During gaps,
+    /// injects SPACE characters at the same rate.
     pub fn tick(&mut self, dt: f32) {
         self.hold_elapsed += dt;
-        if !self.buffer.is_empty() {
-            self.scroll_px += SCROLL_PX_PER_SEC * dt;
-        }
-    }
 
-    /// Return the text to display in the decode bar.
-    pub fn display_text(&self) -> &str {
-        &self.buffer
+        // Only scroll if there's something to show or inject.
+        let has_work = !self.pending.is_empty()
+            || (self.in_gap && !self.visible.is_empty());
+        if !has_work { return; }
+
+        self.sub_px += SCROLL_PX_PER_SEC * dt;
+
+        // Pop characters when crossing each CHAR_W boundary.
+        while self.sub_px >= CHAR_W {
+            self.sub_px -= CHAR_W;
+            if let Some(c) = self.pending.pop_front() {
+                self.visible.push(c);
+            } else if self.in_gap {
+                self.visible.push(' ');
+            }
+        }
+
+        // Cap visible buffer length.
+        if self.visible.len() > MAX_BUF {
+            let drop = self.visible.len() - MAX_BUF;
+            self.visible.drain(..drop);
+        }
     }
 
     /// Flush the buffer and reset scroll (call on source/config change).
     pub fn reset(&mut self) {
-        self.buffer.clear();
-        self.scroll_px    = 0.0;
+        self.pending.clear();
+        self.visible.clear();
+        self.sub_px       = 0.0;
         self.hold_elapsed = 0.0;
         self.last_result  = DecodeResult::NoSignal;
         self.last_info    = None;
+        self.in_gap       = false;
     }
 }
 
@@ -207,6 +231,61 @@ const SPECTRUM_WINDOW_SAMPLES: usize = 4096;
 /// Search half-width around the configured carrier (±200 Hz).
 const SYNC_SEARCH_HZ: f32 = 200.0;
 
+/// Minimum accumulated samples before attempting psk31_sync (64 symbols).
+const SYNC_MIN_SYMS: usize = 64;
+
+/// Persistent state for streaming PSK31 decode within one transmission.
+/// Created after the first successful `psk31_sync`, destroyed at gap edge.
+struct Psk31Stream {
+    demod:   Bpsk31Demod,
+    decider: Bpsk31Decider,
+    vdec:    VaricodeDecoder,
+    /// Sample offset into `iq_buf` where the next feed should start.
+    fed_up_to: usize,
+}
+
+impl Psk31Stream {
+    /// Feed new IQ samples through the demod → decider → varicode chain.
+    /// Returns any newly decoded printable characters.
+    fn feed(&mut self, iq: &[C32]) -> String {
+        if iq.is_empty() { return String::new(); }
+
+        let sps_est = iq.len(); // upper bound for output sizing
+        let max_syms = sps_est / 32 + 4; // generous
+        let mut soft = vec![0.0_f32; max_syms];
+        let wr = self.demod.process(iq, &mut soft);
+        soft.truncate(wr.out_written);
+
+        let mut bits = vec![0_u8; soft.len()];
+        let dr = self.decider.process(&soft, &mut bits);
+        bits.truncate(dr.out_written);
+
+        let mut text = String::new();
+        for &b in &bits {
+            self.vdec.push_bit(b);
+            while let Some(ch) = self.vdec.pop_char() {
+                if ch >= 0x20 && ch < 0x7f {
+                    text.push(ch as char);
+                }
+            }
+        }
+        text
+    }
+
+    /// Flush the varicode decoder with trailing zeros to emit the last char.
+    fn flush(&mut self) -> String {
+        self.vdec.push_bit(0);
+        self.vdec.push_bit(0);
+        let mut text = String::new();
+        while let Some(ch) = self.vdec.pop_char() {
+            if ch >= 0x20 && ch < 0x7f {
+                text.push(ch as char);
+            }
+        }
+        text
+    }
+}
+
 pub struct DecodeWorker {
     config: Arc<Mutex<DecodeConfig>>,
     rx:     Receiver<Vec<f32>>,
@@ -231,6 +310,8 @@ impl DecodeWorker {
         let mut smoothed_bw_hz = 0.0_f32;
         // Rolling window state for AM DSB / Test Tone spectral analysis.
         let mut spec_buf: Vec<C32> = Vec::new();
+        // Streaming PSK31 decode state (created after first sync, destroyed at gap).
+        let mut psk31_stream: Option<Psk31Stream> = None;
         // Sample counter for Info throttling (~250 ms between updates, all modes).
         let mut info_counter: usize = 0;
         const INFO_INTERVAL: usize = 48_000; // 1 s at 48 kHz
@@ -253,12 +334,13 @@ impl DecodeWorker {
             if samples.is_empty() {
                 iq_buf.clear();
                 spec_buf.clear();
-                smoothed_bw_hz = 0.0;
+                smoothed_bw_hz  = 0.0;
                 smoothed_snr_db = 0.0;
-                was_signal     = false;
-                info_counter   = 0;
-                last_mode      = mode;
-                last_carrier   = carrier_hz;
+                was_signal      = false;
+                info_counter    = 0;
+                psk31_stream    = None;
+                last_mode       = mode;
+                last_carrier    = carrier_hz;
                 continue;
             }
 
@@ -270,6 +352,7 @@ impl DecodeWorker {
                 smoothed_snr_db = 0.0;
                 was_signal      = false;
                 info_counter    = 0;
+                psk31_stream    = None;
                 last_mode       = mode;
                 last_carrier    = carrier_hz;
             }
@@ -285,27 +368,89 @@ impl DecodeWorker {
                     let mode_label = if mode == DecodeMode::Bpsk31 { "BPSK31" } else { "QPSK31" };
 
                     if !is_signal {
-                        // Gap arrived: decode whatever we have accumulated.
-                        // Do NOT send Gap here — the main thread handles gap
-                        // detection independently; a Gap queued after Info/Text
-                        // would immediately clobber last_result in the same drain.
                         if gap_edge {
+
                             info_counter    = 0;
                             smoothed_snr_db = 0.0;
-                            if !iq_buf.is_empty() {
-                                let buf = std::mem::take(&mut iq_buf);
-                                self.decode_and_send_psk31(mode, &buf, carrier_hz, fs, sps);
+                            if let Some(ref mut stream) = psk31_stream {
+                                if stream.fed_up_to < iq_buf.len() {
+                                    let remaining = &iq_buf[stream.fed_up_to..];
+                                    let text = stream.feed(remaining);
+                                    if !text.is_empty() {
+
+                                        let _ = self.tx.try_send(DecodeResult::Text(text));
+                                    }
+                                }
+                                let tail = stream.flush();
+                                if !tail.is_empty() {
+
+                                    let _ = self.tx.try_send(DecodeResult::Text(tail));
+                                }
+                            } else if mode == DecodeMode::Qpsk31 && !iq_buf.is_empty() {
+                                // QPSK31 fallback: batch decode at gap edge.
+                                let (info, text) = self.decode_qpsk31(&iq_buf, carrier_hz, fs, sps);
+                                let _ = self.tx.try_send(info);
+                                if let Some(t) = text { let _ = self.tx.try_send(t); }
                             }
+                            psk31_stream = None;
+                            iq_buf.clear();
                         }
                     } else {
                         iq_buf.extend(samples.iter().map(|&s| C32::new(s, 0.0)));
 
-                        // Periodic Info updates (~250 ms) during signal so the
-                        // Di bar shows live carrier/SNR at a readable pace.
+                        // Try to establish the stream if we haven't yet.
+                        if psk31_stream.is_none()
+                            && iq_buf.len() >= sps * SYNC_MIN_SYMS
+                            && mode == DecodeMode::Bpsk31
+                        {
+                            let base_hz = (carrier_hz - SYNC_SEARCH_HZ).max(0.0);
+                            let max_hz  = carrier_hz + SYNC_SEARCH_HZ;
+                            let results = psk31_sync(&iq_buf, fs, base_hz, max_hz, 4, 1.5, 256, 5);
+                            if let Some((_found_hz, time_sym)) = best_sync(&results, carrier_hz) {
+                                // Find the first full symbol of established carrier.
+                                // Scan for the first sample whose instantaneous power
+                                // exceeds a meaningful threshold (well above numerical
+                                // noise, but below the carrier's RMS).  Then round UP
+                                let scan_end = ((time_sym + 2) as usize * sps).min(iq_buf.len());
+                                let start = iq_buf[..scan_end]
+                                    .iter()
+                                    .position(|c| c.re * c.re + c.im * c.im > 0.01)
+                                    .unwrap_or(0);
+
+                                let mut stream = Psk31Stream {
+                                    demod:   Bpsk31Demod::new(fs, carrier_hz, 1.0),
+                                    decider: Bpsk31Decider::new(),
+                                    vdec:    VaricodeDecoder::new(),
+                                    fed_up_to: start,
+                                };
+                                // Feed everything from onset to current end.
+                                let text = stream.feed(&iq_buf[start..]);
+                                if !text.is_empty() {
+                                    let _ = self.tx.try_send(DecodeResult::Text(text));
+                                }
+                                stream.fed_up_to = iq_buf.len();
+                                psk31_stream = Some(stream);
+                            }
+                        }
+
+                        // Feed new samples to the running stream.
+                        if let Some(ref mut stream) = psk31_stream {
+                            let new_end = iq_buf.len();
+                            if stream.fed_up_to < new_end {
+                                let new_slice = &iq_buf[stream.fed_up_to..new_end];
+                                let text = stream.feed(new_slice);
+                                if !text.is_empty() {
+
+                                    let _ = self.tx.try_send(DecodeResult::Text(text));
+                                }
+                                stream.fed_up_to = new_end;
+                            }
+                        }
+
+                        // Periodic Info updates (~1 s) during signal.
                         info_counter += samples.len();
                         if info_counter >= INFO_INTERVAL {
                             info_counter = 0;
-                            // Use the tail of the accumulation buffer for SNR.
                             let tail_start = iq_buf.len().saturating_sub(SPECTRUM_WINDOW_SAMPLES);
                             let win: Vec<f32> = iq_buf[tail_start..]
                                 .iter().map(|c| c.re).collect();
@@ -323,10 +468,15 @@ impl DecodeWorker {
                             });
                         }
 
-                        // Safety flush if carrier runs longer than the max window.
+                        // Safety cap: discard oldest samples if buffer grows too large.
                         if iq_buf.len() >= max_accum {
-                            let buf = std::mem::take(&mut iq_buf);
-                            self.decode_and_send_psk31(mode, &buf, carrier_hz, fs, sps);
+                            // Stream has already processed everything, safe to truncate.
+                            let keep = max_accum / 2;
+                            let drop = iq_buf.len() - keep;
+                            iq_buf.drain(..drop);
+                            if let Some(ref mut stream) = psk31_stream {
+                                stream.fed_up_to = stream.fed_up_to.saturating_sub(drop);
+                            }
                         }
                     }
                 }
@@ -388,24 +538,7 @@ impl DecodeWorker {
         }
     }
 
-    /// Decode a complete PSK31 transmission buffer and send Info + Text results.
-    fn decode_and_send_psk31(
-        &self,
-        mode: DecodeMode,
-        iq: &[C32],
-        carrier_hz: f32,
-        fs: f32,
-        sps: usize,
-    ) {
-        let (info, text) = match mode {
-            DecodeMode::Bpsk31 => self.decode_bpsk31(iq, carrier_hz, fs, sps),
-            DecodeMode::Qpsk31 => self.decode_qpsk31(iq, carrier_hz, fs, sps),
-            _ => return,
-        };
-        let _ = self.tx.try_send(info);
-        if let Some(t) = text { let _ = self.tx.try_send(t); }
-    }
-
+    #[cfg(test)]
     fn decode_bpsk31(
         &self,
         iq: &[C32],
@@ -452,37 +585,14 @@ impl DecodeWorker {
             snr_db:     snr,
         };
 
-        // Start demodulation at the detected carrier onset; the preamble begins
-        // there and data symbols follow, giving the varicode decoder full words.
-        // Use the configured carrier_hz rather than the bin-quantized found_hz:
-        // the demod's PLL locks within a few symbols regardless of the small
-        // offset (≤ PSK31_BAUD/2 ≈ 15.6 Hz), and the configured frequency is
-        // more accurate than the nearest waterfall bin.
-        //
-        // When time_sym=0 the accumulation buffer may begin with a partial block
-        // of silence from the gap→signal transition.  Scan the first two symbols
-        // for the true signal onset and align start to the first complete symbol
-        // boundary at or after the onset, so the demodulator's Hann-window
-        // alignment and AFC lock are not disturbed by leading silence.
-        let start_sample = if time_sym == 0 {
-            let scan_end = (2 * sps).min(iq.len());
-            let onset = iq[..scan_end]
-                .iter()
-                .position(|c| c.re * c.re + c.im * c.im > 1e-6)
-                .unwrap_or(0);
-            // If the leading silence is >= half a symbol, round up to the next
-            // symbol boundary so the Hann-window alignment and AFC lock start on
-            // a clean symbol.  Shorter gaps (<half sps) don't perturb the demod.
-            if onset >= sps / 4 {
-                let sym = (onset + sps - 1) / sps;
-                sym * sps
-            } else {
-                0
-            }
-        } else {
-            time_sym * sps
-        };
-        let start = start_sample.min(iq.len());
+        // Start demodulation at the true signal onset.  When time_sym=0 the
+        // Scan for the first sample with meaningful carrier energy, then
+        // round up to the next symbol boundary for clean Hann-window alignment.
+        let scan_end = ((time_sym + 2) * sps).min(iq.len());
+        let start = iq[..scan_end]
+            .iter()
+            .position(|c| c.re * c.re + c.im * c.im > 0.01)
+            .unwrap_or(0);
         let max_syms = (iq.len() - start) / sps + 2;
         #[cfg(test)]
         println!("  bpsk31: found_hz={found_hz:.1} time_sym={time_sym} start={start} max_syms={max_syms} iq.len={}", iq.len());
@@ -1096,7 +1206,367 @@ mod tests {
         }
 
         println!("\n── Final ticker buffer ───────────────────────────────────────────");
-        println!("  {:?}", ticker.buffer);
-        println!("  buffer.len() = {}", ticker.buffer.len());
+        println!("  visible: {:?}", ticker.visible);
+        println!("  visible.len() = {}", ticker.visible.len());
+    }
+
+    /// Simulate the streaming PSK31 decode path from the decode worker across
+    /// 3 loops, printing every Text result with timestamps to diagnose errors.
+    #[test]
+    fn simulate_streaming_decode() {
+        use crate::source::{Psk31Source, Psk31Mode, SignalSource};
+        use orion_sdr::modulate::psk31::psk31_sps;
+        use orion_sdr::util::rms;
+
+        const MSG:       &str  = "CQ CQ CQ DE N0GNR";
+        const REPEAT:    usize = 5;
+        const BLOCK:     usize = 800;
+        const LOOP_GAP:  f32   = 15.0;
+        const LOOPS:     usize = 5;
+
+        let sps = psk31_sps(FS);
+        let carrier_hz = CARRIER_HZ;
+
+        let mut src = Psk31Source::new(
+            carrier_hz, LOOP_GAP, 0.0, Psk31Mode::Bpsk31,
+            MSG.to_owned(), REPEAT, FS,
+        );
+
+        let mut iq_buf: Vec<C32> = Vec::new();
+        let mut stream: Option<Psk31Stream> = None;
+        let mut was_signal = false;
+        let mut t_secs = 0.0_f32;
+        let mut all_text = String::new();
+        let mut loop_count = 0_u32;
+
+        let text_bytes = (MSG.len() * REPEAT + (REPEAT - 1)) as f32;
+        let approx_signal_secs = (64.0 + text_bytes * 11.0 + 32.0) / 31.25;
+        let total_samples = ((approx_signal_secs + LOOP_GAP) * LOOPS as f32 + 2.0) * FS;
+
+        println!("── Streaming decode simulation ({LOOPS} loops) ─────────────────────");
+        println!("  sps={sps}, carrier={carrier_hz:.0}, gap={LOOP_GAP:.0}s\n");
+
+        for _ in (0..total_samples as usize).step_by(BLOCK) {
+            let n = BLOCK;
+            let samples = src.next_samples(n);
+            t_secs += n as f32 / FS;
+
+            let is_signal = rms(&samples) >= SIGNAL_THRESHOLD;
+            let gap_edge = !is_signal && was_signal;
+            let signal_edge = is_signal && !was_signal;
+            was_signal = is_signal;
+
+            if signal_edge {
+                loop_count += 1;
+                println!("t={t_secs:7.2}s  ── signal ON (loop {loop_count}) ──");
+            }
+
+            if gap_edge {
+                println!("t={t_secs:7.2}s  ── gap edge ──");
+                // Flush stream
+                if let Some(ref mut s) = stream {
+                    if s.fed_up_to < iq_buf.len() {
+                        let remaining = &iq_buf[s.fed_up_to..];
+                        let energy: f32 = remaining.iter()
+                            .map(|c| c.re * c.re + c.im * c.im).sum::<f32>()
+                            / remaining.len().max(1) as f32;
+                        if energy > 1e-6 {
+                            let text = s.feed(remaining);
+                            if !text.is_empty() {
+                                println!("  flush-feed: {:?}", &text);
+                                all_text.push_str(&text);
+                            }
+                        }
+                    }
+                    let tail = s.flush();
+                    if !tail.is_empty() {
+                        println!("  flush-tail: {:?}", &tail);
+                        all_text.push_str(&tail);
+                    }
+                }
+                stream = None;
+                iq_buf.clear();
+                println!("  all_text so far ({} chars): {:?}",
+                    all_text.len(), &all_text[all_text.len().saturating_sub(60)..]);
+                continue;
+            }
+
+            if !is_signal { continue; }
+
+            iq_buf.extend(samples.iter().map(|&s| C32::new(s, 0.0)));
+
+            // Try to establish stream
+            if stream.is_none() && iq_buf.len() >= sps * SYNC_MIN_SYMS {
+                let base_hz = (carrier_hz - SYNC_SEARCH_HZ).max(0.0);
+                let max_hz  = carrier_hz + SYNC_SEARCH_HZ;
+                let results = psk31_sync(&iq_buf, FS, base_hz, max_hz, 4, 1.5, 256, 5);
+                if let Some((_found_hz, time_sym)) = best_sync(&results, carrier_hz) {
+                    let scan_end = ((time_sym + 2) as usize * sps).min(iq_buf.len());
+                    let onset = iq_buf[..scan_end]
+                        .iter()
+                        .position(|c| c.re * c.re + c.im * c.im > 0.01)
+                        .unwrap_or(0);
+                    let start = onset;
+                    println!("t={t_secs:7.2}s  sync: time_sym={time_sym} start={start} iq_buf.len={}",
+                        iq_buf.len());
+                    let mut s = Psk31Stream {
+                        demod:   Bpsk31Demod::new(FS, carrier_hz, 1.0),
+                        decider: Bpsk31Decider::new(),
+                        vdec:    VaricodeDecoder::new(),
+                        fed_up_to: start,
+                    };
+                    let text = s.feed(&iq_buf[start..]);
+                    if !text.is_empty() {
+                        println!("  initial: {:?}", &text);
+                        all_text.push_str(&text);
+                    }
+                    s.fed_up_to = iq_buf.len();
+                    stream = Some(s);
+                }
+            }
+
+            // Feed new samples
+            if let Some(ref mut s) = stream {
+                let new_end = iq_buf.len();
+                if s.fed_up_to < new_end {
+                    let new_slice = &iq_buf[s.fed_up_to..new_end];
+                    let block_energy: f32 = new_slice.iter()
+                        .map(|c| c.re * c.re + c.im * c.im).sum::<f32>()
+                        / new_slice.len() as f32;
+                    if block_energy > 1e-6 {
+                        let text = s.feed(new_slice);
+                        if !text.is_empty() {
+                            println!("t={t_secs:7.2}s  text: {:?}", &text);
+                            all_text.push_str(&text);
+                        }
+                    } else {
+                        println!("t={t_secs:7.2}s  SKIP low-energy block ({block_energy:.2e})");
+                    }
+                    s.fed_up_to = new_end;
+                }
+            }
+        }
+
+        println!("\n── All decoded text ({} chars) ──", all_text.len());
+        println!("{:?}", all_text);
+
+        // Verify: should contain the message repeated without errors.
+        let expected_single = "CQ CQ CQ DE N0GNR";
+        let error_count = all_text.chars()
+            .filter(|c| !expected_single.contains(*c) && *c != ' ')
+            .count();
+        println!("Non-message chars: {error_count}");
+        assert!(error_count == 0, "found {error_count} unexpected characters in decoded text");
+    }
+
+    /// Test streaming decode with short messages (1 char, 1 repeat) and
+    /// varying message lengths to verify the decode pipeline isn't tied
+    /// to a particular message size.
+    #[test]
+    fn streaming_decode_short_messages() {
+        use crate::source::{Psk31Source, Psk31Mode, SignalSource};
+        use orion_sdr::modulate::psk31::psk31_sps;
+        use orion_sdr::util::rms;
+
+        let sps = psk31_sps(FS);
+        let carrier_hz = CARRIER_HZ;
+
+        let cases: &[(&str, usize, usize)] = &[
+            ("A",                  1, 3),  // 1 char, 1 repeat, 3 loops
+            ("AB",                 1, 3),  // 2 chars, 1 repeat
+            ("CQ DE N0GNR",       1, 3),  // medium, 1 repeat
+            ("CQ",                5, 3),  // short, 5 repeats
+            ("CQ CQ CQ DE N0GNR", 5, 2),  // default, 2 loops
+        ];
+
+        for &(msg, repeat, loops) in cases {
+            println!("\n── msg={msg:?} repeat={repeat} loops={loops} ──");
+
+            let mut src = Psk31Source::new(
+                carrier_hz, 5.0, 0.0, Psk31Mode::Bpsk31,
+                msg.to_owned(), repeat, FS,
+            );
+
+            let mut iq_buf: Vec<C32> = Vec::new();
+            let mut stream: Option<Psk31Stream> = None;
+            let mut was_signal = false;
+            let mut all_text = String::new();
+
+            // Estimate duration
+            let text_bytes = (msg.len() * repeat + (repeat.saturating_sub(1))) as f32;
+            let approx_signal_secs = (64.0 + text_bytes * 11.0 + 32.0) / 31.25;
+            let total_samples = ((approx_signal_secs + 5.0) * loops as f32 + 2.0) * FS;
+
+            for _ in (0..total_samples as usize).step_by(800) {
+                let samples = src.next_samples(800);
+
+                let is_signal = rms(&samples) >= SIGNAL_THRESHOLD;
+                let gap_edge = !is_signal && was_signal;
+                was_signal = is_signal;
+
+                if gap_edge {
+                    if let Some(ref mut s) = stream {
+                        if s.fed_up_to < iq_buf.len() {
+                            let text = s.feed(&iq_buf[s.fed_up_to..]);
+                            if !text.is_empty() { all_text.push_str(&text); }
+                        }
+                        let tail = s.flush();
+                        if !tail.is_empty() { all_text.push_str(&tail); }
+                    }
+                    stream = None;
+                    iq_buf.clear();
+                    continue;
+                }
+
+                if !is_signal { continue; }
+
+                iq_buf.extend(samples.iter().map(|&s| C32::new(s, 0.0)));
+
+                if stream.is_none() && iq_buf.len() >= sps * SYNC_MIN_SYMS {
+                    let base_hz = (carrier_hz - SYNC_SEARCH_HZ).max(0.0);
+                    let max_hz  = carrier_hz + SYNC_SEARCH_HZ;
+                    let results = psk31_sync(&iq_buf, FS, base_hz, max_hz, 4, 1.5, 256, 5);
+                    if let Some((_found_hz, time_sym)) = best_sync(&results, carrier_hz) {
+                        let scan_end = ((time_sym + 2) * sps).min(iq_buf.len());
+                        let start = iq_buf[..scan_end]
+                            .iter()
+                            .position(|c| c.re * c.re + c.im * c.im > 0.01)
+                            .unwrap_or(0);
+                        let mut s = Psk31Stream {
+                            demod:   Bpsk31Demod::new(FS, carrier_hz, 1.0),
+                            decider: Bpsk31Decider::new(),
+                            vdec:    VaricodeDecoder::new(),
+                            fed_up_to: start,
+                        };
+                        let text = s.feed(&iq_buf[start..]);
+                        if !text.is_empty() { all_text.push_str(&text); }
+                        s.fed_up_to = iq_buf.len();
+                        stream = Some(s);
+                    }
+                }
+
+                if let Some(ref mut s) = stream {
+                    if s.fed_up_to < iq_buf.len() {
+                        let text = s.feed(&iq_buf[s.fed_up_to..]);
+                        if !text.is_empty() { all_text.push_str(&text); }
+                        s.fed_up_to = iq_buf.len();
+                    }
+                }
+            }
+
+            println!("  decoded: {:?}", &all_text);
+            // Verify only chars from the message appear.
+            let error_count = all_text.chars()
+                .filter(|c| !msg.contains(*c) && *c != ' ')
+                .count();
+            println!("  non-message chars: {error_count}");
+            assert!(error_count == 0,
+                "msg={msg:?} repeat={repeat}: found {error_count} unexpected chars in {:?}",
+                &all_text);
+            // Verify we got at least some text.
+            assert!(!all_text.is_empty(),
+                "msg={msg:?} repeat={repeat}: no text decoded at all");
+        }
+    }
+
+    /// Full modulate → demodulate → varicode roundtrip for all printable ASCII.
+    /// Generates a PSK31 signal containing every printable character (32–126),
+    /// runs the streaming decode pipeline, and verifies every character is
+    /// recovered without errors.
+    #[test]
+    fn streaming_decode_all_printable_ascii() {
+        use crate::source::{Psk31Source, Psk31Mode, SignalSource};
+        use orion_sdr::modulate::psk31::psk31_sps;
+        use orion_sdr::util::rms;
+
+        let sps = psk31_sps(FS);
+        let carrier_hz = CARRIER_HZ;
+
+        // Build a message containing every printable ASCII character (32–126).
+        let msg: String = (32u8..127u8).map(|b| b as char).collect();
+        println!("msg ({} chars): {:?}", msg.len(), &msg);
+
+        let mut src = Psk31Source::new(
+            carrier_hz, 5.0, 0.0, Psk31Mode::Bpsk31,
+            msg.clone(), 1, FS,
+        );
+
+        let mut iq_buf: Vec<C32> = Vec::new();
+        let mut stream: Option<Psk31Stream> = None;
+        let mut was_signal = false;
+        let mut all_text = String::new();
+
+        // Generous duration: 95 chars × ~11 syms × 1536 sps + preamble/postamble + gap.
+        let total_samples = ((95.0 * 11.0 + 96.0) / 31.25 + 10.0) * FS;
+
+        for _ in (0..total_samples as usize).step_by(800) {
+            let samples = src.next_samples(800);
+
+            let is_signal = rms(&samples) >= SIGNAL_THRESHOLD;
+            let gap_edge = !is_signal && was_signal;
+            was_signal = is_signal;
+
+            if gap_edge {
+                if let Some(ref mut s) = stream {
+                    if s.fed_up_to < iq_buf.len() {
+                        let text = s.feed(&iq_buf[s.fed_up_to..]);
+                        if !text.is_empty() { all_text.push_str(&text); }
+                    }
+                    let tail = s.flush();
+                    if !tail.is_empty() { all_text.push_str(&tail); }
+                }
+                stream = None;
+                iq_buf.clear();
+                continue;
+            }
+
+            if !is_signal { continue; }
+
+            iq_buf.extend(samples.iter().map(|&s| C32::new(s, 0.0)));
+
+            if stream.is_none() && iq_buf.len() >= sps * SYNC_MIN_SYMS {
+                let base_hz = (carrier_hz - SYNC_SEARCH_HZ).max(0.0);
+                let max_hz  = carrier_hz + SYNC_SEARCH_HZ;
+                let results = psk31_sync(&iq_buf, FS, base_hz, max_hz, 4, 1.5, 256, 5);
+                if let Some((_found_hz, time_sym)) = best_sync(&results, carrier_hz) {
+                    let scan_end = ((time_sym + 2) * sps).min(iq_buf.len());
+                    let start = iq_buf[..scan_end]
+                        .iter()
+                        .position(|c| c.re * c.re + c.im * c.im > 0.01)
+                        .unwrap_or(0);
+                    let mut s = Psk31Stream {
+                        demod:   Bpsk31Demod::new(FS, carrier_hz, 1.0),
+                        decider: Bpsk31Decider::new(),
+                        vdec:    VaricodeDecoder::new(),
+                        fed_up_to: start,
+                    };
+                    let text = s.feed(&iq_buf[start..]);
+                    if !text.is_empty() { all_text.push_str(&text); }
+                    s.fed_up_to = iq_buf.len();
+                    stream = Some(s);
+                }
+            }
+
+            if let Some(ref mut s) = stream {
+                if s.fed_up_to < iq_buf.len() {
+                    let text = s.feed(&iq_buf[s.fed_up_to..]);
+                    if !text.is_empty() { all_text.push_str(&text); }
+                    s.fed_up_to = iq_buf.len();
+                }
+            }
+        }
+
+        println!("decoded ({} chars): {:?}", all_text.len(), &all_text);
+
+        // Verify: the first 95 characters must match the full printable ASCII set.
+        // (The source loops, so extra characters from loop 2 may follow — ignore them.)
+        let expected: Vec<char> = (32u8..127u8).map(|b| b as char).collect();
+        let got: Vec<char> = all_text.chars().collect();
+        assert!(got.len() >= expected.len(),
+            "too few chars: expected at least {}, got {}", expected.len(), got.len());
+        for (i, (g, e)) in got.iter().zip(expected.iter()).enumerate() {
+            assert_eq!(g, e, "mismatch at index {}: expected {:?} ({}), got {:?} ({})",
+                i, e, *e as u32, g, *g as u32);
+        }
     }
 }

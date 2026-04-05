@@ -192,6 +192,8 @@ struct ViewApp {
     decode_ticker: DecodeTicker,
     /// True if the previous frame's sample block was above SIGNAL_THRESHOLD.
     last_block_was_signal: bool,
+    /// Wall-clock time of the previous frame, for real-time dt calculation.
+    last_frame_time: std::time::Instant,
 }
 
 impl ViewApp {
@@ -270,6 +272,7 @@ impl ViewApp {
             decode_rx,
             decode_ticker: DecodeTicker::new(),
             last_block_was_signal: false,
+            last_frame_time: std::time::Instant::now(),
         };
         app.sync_decode_config();
         app
@@ -622,14 +625,24 @@ impl ViewApp {
                 SourceMode::Psk31 => {
                     self.settings.cycle_psk31_mode();
                     self.sync_settings();
+                    self.decode_ticker.reset();
+                    while self.decode_rx.try_recv().is_ok() {}
+                    let _ = self.decode_tx.try_send(Vec::new());
                 }
                 _ => {}
             }
         }
         if cycle_audio {
-            if self.source_mode == SourceMode::AmDsb {
-                self.settings.cycle_am_audio();
-                self.reload_builtin_audio();
+            match self.source_mode {
+                SourceMode::AmDsb => {
+                    self.settings.cycle_am_audio();
+                    self.reload_builtin_audio();
+                }
+                SourceMode::Psk31 => {
+                    self.settings.cycle_psk31_msg_mode();
+                    self.apply_psk31_message();
+                }
+                _ => {}
             }
         }
         if quit {
@@ -837,10 +850,17 @@ impl ViewApp {
                     "Custom" => "  aud c".to_owned(),
                     _        => "  aud m".to_owned(),
                 },
-                SourceMode::Psk31 => match self.settings.psk31_mode_str() {
-                    "QPSK31" => "  mode q".to_owned(),
-                    _        => "  mode b".to_owned(),
-                },
+                SourceMode::Psk31 => {
+                    let mode_ch = match self.settings.psk31_mode_str() {
+                        "QPSK31" => "q",
+                        _        => "b",
+                    };
+                    let msg_ch = match self.settings.psk31_msg_mode_str() {
+                        "Custom" => "c",
+                        _        => "n",
+                    };
+                    format!("  mode {mode_ch}  msg {msg_ch}")
+                }
                 _ => String::new(),
             };
             let status = format!(
@@ -945,7 +965,8 @@ impl ViewApp {
             LABEL_COL,
         );
 
-        let content_x = rect.left() + 40.0;
+        let label_w = painter.layout_no_wrap(dec_label.to_owned(), font.clone(), LABEL_COL).size().x;
+        let content_x = rect.left() + 6.0 + label_w + 12.0; // 12 px right margin
 
         // Measure loop timer label so we know where the scrolling text must stop.
         let timer_label = self.loop_timer.label();
@@ -970,65 +991,44 @@ impl ViewApp {
                 center_hz / 1000.0)
         };
 
-        // Determine the text content and color for the content region.
-        // In Dt (text) mode with content available, we handle rendering separately below.
-        let scroll_text: Option<(String, egui::Color32)> = // Some = use scrolling ticker
-            if self.decode_bar == DecodeBarMode::Text {
-                let buf = self.decode_ticker.display_text().to_owned();
-                if !buf.is_empty() {
-                    let col = match &self.decode_ticker.last_result {
-                        DecodeResult::NoSignal | DecodeResult::Gap => DIM_COL,
-                        _ => TEXT_COL,
-                    };
-                    Some((buf, col))
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
+        // Determine whether Dt mode has content to render.
+        let has_dt_text = self.decode_bar == DecodeBarMode::Text
+            && !self.decode_ticker.visible.is_empty();
 
-        if let Some((text, color)) = scroll_text {
-            // ── Pixel-scrolling ticker (Dt mode) ────────────────────────────
-            // Text scrolls right-to-left inside [content_x, scroll_right].
-            // scroll_px=0 → text fully visible at the left edge; as it grows
-            // the text moves left and a second copy enters from the right.
-            let gap = em_w * 4.0; // 4 em gap between repetitions
-            let text_w = painter.layout_no_wrap(text.clone(), font.clone(), color).size().x;
-            let cycle_w = (text_w + gap).max(1.0);
-            // Offset within one cycle; text_w offset means "start fully visible".
-            let scroll = self.decode_ticker.scroll_px % cycle_w;
-            // Left edge of the primary copy: starts at content_x, moves left.
-            let x0 = content_x - scroll;
-            // Draw two copies so the loop is seamless.
+        if has_dt_text {
+            // ── Smooth-scrolling ticker (Dt mode) ─────────────────────────
+            // Text is right-aligned at scroll_right.  sub_px shifts the text
+            // smoothly leftward as the next character slides in; when sub_px
+            // crosses a character width, a new character appears at the right.
+            let sub_px = self.decode_ticker.sub_px;
+            let text_x = scroll_right + (em_w - sub_px);
+
             let clip_rect = egui::Rect::from_min_max(
                 egui::pos2(content_x, rect.min.y),
                 egui::pos2(scroll_right, rect.max.y),
             );
             let clipped = painter.with_clip_rect(clip_rect);
-            clipped.text(egui::pos2(x0,           text_y), egui::Align2::LEFT_CENTER, &text, font.clone(), color);
-            clipped.text(egui::pos2(x0 + cycle_w, text_y), egui::Align2::LEFT_CENTER, &text, font.clone(), color);
+            clipped.text(
+                egui::pos2(text_x, text_y),
+                egui::Align2::RIGHT_CENTER,
+                &self.decode_ticker.visible,
+                font.clone(),
+                TEXT_COL,
+            );
         } else {
             // ── Static left-aligned text (Di mode or waiting) ────────────────
-            let (text, color) = match &self.decode_ticker.last_result {
-                DecodeResult::Text(_) | DecodeResult::Info { .. }
-                    if self.decode_bar == DecodeBarMode::Info =>
+            let (text, color) = if self.decode_bar == DecodeBarMode::Info {
+                // Di mode: show last_info if available.
+                if let Some(DecodeResult::Info { modulation, center_hz, bw_hz, snr_db })
+                    = &self.decode_ticker.last_info
                 {
-                    if let Some(DecodeResult::Info { modulation, center_hz, bw_hz, snr_db })
-                        = &self.decode_ticker.last_info
-                    {
-                        (info_str(modulation, *center_hz, *bw_hz, *snr_db), TEXT_COL)
-                    } else {
-                        ("waiting for signal\u{2026}".to_owned(), DIM_COL)
-                    }
+                    (info_str(modulation, *center_hz, *bw_hz, *snr_db), TEXT_COL)
+                } else {
+                    ("waiting for signal\u{2026}".to_owned(), DIM_COL)
                 }
-                DecodeResult::Info { modulation, center_hz, bw_hz, snr_db }
-                    if self.decode_bar != DecodeBarMode::Info =>
-                {
-                    // In Dt mode, no buffer yet — show info as fallback
-                    (info_str(modulation, *center_hz, *bw_hz, *snr_db), DIM_COL)
-                }
-                _ => ("waiting for signal\u{2026}".to_owned(), DIM_COL),
+            } else {
+                // Dt mode with no visible text yet: just show waiting.
+                ("waiting for signal\u{2026}".to_owned(), DIM_COL)
             };
             painter.text(
                 egui::pos2(content_x, text_y),
@@ -1343,7 +1343,7 @@ impl ViewApp {
             ("Keyboard shortcuts", 0),
             ("Panes & Sources", 1),
             ("1 / 2 / 3\ttoggle Spectrum / Persistence / Waterfall", 2),
-            ("I / M / N\tselect next source / mode / audio input", 2),
+            ("I / M / N\tselect next source / mode / audio or message", 2),
             ("C / E / P\tcycle amplitude  |  envelope  |  peak hold", 2),
             ("L\tlock source freq/carrier to display center", 2),
             ("D\tcycle decode bar: off → info → text → off", 2),
@@ -1399,6 +1399,11 @@ impl ViewApp {
 
 impl eframe::App for ViewApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Wall-clock delta since last frame.
+        let now = std::time::Instant::now();
+        let dt = now.duration_since(self.last_frame_time).as_secs_f32();
+        self.last_frame_time = now;
+
         // Feed new samples and process spectrum before drawing.
         let samples = self.source.next_samples(SAMPLES_PER_FRAME);
         // Non-blocking send to decode thread; drop if channel is full.
@@ -1416,10 +1421,9 @@ impl eframe::App for ViewApp {
             let sq_sum: f32 = samples.iter().map(|v| v * v).sum();
             (sq_sum / samples.len() as f32).sqrt()
         };
-        self.loop_timer.tick(block_rms, SAMPLES_PER_FRAME as f32 / SAMPLE_RATE);
+        self.loop_timer.tick(block_rms, dt);
 
         let block_is_signal = block_rms >= SIGNAL_THRESHOLD;
-        let gap_edge = !block_is_signal && self.last_block_was_signal;
         self.last_block_was_signal = block_is_signal;
 
         // Drain decode results first so Info/Text from the decode thread are
@@ -1429,22 +1433,15 @@ impl eframe::App for ViewApp {
         }
 
         if !block_is_signal && self.decode_bar.is_visible() {
-            if gap_edge {
-                // Leading edge of gap: insert one space in Dt mode to
-                // visually separate transmissions.
-                if self.decode_bar == DecodeBarMode::Text
-                    && !self.decode_ticker.buffer.is_empty()
-                {
-                    self.decode_ticker.push_result(DecodeResult::Text(" ".to_owned()));
-                }
-            }
             // Push Gap every silent frame so that late-arriving Info/Text from
             // the decode thread's batch decode cannot pin the Di bar to stale
             // data.  The decode thread no longer sends Gap, so this is the sole
             // source; it keeps last_result=NoSignal throughout the gap.
+            // Gap also sets in_gap=true in the ticker, which drives SPACE
+            // injection during tick() at the nominal character scroll rate.
             self.decode_ticker.push_result(DecodeResult::Gap);
         }
-        self.decode_ticker.tick(1.0 / 60.0);
+        self.decode_ticker.tick(dt);
 
         // Update peak hold (decay slowly: 0.2 dB/frame, then latch new peaks).
         for (ph, &db) in self.peak_hold.iter_mut().zip(self.spectrum.fft_out_db.iter()) {

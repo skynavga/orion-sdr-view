@@ -323,8 +323,9 @@ impl SignalSource for AmDsbSource {
 // ── Psk31Source ───────────────────────────────────────────────────────────────
 
 pub const PSK31_DEFAULT_TEXT: &str = "CQ CQ CQ DE N0GNR";
+pub const PSK31_DEFAULT_CUSTOM_TEXT: &str = "Custom message";
 pub const PSK31_DEFAULT_REPEAT: usize = 5;
-pub const PSK31_DEFAULT_LOOP_GAP_SECS: f32 = 10.0;
+pub const PSK31_DEFAULT_LOOP_GAP_SECS: f32 = 20.0;
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Psk31Mode { Bpsk31, Qpsk31 }

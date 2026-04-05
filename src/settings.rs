@@ -1,16 +1,19 @@
 use eframe::egui;
 use crate::config::ViewConfig;
 
-const OVERLAY_W: f32 = 520.0;
+const OVERLAY_W: f32 = 560.0;
 const OVERLAY_H: f32 = 446.0;
+/// At 13 pt mono, 1 em ≈ 7.8 px.
+const EM: f32 = 7.8;
+/// Label column: 1 em left margin + max label width (12 chars) + 4 em right margin.
+const VAL_X: f32 = EM + 12.0 * EM + 4.0 * EM;  // ≈ 133 px
 const ROW_H: f32 = 26.0;
-const INDENT: f32 = 24.0;
 
 // ── Tab index constants ────────────────────────────────────────────────────
-const TAB_DISPLAY: usize = 0;
-const TAB_SOURCE: usize = 1;
+const TAB_SOURCE: usize = 0;
+const TAB_DISPLAY: usize = 1;
 const N_TABS: usize = 2;
-const TAB_NAMES: [&str; N_TABS] = ["Display", "Source"];
+const TAB_NAMES: [&str; N_TABS] = ["Source", "Display"];
 
 // ── Field kinds ────────────────────────────────────────────────────────────
 
@@ -120,8 +123,10 @@ const SRC_PSK31_MODE:     usize = 13;
 const SRC_PSK31_CARRIER:  usize = 14;
 const SRC_PSK31_LOOP_GAP: usize = 15;
 const SRC_PSK31_NOISE:    usize = 16;
-const SRC_PSK31_MSG:      usize = 17;
-const SRC_PSK31_REPEAT:   usize = 18;
+const SRC_PSK31_MSG_MODE: usize = 17;
+const SRC_PSK31_MSG:      usize = 18;
+const SRC_PSK31_CUSTOM_MSG: usize = 19;
+const SRC_PSK31_REPEAT:   usize = 20;
 
 // ── HandleKeysResult ──────────────────────────────────────────────────────
 
@@ -141,9 +146,11 @@ pub struct SettingsState {
     active_tab: usize,
     focused_row: Option<usize>,
 
-    /// In-progress edit of the PSK31 message field.  `Some(s)` while the user
+    /// In-progress edit of a PSK31 message field.  `Some(s)` while the user
     /// is typing; committed to the row on Enter, discarded on Escape.
     pending_psk31_msg: Option<String>,
+    /// Which source_rows index is being edited (SRC_PSK31_MSG or SRC_PSK31_CUSTOM_MSG).
+    editing_psk31_msg_row: Option<usize>,
 
     display_rows: Vec<Row>,
     source_rows: Vec<Row>,
@@ -161,8 +168,9 @@ impl SettingsState {
     ) -> Self {
         Self {
             visible: false,
-            active_tab: TAB_DISPLAY,
+            active_tab: TAB_SOURCE,
             pending_psk31_msg: None,
+            editing_psk31_msg_row: None,
             focused_row: None,
             display_rows: vec![
                 Row::Num(NumField {
@@ -204,7 +212,7 @@ impl SettingsState {
                 }),
                 // AM DSB fields (SRC_AM_AUDIO..=SRC_WAV_FILE)
                 Row::Toggle(ToggleField {
-                    label: "AM audio",
+                    label: "Audio",
                     options: &["Morse", "Voice", "Custom"],
                     index: 0, default: 0,
                 }),
@@ -217,15 +225,15 @@ impl SettingsState {
                     step: 0.1, min: 0.1, max: 2.0, unit: "",
                 }),
                 Row::Num(NumField {
-                    label: "Loop gap s", value: 7.0, default: 7.0,
+                    label: "Loop gap", value: 7.0, default: 7.0,
                     step: 0.5, min: 0.0, max: 30.0, unit: " s",
                 }),
                 Row::Num(NumField {
                     label: "Noise amp", value: 0.05, default: 0.05,
-                    step: 0.01, min: 0.0, max: 1.0, unit: "",
+                    step: 0.01, min: 0.0, max: 0.50, unit: "",
                 }),
                 Row::Text(TextField {
-                    label: "WAV file",
+                    label: "Audio source",
                     value: String::new(),
                     default_value: String::new(),
                     status: None,
@@ -251,13 +259,24 @@ impl SettingsState {
                     step: 0.5, min: 0.5, max: 30.0, unit: " s",
                 }),
                 Row::Num(NumField {
-                    label: "Noise", value: 0.05, default: 0.05,
-                    step: 0.01, min: 0.0, max: 1.0, unit: "",
+                    label: "Noise amp", value: 0.05, default: 0.05,
+                    step: 0.01, min: 0.0, max: 0.50, unit: "",
+                }),
+                Row::Toggle(ToggleField {
+                    label: "Message",
+                    options: &["Canned", "Custom"],
+                    index: 0, default: 0,
                 }),
                 Row::Text(TextField {
-                    label: "Message",
+                    label: "Text",
                     value: crate::source::PSK31_DEFAULT_TEXT.to_owned(),
                     default_value: crate::source::PSK31_DEFAULT_TEXT.to_owned(),
+                    status: None,
+                }),
+                Row::Text(TextField {
+                    label: "Text",
+                    value: crate::source::PSK31_DEFAULT_CUSTOM_TEXT.to_owned(),
+                    default_value: crate::source::PSK31_DEFAULT_CUSTOM_TEXT.to_owned(),
                     status: None,
                 }),
                 Row::Num(NumField {
@@ -304,9 +323,16 @@ impl SettingsState {
             f.default = psk31_mode_idx;
         }
 
-        // Patch PSK31 message text
+        // Patch PSK31 canned message text
         if let Row::Text(f) = &mut s.source_rows[SRC_PSK31_MSG] {
             let msg = cfg.psk31_message().to_owned();
+            f.value         = msg.clone();
+            f.default_value = msg;
+        }
+
+        // Patch PSK31 custom message text
+        if let Row::Text(f) = &mut s.source_rows[SRC_PSK31_CUSTOM_MSG] {
+            let msg = cfg.psk31_custom_message().to_owned();
             f.value         = msg.clone();
             f.default_value = msg;
         }
@@ -351,12 +377,20 @@ impl SettingsState {
     fn visible_source_rows(&self) -> Vec<usize> {
         let mut v = vec![SRC_SOURCE]; // Source toggle always visible
         if self.source_is_am() {
-            v.extend(SRC_AM_AUDIO..=SRC_AM_REPEAT);
+            v.extend([SRC_AM_AUDIO, SRC_WAV_FILE, SRC_AM_REPEAT,
+                      SRC_CARRIER, SRC_MOD_IDX, SRC_LOOP_GAP, SRC_AM_NOISE]);
         } else if self.source_is_psk31() {
-            v.extend([SRC_PSK31_MODE, SRC_PSK31_CARRIER, SRC_PSK31_LOOP_GAP, SRC_PSK31_NOISE,
-                      SRC_PSK31_MSG, SRC_PSK31_REPEAT]);
+            v.extend([SRC_PSK31_MODE, SRC_PSK31_MSG_MODE]);
+            if self.psk31_msg_is_custom() {
+                v.push(SRC_PSK31_CUSTOM_MSG);
+            } else {
+                v.push(SRC_PSK31_MSG);
+            }
+            v.extend([SRC_PSK31_REPEAT,
+                      SRC_PSK31_CARRIER, SRC_PSK31_LOOP_GAP, SRC_PSK31_NOISE]);
         } else {
-            v.extend(SRC_FREQ..=SRC_PAUSE);
+            // Test Tone: Frequency, Tone amp max, Ramp, Pause, Noise amp (bottom)
+            v.extend([SRC_FREQ, SRC_AMP_MAX, SRC_RAMP, SRC_PAUSE, SRC_NOISE]);
         }
         v
     }
@@ -492,8 +526,22 @@ impl SettingsState {
     pub fn psk31_noise_amp(&self) -> f32 {
         if let Row::Num(f) = &self.source_rows[SRC_PSK31_NOISE] { f.value } else { 0.05 }
     }
+    /// Returns the active message (Canned or Custom, depending on toggle).
     pub fn psk31_message(&self) -> &str {
-        if let Row::Text(f) = &self.source_rows[SRC_PSK31_MSG] { &f.value } else { "" }
+        if self.psk31_msg_is_custom() {
+            if let Row::Text(f) = &self.source_rows[SRC_PSK31_CUSTOM_MSG] { &f.value } else { "" }
+        } else {
+            if let Row::Text(f) = &self.source_rows[SRC_PSK31_MSG] { &f.value } else { "" }
+        }
+    }
+    pub fn psk31_msg_is_custom(&self) -> bool {
+        if let Row::Toggle(f) = &self.source_rows[SRC_PSK31_MSG_MODE] { f.index == 1 } else { false }
+    }
+    pub fn psk31_msg_mode_str(&self) -> &str {
+        if let Row::Toggle(f) = &self.source_rows[SRC_PSK31_MSG_MODE] { f.value_str() } else { "Canned" }
+    }
+    pub fn cycle_psk31_msg_mode(&mut self) {
+        if let Row::Toggle(f) = &mut self.source_rows[SRC_PSK31_MSG_MODE] { f.next(); }
     }
     pub fn psk31_msg_repeat(&self) -> usize {
         if let Row::Num(f) = &self.source_rows[SRC_PSK31_REPEAT] { f.value as usize } else { 3 }
@@ -523,15 +571,17 @@ impl SettingsState {
                 })
                 .unwrap_or(false);
 
-        // Check if focused row is the PSK31 message text field
-        let psk31_msg_row_focused = self.active_tab == TAB_SOURCE
-            && self.source_is_psk31()
-            && self.focused_row
-                .map(|r| {
-                    let vis = self.visible_source_rows();
-                    vis.get(r).copied() == Some(SRC_PSK31_MSG)
-                })
-                .unwrap_or(false);
+        // Check if focused row is the editable PSK31 custom message field.
+        // The canned message row (SRC_PSK31_MSG) is read-only — not editable.
+        let psk31_focused_msg_idx = if self.active_tab == TAB_SOURCE && self.source_is_psk31() {
+            self.focused_row.and_then(|r| {
+                let vis = self.visible_source_rows();
+                vis.get(r).copied().filter(|&idx| idx == SRC_PSK31_CUSTOM_MSG)
+            })
+        } else {
+            None
+        };
+        let psk31_msg_row_focused = psk31_focused_msg_idx.is_some();
 
         ctx.input(|i| {
             if wav_row_focused {
@@ -595,20 +645,28 @@ impl SettingsState {
                             }
                             egui::Event::Key { key: egui::Key::Enter, pressed: true, .. } => {
                                 if let Some(pending) = self.pending_psk31_msg.take() {
+                                    let target = self.editing_psk31_msg_row.unwrap_or(SRC_PSK31_MSG);
+                                    let default_text = if target == SRC_PSK31_CUSTOM_MSG {
+                                        crate::source::PSK31_DEFAULT_CUSTOM_TEXT
+                                    } else {
+                                        crate::source::PSK31_DEFAULT_TEXT
+                                    };
                                     let committed = if pending.trim().is_empty() {
-                                        crate::source::PSK31_DEFAULT_TEXT.to_owned()
+                                        default_text.to_owned()
                                     } else {
                                         pending
                                     };
-                                    if let Row::Text(f) = &mut self.source_rows[SRC_PSK31_MSG] {
+                                    if let Row::Text(f) = &mut self.source_rows[target] {
                                         f.value = committed;
                                     }
+                                    self.editing_psk31_msg_row = None;
                                     result.psk31_msg_accepted = true;
                                 }
                                 self.focused_row = None;
                             }
                             egui::Event::Key { key: egui::Key::Escape, pressed: true, .. } => {
                                 self.pending_psk31_msg = None;
+                                self.editing_psk31_msg_row = None;
                                 self.focused_row = None;
                             }
                             _ => {}
@@ -618,13 +676,15 @@ impl SettingsState {
                 }
 
                 // Not editing: Enter starts an edit; all other keys fall through.
+                let edit_target = psk31_focused_msg_idx.unwrap_or(SRC_PSK31_MSG);
                 if i.key_pressed(egui::Key::Enter) {
-                    let current = if let Row::Text(f) = &self.source_rows[SRC_PSK31_MSG] {
+                    let current = if let Row::Text(f) = &self.source_rows[edit_target] {
                         f.value.clone()
                     } else {
                         String::new()
                     };
                     self.pending_psk31_msg = Some(current);
+                    self.editing_psk31_msg_row = Some(edit_target);
                     return;
                 }
                 // Also intercept printable text so accidental typing starts editing.
@@ -632,11 +692,12 @@ impl SettingsState {
                     matches!(e, egui::Event::Text(s) if !s.is_empty())
                 });
                 if has_text_input {
-                    let current = if let Row::Text(f) = &self.source_rows[SRC_PSK31_MSG] {
+                    let current = if let Row::Text(f) = &self.source_rows[edit_target] {
                         f.value.clone()
                     } else {
                         String::new()
                     };
+                    self.editing_psk31_msg_row = Some(edit_target);
                     self.pending_psk31_msg = Some(current);
                     // Re-enter so the text goes into the pending buffer this frame.
                     for e in &i.events {
@@ -659,6 +720,7 @@ impl SettingsState {
             // discard any in-progress pending edit.
             if self.pending_psk31_msg.is_some() {
                 self.pending_psk31_msg = None;
+                self.editing_psk31_msg_row = None;
             }
 
             // S or Escape: close
@@ -895,9 +957,9 @@ impl SettingsState {
                 );
             }
 
-            // Label
+            // Label (left-aligned with 1 em left margin)
             painter.text(
-                egui::pos2(rect.left() + INDENT, y + ROW_H / 2.0),
+                egui::pos2(rect.left() + EM, y + ROW_H / 2.0),
                 egui::Align2::LEFT_CENTER,
                 row.label(),
                 med.clone(),
@@ -916,7 +978,7 @@ impl SettingsState {
                         format!("{:.0}{}", f.value, f.unit)
                     };
                     painter.text(
-                        egui::pos2(rect.right() - 130.0, y + ROW_H / 2.0),
+                        egui::pos2(rect.left() + VAL_X, y + ROW_H / 2.0),
                         egui::Align2::LEFT_CENTER,
                         val_str,
                         med.clone(),
@@ -935,7 +997,7 @@ impl SettingsState {
                 Row::Toggle(f) => {
                     let val_str = format!("◀ {} ▶", f.value_str());
                     painter.text(
-                        egui::pos2(rect.right() - 130.0, y + ROW_H / 2.0),
+                        egui::pos2(rect.left() + VAL_X, y + ROW_H / 2.0),
                         egui::Align2::LEFT_CENTER,
                         val_str,
                         med.clone(),
@@ -944,9 +1006,34 @@ impl SettingsState {
                 }
                 Row::Text(f) => {
                     if src_idx == SRC_PSK31_MSG {
-                        // PSK31 message: show pending edit (with cursor) when active,
-                        // or committed value when idle.
-                        let max_chars = 28usize;
+                        // Canned PSK31 message: read-only display.
+                        let max_chars = 36usize;
+                        let display = if f.value.chars().count() > max_chars {
+                            let skip = f.value.chars().count() - max_chars;
+                            format!("…{}", f.value.chars().skip(skip).collect::<String>())
+                        } else {
+                            f.value.clone()
+                        };
+                        let text_color = if focused { egui::Color32::WHITE } else { val_color };
+                        painter.text(
+                            egui::pos2(rect.left() + VAL_X, y + ROW_H / 2.0),
+                            egui::Align2::LEFT_CENTER,
+                            &display,
+                            med.clone(),
+                            text_color,
+                        );
+                        if focused {
+                            painter.text(
+                                egui::pos2(rect.right() - 14.0, y + ROW_H / 2.0),
+                                egui::Align2::RIGHT_CENTER,
+                                "(config)",
+                                small.clone(),
+                                egui::Color32::from_gray(100),
+                            );
+                        }
+                    } else if src_idx == SRC_PSK31_CUSTOM_MSG {
+                        // Custom PSK31 message: editable text field.
+                        let max_chars = 36usize;
                         let (raw_text, editing) = if let Some(pending) = &self.pending_psk31_msg {
                             (format!("{}\u{258b}", pending), true) // ▋ block cursor
                         } else {
@@ -964,7 +1051,7 @@ impl SettingsState {
                             val_color
                         };
                         painter.text(
-                            egui::pos2(rect.left() + INDENT + 90.0, y + ROW_H / 2.0),
+                            egui::pos2(rect.left() + VAL_X, y + ROW_H / 2.0),
                             egui::Align2::LEFT_CENTER,
                             &display,
                             med.clone(),
@@ -989,7 +1076,7 @@ impl SettingsState {
                         let display = if f.value.is_empty() {
                             builtin_placeholder.to_owned()
                         } else {
-                            let max_chars = 28usize;
+                            let max_chars = 36usize;
                             if f.value.len() > max_chars {
                                 format!("…{}", &f.value[f.value.len() - max_chars..])
                             } else {
@@ -1010,7 +1097,7 @@ impl SettingsState {
                             if focused { egui::Color32::WHITE } else { val_color }
                         };
                         painter.text(
-                            egui::pos2(rect.left() + INDENT + 90.0, y + ROW_H / 2.0),
+                            egui::pos2(rect.left() + VAL_X, y + ROW_H / 2.0),
                             egui::Align2::LEFT_CENTER,
                             full,
                             med.clone(),
@@ -1055,7 +1142,7 @@ impl SettingsState {
             && self.focused_row
                 .map(|r| {
                     let vis = self.visible_source_rows();
-                    vis.get(r).copied() == Some(SRC_PSK31_MSG)
+                    vis.get(r).copied() == Some(SRC_PSK31_CUSTOM_MSG)
                 })
                 .unwrap_or(false);
 
