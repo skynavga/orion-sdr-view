@@ -1676,7 +1676,7 @@ dependencies = [
 
 [[package]]
 name = "orion-sdr-view"
-version = "0.0.4"
+version = "0.0.5"
 dependencies = [
  "clap",
  "eframe",

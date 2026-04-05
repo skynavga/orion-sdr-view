@@ -4,6 +4,51 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.5] - 2026-04-05
+
+### Added
+
+- Decode bar (Phases 1-6): optional bottom bar cycled by `D` key
+  (off -> info (Di) -> text (Dt) -> off)
+- Di mode: live signal info (modulation, carrier, BW, EMA-smoothed SNR)
+  with 1 Hz updates for all sources (Test Tone, AM DSB, PSK31)
+- Dt mode: smooth pixel-scrolling text ticker with pending queue model;
+  decoded PSK31 text enters one character at a time from the right;
+  SPACE injection during signal gaps maintains visual continuity
+- BPSK31 streaming decode: persistent `Psk31Stream` with incremental
+  demod -> decider -> varicode pipeline; characters emerge ~0.3s after
+  symbol boundaries; zero errors at high SNR across 5+ loops
+- QPSK31 streaming decode: `Qpsk31Demod` (differential) ->
+  `StreamingViterbi` (fixed-lag, traceback depth=32) -> varicode;
+  characters emerge with ~1s Viterbi latency; zero errors at high SNR
+- PSK31 message modes: Canned (read-only, from config YAML) and Custom
+  (editable via settings); `N` key cycles between them
+- Loop timer in decode bar: `sig/gap` phase timing and loop count
+- Wall-clock dt via `std::time::Instant` for accurate timer display
+- `reset_playback()` helper consolidating source restart, timer reset,
+  and decode flush for all user events
+- 14 regression tests including 5-loop streaming decode for both BPSK31
+  and QPSK31, short message parameterized tests, and full printable
+  ASCII roundtrip tests
+
+### Changed
+
+- Bumped `orion-sdr` dependency 0.0.26 -> 0.0.27 (crates.io)
+- Settings popover: Source tab on left (default), Display on right;
+  unified value column alignment (VAL_X); widened to 560px; Noise amp
+  always last row; single Escape dismisses popup; all rows navigable
+- PSK31 defaults: repeat=3, gap=15s
+- `N` key now cycles PSK31 message mode (was AM DSB audio only)
+- `R` key resets source, loop timer, and decode state (was view reset only)
+- Config: added `custom_message` field for PSK31
+
+### Fixed
+
+- Di info persisting during gap (now clears to "waiting for signal")
+- Decode thread Gap clobbering Info/Text in drain loop
+- Onset alignment for cross-loop block boundary misalignment
+- Settings: Audio source value color now matches other fields
+
 ## [0.0.4] - 2026-03-27
 
 ### Added
