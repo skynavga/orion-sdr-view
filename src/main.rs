@@ -1,4 +1,5 @@
 mod config;
+mod decode;
 mod freqview;
 mod persistence;
 mod settings;
@@ -7,8 +8,12 @@ mod source;
 mod spectrum;
 mod waterfall;
 
+use std::sync::{Arc, Mutex};
+use std::sync::mpsc;
+
 use clap::Parser;
 use config::ViewConfig;
+use decode::{DecodeConfig, DecodeMode, DecodeResult, DecodeTicker, DecodeWorker, SIGNAL_THRESHOLD};
 use eframe::egui;
 use freqview::{FreqMarker, FreqView};
 use persistence::PersistenceRenderer;
@@ -36,6 +41,68 @@ const FFT_SIZE: usize = 1024;
 const SAMPLE_RATE: f32 = 48_000.0;
 // Number of new samples fed per frame, targeting ~60 fps.
 const SAMPLES_PER_FRAME: usize = (SAMPLE_RATE / 60.0) as usize;
+// Fixed pixel height of the decode bar (does not participate in pane proportions).
+const DECODE_BAR_H: f32 = 28.0;
+
+// ── Loop timer ────────────────────────────────────────────────────────────────
+
+/// Tracks signal/gap phase timing and loop iteration count for the decode bar.
+struct LoopTimer {
+    in_signal:  bool,
+    phase_secs: f32,
+    loop_count: u32,
+}
+
+impl LoopTimer {
+    fn new() -> Self { Self { in_signal: false, phase_secs: 0.0, loop_count: 0 } }
+
+    fn reset(&mut self) { self.in_signal = false; self.phase_secs = 0.0; self.loop_count = 0; }
+
+    /// Call once per frame with the measured block RMS and the frame duration.
+    fn tick(&mut self, rms: f32, dt: f32) {
+        let active = rms >= SIGNAL_THRESHOLD;
+        if active != self.in_signal {
+            // Transition: gap→signal increments loop count.
+            if active { self.loop_count = (self.loop_count + 1) % 1000; }
+            self.in_signal  = active;
+            self.phase_secs = 0.0;
+        } else {
+            self.phase_secs += dt;
+        }
+    }
+
+    /// Formatted string: "sig  12.34s loop 007" or "gap   2.00s loop 007".
+    fn label(&self) -> String {
+        let kind = if self.in_signal { "sig" } else { "gap" };
+        format!("{kind} {:6.2}s loop {:03}", self.phase_secs, self.loop_count)
+    }
+}
+
+// ── Decode bar mode ───────────────────────────────────────────────────────────
+
+/// Three-state decode bar: off → info-only → text-only → off (cycles with D).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DecodeBarMode {
+    /// Bar hidden.
+    Off,
+    /// Bar visible; shows only signal info (modulation, freq, BW, SNR).
+    Info,
+    /// Bar visible; shows only decoded text ticker.
+    Text,
+}
+
+impl DecodeBarMode {
+    /// Cycle to the next mode.  `has_text` gates whether Text mode is reachable:
+    /// non-text sources (Test Tone, AM DSB) skip straight from Info back to Off.
+    fn next(self, has_text: bool) -> Self {
+        match self {
+            Self::Off  => Self::Info,
+            Self::Info => if has_text { Self::Text } else { Self::Off },
+            Self::Text => Self::Off,
+        }
+    }
+    fn is_visible(self) -> bool { self != Self::Off }
+}
 
 // ── Source mode ───────────────────────────────────────────────────────────────
 
@@ -113,6 +180,20 @@ struct ViewApp {
 
     // When true, source freq/carrier tracks center_hz on every display change.
     source_locked: bool,
+
+    // Decode bar (pane 3): cycled by D key (Off / Info-only / Text-only).
+    decode_bar: DecodeBarMode,
+    loop_timer: LoopTimer,
+
+    // Decode thread channels and shared config.
+    decode_config: Arc<Mutex<DecodeConfig>>,
+    decode_tx:     mpsc::SyncSender<Vec<f32>>,
+    decode_rx:     mpsc::Receiver<DecodeResult>,
+    decode_ticker: DecodeTicker,
+    /// True if the previous frame's sample block was above SIGNAL_THRESHOLD.
+    last_block_was_signal: bool,
+    /// Wall-clock time of the previous frame, for real-time dt calculation.
+    last_frame_time: std::time::Instant,
 }
 
 impl ViewApp {
@@ -138,7 +219,18 @@ impl ViewApp {
         let source: Box<dyn SignalSource> =
             Box::new(TestToneSource::new(TestSignalGen::new(cfg.freq_hz(), SAMPLE_RATE)));
 
-        Self {
+        // Decode thread setup.
+        let decode_config = Arc::new(Mutex::new(DecodeConfig::new(SAMPLE_RATE)));
+        // Capacity 256: at 60 fps each block is ~16 ms; 256 slots ≈ 4 s of buffer,
+        // enough to absorb a slow psk31_sync pass without dropping gap blocks.
+        let (decode_tx, sample_rx) = mpsc::sync_channel::<Vec<f32>>(256);
+        let (result_tx, decode_rx) = mpsc::sync_channel::<DecodeResult>(16);
+        {
+            let worker_cfg = Arc::clone(&decode_config);
+            std::thread::spawn(move || DecodeWorker::new(worker_cfg, sample_rx, result_tx).run());
+        }
+
+        let mut app = Self {
             pane_visible: [true; 3],
             pane_frac: [1.0 / 3.0; 3],
             show_help: false,
@@ -171,7 +263,19 @@ impl ViewApp {
             settings: SettingsState::from_config(&cfg),
 
             source_locked: false,
-        }
+
+            decode_bar: DecodeBarMode::Off,
+            loop_timer: LoopTimer::new(),
+
+            decode_config,
+            decode_tx,
+            decode_rx,
+            decode_ticker: DecodeTicker::new(),
+            last_block_was_signal: false,
+            last_frame_time: std::time::Instant::now(),
+        };
+        app.sync_decode_config();
+        app
     }
 
     /// Build a fresh AmDsbSource from current settings values.
@@ -190,6 +294,7 @@ impl ViewApp {
             self.settings.am_mod_index(),
             self.settings.am_loop_gap_secs(),
             self.settings.am_noise_amp(),
+            self.settings.am_msg_repeat(),
             SAMPLE_RATE,
         )
     }
@@ -218,8 +323,21 @@ impl ViewApp {
             self.settings.psk31_loop_gap_secs(),
             self.settings.psk31_noise_amp(),
             mode,
+            self.settings.psk31_message().to_owned(),
+            self.settings.psk31_msg_repeat(),
             SAMPLE_RATE,
         )
+    }
+
+    /// Full reset: restart source, reset timers, flush decode pipeline.
+    /// Call on R key, mode/message/audio cycle — anything that changes the signal.
+    fn reset_playback(&mut self) {
+        self.source.restart();
+        self.loop_timer.reset();
+        self.decode_ticker.reset();
+        self.last_block_was_signal = false;
+        while self.decode_rx.try_recv().is_ok() {}
+        let _ = self.decode_tx.try_send(Vec::new());
     }
 
     /// Switch the active source to `mode`, constructing a new source box.
@@ -237,6 +355,12 @@ impl ViewApp {
             SourceMode::Psk31  => Box::new(self.make_psk31_source()),
         };
         self.settings.set_source_mode(mode as usize);
+        self.sync_decode_config();
+        self.reset_playback();
+        // Text mode is only valid for PSK31; clamp if we switched away.
+        if mode != SourceMode::Psk31 && self.decode_bar == DecodeBarMode::Text {
+            self.decode_bar = DecodeBarMode::Info;
+        }
     }
 
     fn handle_keys(&mut self, ctx: &egui::Context) {
@@ -255,6 +379,9 @@ impl ViewApp {
             }
             if result.wav_load_requested {
                 self.try_load_wav();
+            }
+            if result.psk31_msg_accepted {
+                self.apply_psk31_message();
             }
             self.sync_settings();
             return;
@@ -299,6 +426,11 @@ impl ViewApp {
                         tts.signal_gen.start_cycling();
                     }
                 }
+                self.reset_playback();
+            }
+            if i.key_pressed(egui::Key::D) {
+                let has_text = self.source_mode == SourceMode::Psk31;
+                self.decode_bar = self.decode_bar.next(has_text);
             }
             if i.key_pressed(egui::Key::E) { self.envelope_visible ^= true; }
             if i.key_pressed(egui::Key::L) { toggle_lock = true; }
@@ -337,6 +469,9 @@ impl ViewApp {
                 // so each press moves exactly one bin.
                 if i.key_pressed(egui::Key::ArrowLeft)  { marker_delta -= bin_hz; }
                 if i.key_pressed(egui::Key::ArrowRight) { marker_delta += bin_hz; }
+            }
+            if i.key_pressed(egui::Key::R) && !self.settings.visible {
+                self.reset_playback();
             }
             if i.key_pressed(egui::Key::Escape) {
                 self.show_help = false;
@@ -490,14 +625,22 @@ impl ViewApp {
                 SourceMode::Psk31 => {
                     self.settings.cycle_psk31_mode();
                     self.sync_settings();
+                    self.reset_playback();
                 }
                 _ => {}
             }
         }
         if cycle_audio {
-            if self.source_mode == SourceMode::AmDsb {
-                self.settings.cycle_am_audio();
-                self.reload_builtin_audio();
+            match self.source_mode {
+                SourceMode::AmDsb => {
+                    self.settings.cycle_am_audio();
+                    self.reload_builtin_audio();
+                }
+                SourceMode::Psk31 => {
+                    self.settings.cycle_psk31_msg_mode();
+                    self.apply_psk31_message();
+                }
+                _ => {}
             }
         }
         if quit {
@@ -515,11 +658,15 @@ impl ViewApp {
         if self.settings.am_audio_is_custom() {
             return;
         }
-        let builtin = BuiltinAudio::ALL[self.settings.am_audio_idx()];
+        let audio_idx = self.settings.am_audio_idx();
+        self.settings.reset_am_repeat_for_audio(audio_idx);
+        let builtin = BuiltinAudio::ALL[audio_idx.min(BuiltinAudio::ALL.len() - 1)];
         let (audio, rate) = load_builtin(builtin);
         if let Some(am) = self.source.as_any_mut().downcast_mut::<AmDsbSource>() {
             am.set_audio(audio, rate);
+            am.msg_repeat = self.settings.am_msg_repeat();
         }
+        self.reset_playback();
     }
 
     /// Attempt to load the WAV path from settings into the AM DSB source.
@@ -537,6 +684,7 @@ impl ViewApp {
                     }
                 }
                 self.settings.set_wav_status(true);
+                self.reset_playback();
             }
             Err(_) => {
                 self.settings.set_wav_status(false);
@@ -580,6 +728,7 @@ impl ViewApp {
                 am.update_loop_gap();
             }
             am.noise_amp = self.settings.am_noise_amp();
+            am.msg_repeat = self.settings.am_msg_repeat().max(1);
         }
 
         if let Some(psk31) = self.source.as_any_mut().downcast_mut::<Psk31Source>() {
@@ -587,14 +736,51 @@ impl ViewApp {
                 "QPSK31" => Psk31Mode::Qpsk31,
                 _        => Psk31Mode::Bpsk31,
             };
+            let new_repeat      = self.settings.psk31_msg_repeat();
             let carrier_changed = (psk31.carrier_hz - self.settings.psk31_carrier_hz()).abs() > 0.01;
             let mode_changed    = psk31.mode != new_mode;
+            let repeat_changed  = psk31.msg_repeat != new_repeat;
             psk31.carrier_hz    = self.settings.psk31_carrier_hz();
             psk31.noise_amp     = self.settings.psk31_noise_amp();
             psk31.loop_gap_secs = self.settings.psk31_loop_gap_secs();
             psk31.mode          = new_mode;
-            if carrier_changed || mode_changed { psk31.render(); }
+            psk31.msg_repeat    = new_repeat.max(1);
+            // message is NOT synced here — it is applied only when the user
+            // explicitly accepts the text edit via Enter (see apply_psk31_message).
+            if carrier_changed || mode_changed || repeat_changed { psk31.render(); }
             psk31.update_loop_gap();
+        }
+        self.sync_decode_config();
+    }
+
+    /// Apply the committed PSK31 message and repeat count to the live source and
+    /// re-render.  Called only when the user explicitly accepts the message edit.
+    fn apply_psk31_message(&mut self) {
+        if let Some(psk31) = self.source.as_any_mut().downcast_mut::<Psk31Source>() {
+            psk31.message = self.settings.psk31_message().to_owned();
+            psk31.render();
+        }
+        self.reset_playback();
+    }
+
+    /// Update the shared DecodeConfig to match the current source mode and carrier.
+    fn sync_decode_config(&mut self) {
+        let mode = match self.source_mode {
+            SourceMode::Psk31 => match self.settings.psk31_mode_str() {
+                "QPSK31" => DecodeMode::Qpsk31,
+                _        => DecodeMode::Bpsk31,
+            },
+            SourceMode::AmDsb    => DecodeMode::AmDsb,
+            SourceMode::TestTone => DecodeMode::TestTone,
+        };
+        let carrier_hz = match self.source_mode {
+            SourceMode::Psk31    => self.settings.psk31_carrier_hz(),
+            SourceMode::AmDsb    => self.settings.am_carrier_hz(),
+            SourceMode::TestTone => self.settings.freq_hz(),
+        };
+        if let Ok(mut cfg) = self.decode_config.lock() {
+            cfg.mode       = mode;
+            cfg.carrier_hz = carrier_hz;
         }
     }
 
@@ -644,8 +830,10 @@ impl ViewApp {
             let cycling = self.source_mode == SourceMode::TestTone && self.signal_gen.cycling;
             let modes: String = {
                 let mut flags = Vec::new();
-                if cycling                 { flags.push("C"); }
-                if self.envelope_visible   { flags.push("E"); }
+                if cycling                            { flags.push("C"); }
+                if self.decode_bar == DecodeBarMode::Info  { flags.push("Di"); }
+                if self.decode_bar == DecodeBarMode::Text  { flags.push("Dt"); }
+                if self.envelope_visible              { flags.push("E"); }
                 if self.source_locked      { flags.push("L"); }
                 if self.peak_hold_visible  { flags.push("P"); }
                 if flags.is_empty() { String::new() }
@@ -657,10 +845,17 @@ impl ViewApp {
                     "Custom" => "  aud c".to_owned(),
                     _        => "  aud m".to_owned(),
                 },
-                SourceMode::Psk31 => match self.settings.psk31_mode_str() {
-                    "QPSK31" => "  mode q".to_owned(),
-                    _        => "  mode b".to_owned(),
-                },
+                SourceMode::Psk31 => {
+                    let mode_ch = match self.settings.psk31_mode_str() {
+                        "QPSK31" => "q",
+                        _        => "b",
+                    };
+                    let msg_ch = match self.settings.psk31_msg_mode_str() {
+                        "Custom" => "c",
+                        _        => "n",
+                    };
+                    format!("  mode {mode_ch}  msg {msg_ch}")
+                }
                 _ => String::new(),
             };
             let status = format!(
@@ -705,43 +900,147 @@ impl ViewApp {
 
     fn draw_panes(&self, ui: &mut egui::Ui) {
         let visible_count = self.pane_visible.iter().filter(|&&v| v).count();
-        if visible_count == 0 {
-            return;
-        }
 
         let avail = ui.available_rect_before_wrap();
-        let total_h = avail.height();
+        let pane_total_h = avail.height();
 
-        let total_frac: f32 = self
-            .pane_visible
-            .iter()
-            .zip(self.pane_frac.iter())
-            .map(|(&vis, &f)| if vis { f } else { 0.0 })
-            .sum();
+        if visible_count > 0 {
+            let total_frac: f32 = self
+                .pane_visible
+                .iter()
+                .zip(self.pane_frac.iter())
+                .map(|(&vis, &f)| if vis { f } else { 0.0 })
+                .sum();
 
-        let mut y = avail.top();
-        for i in 0..3 {
-            if !self.pane_visible[i] {
-                continue;
-            }
-            let h = (self.pane_frac[i] / total_frac) * total_h;
-            let rect = egui::Rect::from_min_size(
-                egui::pos2(avail.left(), y),
-                egui::vec2(avail.width(), h),
-            );
-            let painter = ui.painter_at(rect);
-            painter.rect_filled(rect, 0.0, PANE_BG[i]);
-            match i {
-                0 => self.draw_spectrum(&painter, rect),
-                1 => {
-                    self.draw_persistence_pane(&painter, rect);
+            let mut y = avail.top();
+            for i in 0..3 {
+                if !self.pane_visible[i] {
+                    continue;
                 }
-                _ => {
-                    self.draw_waterfall_pane(&painter, rect);
+                let h = (self.pane_frac[i] / total_frac) * pane_total_h;
+                let rect = egui::Rect::from_min_size(
+                    egui::pos2(avail.left(), y),
+                    egui::vec2(avail.width(), h),
+                );
+                let painter = ui.painter_at(rect);
+                painter.rect_filled(rect, 0.0, PANE_BG[i]);
+                match i {
+                    0 => self.draw_spectrum(&painter, rect),
+                    1 => self.draw_persistence_pane(&painter, rect),
+                    _ => self.draw_waterfall_pane(&painter, rect),
                 }
+                y += h;
             }
-            y += h;
         }
+
+    }
+
+    fn draw_decode_bar(&self, painter: egui::Painter, rect: egui::Rect) {
+        const BAR_BG:    egui::Color32 = egui::Color32::from_rgb(15, 15, 30);
+        const LABEL_COL: egui::Color32 = egui::Color32::from_rgb(80, 100, 140);
+        const TEXT_COL:  egui::Color32 = egui::Color32::from_rgb(200, 200, 200);
+        const DIM_COL:   egui::Color32 = egui::Color32::from_rgb(100, 100, 100);
+
+        painter.rect_filled(rect, 0.0, BAR_BG);
+
+        let font   = egui::FontId::new(12.0, egui::FontFamily::Monospace);
+        let text_y = rect.center().y;
+
+        // Dim mode label on the left: "DEC·i" = info, "DEC·t" = text.
+        let dec_label = match self.decode_bar {
+            DecodeBarMode::Info => "DEC\u{b7}i",
+            DecodeBarMode::Text => "DEC\u{b7}t",
+            DecodeBarMode::Off  => "DEC",
+        };
+        painter.text(
+            egui::pos2(rect.left() + 6.0, text_y),
+            egui::Align2::LEFT_CENTER,
+            dec_label,
+            font.clone(),
+            LABEL_COL,
+        );
+
+        let label_w = painter.layout_no_wrap(dec_label.to_owned(), font.clone(), LABEL_COL).size().x;
+        let content_x = rect.left() + 6.0 + label_w + 12.0; // 12 px right margin
+
+        // Measure loop timer label so we know where the scrolling text must stop.
+        let timer_label = self.loop_timer.label();
+        let timer_w = painter.layout_no_wrap(timer_label.clone(), font.clone(), TEXT_COL).size().x;
+        let em_w    = painter.layout_no_wrap("M".to_owned(),       font.clone(), TEXT_COL).size().x;
+        // Right-aligned loop timer: "sig  12.34s loop 007" / "gap   2.00s loop 007"
+        let timer_x = rect.right() - 6.0;
+        let timer_left = timer_x - timer_w;
+        // Right boundary for the scrolling text region: one 'M'-width gap before the timer.
+        let scroll_right = timer_left - em_w;
+
+        // Build the static (non-scrolling) text for Di mode and fallback states.
+        let info_str = |modulation: &str, center_hz: f32, bw_hz: f32, snr_db: f32| -> String {
+            let bw_str = if bw_hz.is_nan() || bw_hz <= 0.0 {
+                "\u{2014}".to_owned()
+            } else if bw_hz >= 1000.0 {
+                format!("{:.1}kHz", bw_hz / 1000.0)
+            } else {
+                format!("{:.0}Hz", bw_hz)
+            };
+            format!("{modulation}  ctr {:.1}kHz  bw {bw_str}  snr {snr_db:.1}dB",
+                center_hz / 1000.0)
+        };
+
+        // Determine whether Dt mode has content to render.
+        let has_dt_text = self.decode_bar == DecodeBarMode::Text
+            && !self.decode_ticker.visible.is_empty();
+
+        if has_dt_text {
+            // ── Smooth-scrolling ticker (Dt mode) ─────────────────────────
+            // Text is right-aligned at scroll_right.  sub_px shifts the text
+            // smoothly leftward as the next character slides in; when sub_px
+            // crosses a character width, a new character appears at the right.
+            let sub_px = self.decode_ticker.sub_px;
+            let text_x = scroll_right + (em_w - sub_px);
+
+            let clip_rect = egui::Rect::from_min_max(
+                egui::pos2(content_x, rect.min.y),
+                egui::pos2(scroll_right, rect.max.y),
+            );
+            let clipped = painter.with_clip_rect(clip_rect);
+            clipped.text(
+                egui::pos2(text_x, text_y),
+                egui::Align2::RIGHT_CENTER,
+                &self.decode_ticker.visible,
+                font.clone(),
+                TEXT_COL,
+            );
+        } else {
+            // ── Static left-aligned text (Di mode or waiting) ────────────────
+            let (text, color) = if self.decode_bar == DecodeBarMode::Info {
+                // Di mode: show last_info if available.
+                if let Some(DecodeResult::Info { modulation, center_hz, bw_hz, snr_db })
+                    = &self.decode_ticker.last_info
+                {
+                    (info_str(modulation, *center_hz, *bw_hz, *snr_db), TEXT_COL)
+                } else {
+                    ("waiting for signal\u{2026}".to_owned(), DIM_COL)
+                }
+            } else {
+                // Dt mode with no visible text yet: just show waiting.
+                ("waiting for signal\u{2026}".to_owned(), DIM_COL)
+            };
+            painter.text(
+                egui::pos2(content_x, text_y),
+                egui::Align2::LEFT_CENTER,
+                text,
+                font.clone(),
+                color,
+            );
+        }
+
+        painter.text(
+            egui::pos2(timer_x, text_y),
+            egui::Align2::RIGHT_CENTER,
+            timer_label,
+            font,
+            TEXT_COL,
+        );
     }
 
     fn draw_spectrum(&self, painter: &egui::Painter, rect: egui::Rect) {
@@ -1039,9 +1338,10 @@ impl ViewApp {
             ("Keyboard shortcuts", 0),
             ("Panes & Sources", 1),
             ("1 / 2 / 3\ttoggle Spectrum / Persistence / Waterfall", 2),
-            ("I / M / N\tselect next source / mode / audio input", 2),
+            ("I / M / N\tselect next source / mode / audio or message", 2),
             ("C / E / P\tcycle amplitude  |  envelope  |  peak hold", 2),
             ("L\tlock source freq/carrier to display center", 2),
+            ("D\tcycle decode bar: off → info → text → off", 2),
             ("Frequency Pan / Zoom", 1),
             ("← / →\tpan left / right", 2),
             ("Shift+← / →\tfine pan, snap 100 Hz", 2),
@@ -1094,12 +1394,49 @@ impl ViewApp {
 
 impl eframe::App for ViewApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Wall-clock delta since last frame.
+        let now = std::time::Instant::now();
+        let dt = now.duration_since(self.last_frame_time).as_secs_f32();
+        self.last_frame_time = now;
+
         // Feed new samples and process spectrum before drawing.
         let samples = self.source.next_samples(SAMPLES_PER_FRAME);
-        for s in samples {
-            self.ring_buf.push(s);
+        // Non-blocking send to decode thread; drop if channel is full.
+        let _ = self.decode_tx.try_send(samples.clone());
+        for s in &samples {
+            self.ring_buf.push(*s);
         }
         self.spectrum.process(&self.ring_buf);
+
+        // Main-thread gap detection: compute block RMS and signal gap
+        // immediately, bypassing any decode-thread latency.  This ensures
+        // the ticker clears to "waiting for signal" synchronously with the
+        // audio loop, even if the decode thread is mid-window.
+        let block_rms = {
+            let sq_sum: f32 = samples.iter().map(|v| v * v).sum();
+            (sq_sum / samples.len() as f32).sqrt()
+        };
+        self.loop_timer.tick(block_rms, dt);
+
+        let block_is_signal = block_rms >= SIGNAL_THRESHOLD;
+        self.last_block_was_signal = block_is_signal;
+
+        // Drain decode results first so Info/Text from the decode thread are
+        // processed before any gap state change.
+        while let Ok(result) = self.decode_rx.try_recv() {
+            self.decode_ticker.push_result(result);
+        }
+
+        if !block_is_signal && self.decode_bar.is_visible() {
+            // Push Gap every silent frame so that late-arriving Info/Text from
+            // the decode thread's batch decode cannot pin the Di bar to stale
+            // data.  The decode thread no longer sends Gap, so this is the sole
+            // source; it keeps last_result=NoSignal throughout the gap.
+            // Gap also sets in_gap=true in the ticker, which drives SPACE
+            // injection during tick() at the nominal character scroll rate.
+            self.decode_ticker.push_result(DecodeResult::Gap);
+        }
+        self.decode_ticker.tick(dt);
 
         // Update peak hold (decay slowly: 0.2 dB/frame, then latch new peaks).
         for (ph, &db) in self.peak_hold.iter_mut().zip(self.spectrum.fft_out_db.iter()) {
@@ -1114,6 +1451,14 @@ impl eframe::App for ViewApp {
 
         self.handle_keys(ctx);
         self.draw_hud(ctx);
+        if self.decode_bar.is_visible() {
+            egui::TopBottomPanel::bottom("decode_bar")
+                .exact_height(DECODE_BAR_H)
+                .show(ctx, |ui| {
+                    let rect = ui.available_rect_before_wrap();
+                    self.draw_decode_bar(ui.painter_at(rect), rect);
+                });
+        }
         egui::CentralPanel::default().show(ctx, |ui| {
             self.draw_panes(ui);
             if self.show_help {
@@ -1134,7 +1479,7 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("orion-sdr-view")
-            .with_inner_size([1200.0, 800.0]),
+            .with_inner_size([1200.0, 800.0 + DECODE_BAR_H]),
         ..Default::default()
     };
     eframe::run_native(
