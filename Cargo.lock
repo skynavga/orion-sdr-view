@@ -1664,7 +1664,9 @@ dependencies = [
 
 [[package]]
 name = "orion-sdr"
-version = "0.0.26"
+version = "0.0.27"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bd2c29613f8a5b3eeb4ef8f04cef873244769f552ec59e157579efd6f29a2f9c"
 dependencies = [
  "num-complex",
  "realfft",
