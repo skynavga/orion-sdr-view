@@ -3,9 +3,7 @@
 use std::io::Write;
 use tempfile::NamedTempFile;
 
-// Pull in the config module via the binary's source path trick.
-// We compile the module directly here since there's no lib target.
-include!("../src/config.rs");
+use orion_sdr_view::config::{ViewConfig, Defaults};
 
 fn defaults_all_match(cfg: &ViewConfig) {
     assert_eq!(cfg.db_min(),        Defaults::DB_MIN,        "db_min");

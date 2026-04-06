@@ -645,6 +645,7 @@ pub fn best_sync(results: &[Psk31SyncResult], carrier_hz: f32) -> Option<(f32, u
         .map(|r| (r.carrier_hz, r.time_sym))
 }
 
+
 /// Compute a power spectrum (dB, same scaling as the display) from real samples,
 /// using an FFT whose size is the next power of two ≥ `samples.len()` clamped to
 /// a maximum of 4096 for speed.  Returns `(power_db_bins, bin_hz)`.

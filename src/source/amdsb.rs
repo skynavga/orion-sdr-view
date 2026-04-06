@@ -2,56 +2,9 @@ use std::io::Cursor;
 use std::path::Path;
 
 use orion_sdr::core::AudioToIqChain;
-use orion_sdr::modulate::{AmDsbMod, Bpsk31Mod, Qpsk31Mod};
+use orion_sdr::modulate::AmDsbMod;
 
-use crate::signal::TestSignalGen;
-
-// ── SignalSource trait ────────────────────────────────────────────────────────
-
-/// Common interface for all signal sources.
-///
-/// Implementations produce real-valued (f32) samples ready to push into the
-/// existing `RingBuffer` and spectrum display pipeline.
-///
-/// `as_any_mut` enables downcasting a `Box<dyn SignalSource>` to a concrete type:
-///   ```ignore
-///   if let Some(am) = source.as_any_mut().downcast_mut::<AmDsbSource>() { ... }
-///   ```
-pub trait SignalSource {
-    fn next_samples(&mut self, n: usize) -> Vec<f32>;
-    #[allow(dead_code)]
-    fn sample_rate(&self) -> f32;
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
-    /// Reset playback to the beginning of the first loop cycle.
-    fn restart(&mut self) {}
-}
-
-// ── TestToneSource ────────────────────────────────────────────────────────────
-
-/// Adapts the existing `TestSignalGen` to the `SignalSource` trait.
-/// All cycling/settings on the inner generator remain accessible via `.gen`.
-pub struct TestToneSource {
-    pub signal_gen: TestSignalGen,
-}
-
-impl TestToneSource {
-    pub fn new(signal_gen: TestSignalGen) -> Self {
-        Self { signal_gen }
-    }
-}
-
-impl SignalSource for TestToneSource {
-    fn next_samples(&mut self, n: usize) -> Vec<f32> {
-        (0..n).map(|_| self.signal_gen.next_sample()).collect()
-    }
-    fn sample_rate(&self) -> f32 {
-        self.signal_gen.sample_rate
-    }
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
-    fn restart(&mut self) {
-        self.signal_gen.restart();
-    }
-}
+use super::SignalSource;
 
 // ── BuiltinAudio ─────────────────────────────────────────────────────────────
 
@@ -72,8 +25,8 @@ impl BuiltinAudio {
     }
 }
 
-static CQ_MORSE_WAV: &[u8] = include_bytes!("../assets/audio/cq_morse.wav");
-static CQ_VOICE_WAV: &[u8] = include_bytes!("../assets/audio/cq_voice.wav");
+static CQ_MORSE_WAV: &[u8] = include_bytes!("../../assets/audio/cq_morse.wav");
+static CQ_VOICE_WAV: &[u8] = include_bytes!("../../assets/audio/cq_voice.wav");
 
 fn decode_wav_bytes(bytes: &[u8]) -> (Vec<f32>, f32) {
     let cursor = Cursor::new(bytes);
@@ -312,163 +265,6 @@ impl SignalSource for AmDsbSource {
             }
         }
 
-        out
-    }
-
-    fn sample_rate(&self) -> f32 {
-        self.mod_rate
-    }
-}
-
-// ── Psk31Source ───────────────────────────────────────────────────────────────
-
-pub const PSK31_DEFAULT_TEXT: &str = "CQ CQ CQ DE N0GNR";
-pub const PSK31_DEFAULT_CUSTOM_TEXT: &str = "Custom message";
-pub const PSK31_DEFAULT_REPEAT: usize = 3;
-pub const PSK31_DEFAULT_LOOP_GAP_SECS: f32 = 15.0;
-
-#[derive(Clone, Copy, PartialEq)]
-pub enum Psk31Mode { Bpsk31, Qpsk31 }
-
-/// PSK31 signal source (BPSK31 or QPSK31).
-///
-/// Pre-renders a complete modulated frame (preamble + text + postamble) once
-/// at construction. The frame plays once, followed by a configurable silence
-/// gap, then repeats indefinitely without reallocation.
-pub struct Psk31Source {
-    pub carrier_hz:    f32,
-    pub loop_gap_secs: f32,
-    pub noise_amp:     f32,
-    pub mode:          Psk31Mode,
-    /// Text to transmit (ASCII). Repeated `msg_repeat` times per loop.
-    pub message:       String,
-    /// Number of times to repeat `message` before the silence gap.
-    pub msg_repeat:    usize,
-    mod_rate:          f32,
-    samples:           Vec<f32>,
-    pos:               usize,
-    gap_remaining:     usize,
-    loop_gap_samples:  usize,
-    rng:               u64,
-}
-
-impl Psk31Source {
-    pub fn new(
-        carrier_hz: f32,
-        loop_gap_secs: f32,
-        noise_amp: f32,
-        mode: Psk31Mode,
-        message: String,
-        msg_repeat: usize,
-        mod_rate: f32,
-    ) -> Self {
-        let loop_gap_samples = (loop_gap_secs * mod_rate) as usize;
-        let mut src = Self {
-            carrier_hz,
-            loop_gap_secs,
-            noise_amp,
-            mode,
-            message,
-            msg_repeat: msg_repeat.max(1),
-            mod_rate,
-            samples: Vec::new(),
-            pos: 0,
-            gap_remaining: 0,
-            loop_gap_samples,
-            rng: 0x853c_49e6_748f_ea9b,
-        };
-        src.render();
-        src
-    }
-
-    /// (Re-)render the modulated frame. Called at construction and whenever
-    /// carrier, mode, message, or repeat count changes.
-    ///
-    /// The text fed to the modulator is `message` repeated `msg_repeat` times,
-    /// separated by a single space, all within one preamble/postamble envelope.
-    pub fn render(&mut self) {
-        // Build the repeated text: "msg msg msg" (space-separated).
-        let repeated: Vec<u8> = std::iter::repeat(self.message.as_bytes())
-            .take(self.msg_repeat)
-            .collect::<Vec<_>>()
-            .join(b" ".as_ref());
-
-        self.samples = match self.mode {
-            Psk31Mode::Bpsk31 => {
-                let iq = Bpsk31Mod::new(self.mod_rate, self.carrier_hz, 1.0)
-                    .modulate_text(&repeated, 64, 32);
-                iq.into_iter().map(|c| c.re).collect()
-            }
-            Psk31Mode::Qpsk31 => {
-                let iq = Qpsk31Mod::new(self.mod_rate, self.carrier_hz, 1.0)
-                    .modulate_text(&repeated, 64, 32);
-                iq.into_iter().map(|c| c.re).collect()
-            }
-        };
-        self.pos = 0;
-        self.gap_remaining = 0;
-    }
-
-    /// Recompute the loop gap sample count after `loop_gap_secs` changes.
-    pub fn update_loop_gap(&mut self) {
-        self.loop_gap_samples = (self.loop_gap_secs * self.mod_rate) as usize;
-    }
-
-    fn xorshift(&mut self) -> f32 {
-        self.rng ^= self.rng << 13;
-        self.rng ^= self.rng >> 7;
-        self.rng ^= self.rng << 17;
-        (self.rng >> 11) as f32 * (1.0 / (1u64 << 53) as f32) * 2.0 - 1.0
-    }
-}
-
-impl SignalSource for Psk31Source {
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
-    fn restart(&mut self) {
-        self.pos = 0;
-        self.gap_remaining = 0;
-    }
-
-    fn next_samples(&mut self, n: usize) -> Vec<f32> {
-        let mut out = Vec::with_capacity(n);
-        let mut i = 0;
-        while i < n {
-            if self.gap_remaining > 0 {
-                let gap_now = self.gap_remaining.min(n - i);
-                for _ in 0..gap_now {
-                    let noise = if self.noise_amp > 0.0 {
-                        self.noise_amp * self.xorshift()
-                    } else {
-                        0.0
-                    };
-                    out.push(noise);
-                }
-                self.gap_remaining -= gap_now;
-                i += gap_now;
-                if self.gap_remaining == 0 {
-                    self.pos = 0;
-                }
-            } else if self.pos < self.samples.len() {
-                let available = (self.samples.len() - self.pos).min(n - i);
-                for k in 0..available {
-                    let noise = if self.noise_amp > 0.0 {
-                        self.noise_amp * self.xorshift()
-                    } else {
-                        0.0
-                    };
-                    out.push(self.samples[self.pos + k] + noise);
-                }
-                self.pos += available;
-                i += available;
-                if self.pos >= self.samples.len() {
-                    self.gap_remaining = self.loop_gap_samples;
-                }
-            } else {
-                // samples is empty (should not happen after render())
-                out.push(0.0);
-                i += 1;
-            }
-        }
         out
     }
 

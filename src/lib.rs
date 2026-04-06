@@ -1,9 +1,4 @@
 pub mod config;
 pub mod decode;
-pub mod freqview;
-pub mod persistence;
-pub mod settings;
-pub mod signal;
 pub mod source;
-pub mod spectrum;
-pub mod waterfall;
+pub mod viewer;

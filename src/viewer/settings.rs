@@ -254,8 +254,8 @@ impl SettingsState {
                 }),
                 Row::Num(NumField {
                     label: "Loop gap",
-                    value:   crate::source::PSK31_DEFAULT_LOOP_GAP_SECS,
-                    default: crate::source::PSK31_DEFAULT_LOOP_GAP_SECS,
+                    value:   crate::source::psk31::PSK31_DEFAULT_LOOP_GAP_SECS,
+                    default: crate::source::psk31::PSK31_DEFAULT_LOOP_GAP_SECS,
                     step: 0.5, min: 0.5, max: 30.0, unit: " s",
                 }),
                 Row::Num(NumField {
@@ -269,19 +269,19 @@ impl SettingsState {
                 }),
                 Row::Text(TextField {
                     label: "Text",
-                    value: crate::source::PSK31_DEFAULT_TEXT.to_owned(),
-                    default_value: crate::source::PSK31_DEFAULT_TEXT.to_owned(),
+                    value: crate::source::psk31::PSK31_DEFAULT_TEXT.to_owned(),
+                    default_value: crate::source::psk31::PSK31_DEFAULT_TEXT.to_owned(),
                     status: None,
                 }),
                 Row::Text(TextField {
                     label: "Text",
-                    value: crate::source::PSK31_DEFAULT_CUSTOM_TEXT.to_owned(),
-                    default_value: crate::source::PSK31_DEFAULT_CUSTOM_TEXT.to_owned(),
+                    value: crate::source::psk31::PSK31_DEFAULT_CUSTOM_TEXT.to_owned(),
+                    default_value: crate::source::psk31::PSK31_DEFAULT_CUSTOM_TEXT.to_owned(),
                     status: None,
                 }),
                 Row::Num(NumField {
-                    label: "Repeat", value: crate::source::PSK31_DEFAULT_REPEAT as f32,
-                    default: crate::source::PSK31_DEFAULT_REPEAT as f32,
+                    label: "Repeat", value: crate::source::psk31::PSK31_DEFAULT_REPEAT as f32,
+                    default: crate::source::psk31::PSK31_DEFAULT_REPEAT as f32,
                     step: 1.0, min: 1.0, max: 20.0, unit: "×",
                 }),
             ],
@@ -521,7 +521,7 @@ impl SettingsState {
         if let Row::Num(f) = &self.source_rows[SRC_PSK31_CARRIER] { f.value } else { 10000.0 }
     }
     pub fn psk31_loop_gap_secs(&self) -> f32 {
-        if let Row::Num(f) = &self.source_rows[SRC_PSK31_LOOP_GAP] { f.value } else { crate::source::PSK31_DEFAULT_LOOP_GAP_SECS }
+        if let Row::Num(f) = &self.source_rows[SRC_PSK31_LOOP_GAP] { f.value } else { crate::source::psk31::PSK31_DEFAULT_LOOP_GAP_SECS }
     }
     pub fn psk31_noise_amp(&self) -> f32 {
         if let Row::Num(f) = &self.source_rows[SRC_PSK31_NOISE] { f.value } else { 0.05 }
@@ -647,9 +647,9 @@ impl SettingsState {
                                 if let Some(pending) = self.pending_psk31_msg.take() {
                                     let target = self.editing_psk31_msg_row.unwrap_or(SRC_PSK31_MSG);
                                     let default_text = if target == SRC_PSK31_CUSTOM_MSG {
-                                        crate::source::PSK31_DEFAULT_CUSTOM_TEXT
+                                        crate::source::psk31::PSK31_DEFAULT_CUSTOM_TEXT
                                     } else {
-                                        crate::source::PSK31_DEFAULT_TEXT
+                                        crate::source::psk31::PSK31_DEFAULT_TEXT
                                     };
                                     let committed = if pending.trim().is_empty() {
                                         default_text.to_owned()

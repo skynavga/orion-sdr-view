@@ -1,12 +1,7 @@
 mod config;
 mod decode;
-mod freqview;
-mod persistence;
-mod settings;
-mod signal;
 mod source;
-mod spectrum;
-mod waterfall;
+mod viewer;
 
 use std::sync::{Arc, Mutex};
 use std::sync::mpsc;
@@ -15,13 +10,16 @@ use clap::Parser;
 use config::ViewConfig;
 use decode::{DecodeConfig, DecodeMode, DecodeResult, DecodeTicker, DecodeWorker, SIGNAL_THRESHOLD};
 use eframe::egui;
-use freqview::{FreqMarker, FreqView};
-use persistence::PersistenceRenderer;
-use settings::SettingsState;
-use signal::TestSignalGen;
-use source::{AmDsbSource, BuiltinAudio, Psk31Mode, Psk31Source, SignalSource, TestToneSource, load_builtin};
-use spectrum::{RingBuffer, SpectrumProcessor};
-use waterfall::WaterfallDisplay;
+use viewer::freqview::{FreqMarker, FreqView};
+use viewer::persistence::PersistenceRenderer;
+use viewer::settings::SettingsState;
+use source::tone::TestSignalGen;
+use source::SignalSource;
+use source::tone::TestToneSource;
+use source::amdsb::{AmDsbSource, BuiltinAudio, load_builtin};
+use source::psk31::{Psk31Mode, Psk31Source};
+use viewer::spectrum::{RingBuffer, SpectrumProcessor};
+use viewer::waterfall::WaterfallDisplay;
 
 #[derive(Parser)]
 #[command(name = "orion-sdr-view", about = "SDR spectrum viewer")]
@@ -676,7 +674,7 @@ impl ViewApp {
             self.settings.set_wav_status(false);
             return;
         }
-        match source::load_wav_file(std::path::Path::new(&path_str)) {
+        match source::amdsb::load_wav_file(std::path::Path::new(&path_str)) {
             Ok((audio, rate)) => {
                 if self.source_mode == SourceMode::AmDsb {
                     if let Some(am) = self.source.as_any_mut().downcast_mut::<AmDsbSource>() {
