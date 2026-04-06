@@ -1,0 +1,120 @@
+mod view;
+mod sources;
+mod draw;
+
+pub(super) mod freqview;
+pub(super) mod persistence;
+pub(super) mod settings;
+pub(super) mod spectrum;
+pub(super) mod waterfall;
+
+pub(crate) use view::ViewApp;
+
+use eframe::egui;
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+pub(super) const PANE_BG: [egui::Color32; 3] = [
+    egui::Color32::from_rgb(10, 10, 20),
+    egui::Color32::from_rgb(20, 50, 40),
+    egui::Color32::from_rgb(40, 30, 60),
+];
+
+pub(super) const FFT_SIZE: usize = 1024;
+pub(super) const SAMPLE_RATE: f32 = 48_000.0;
+/// Number of new samples fed per frame, targeting ~60 fps.
+pub(super) const SAMPLES_PER_FRAME: usize = (SAMPLE_RATE / 60.0) as usize;
+/// Fixed pixel height of the decode bar (does not participate in pane proportions).
+pub(crate) const DECODE_BAR_H: f32 = 28.0;
+
+// ── Loop timer ────────────────────────────────────────────────────────────────
+
+use crate::decode::SIGNAL_THRESHOLD;
+
+/// Tracks signal/gap phase timing and loop iteration count for the decode bar.
+pub(super) struct LoopTimer {
+    pub(super) in_signal:  bool,
+    pub(super) phase_secs: f32,
+    pub(super) loop_count: u32,
+}
+
+impl LoopTimer {
+    pub(super) fn new() -> Self { Self { in_signal: false, phase_secs: 0.0, loop_count: 0 } }
+
+    pub(super) fn reset(&mut self) { self.in_signal = false; self.phase_secs = 0.0; self.loop_count = 0; }
+
+    /// Call once per frame with the measured block RMS and the frame duration.
+    pub(super) fn tick(&mut self, rms: f32, dt: f32) {
+        let active = rms >= SIGNAL_THRESHOLD;
+        if active != self.in_signal {
+            // Transition: gap→signal increments loop count.
+            if active { self.loop_count = (self.loop_count + 1) % 1000; }
+            self.in_signal  = active;
+            self.phase_secs = 0.0;
+        } else {
+            self.phase_secs += dt;
+        }
+    }
+
+    /// Formatted string: "sig  12.34s loop 007" or "gap   2.00s loop 007".
+    pub(super) fn label(&self) -> String {
+        let kind = if self.in_signal { "sig" } else { "gap" };
+        format!("{kind} {:6.2}s loop {:03}", self.phase_secs, self.loop_count)
+    }
+}
+
+// ── Decode bar mode ───────────────────────────────────────────────────────────
+
+/// Three-state decode bar: off → info-only → text-only → off (cycles with D).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum DecodeBarMode {
+    /// Bar hidden.
+    Off,
+    /// Bar visible; shows only signal info (modulation, freq, BW, SNR).
+    Info,
+    /// Bar visible; shows only decoded text ticker.
+    Text,
+}
+
+impl DecodeBarMode {
+    /// Cycle to the next mode.  `has_text` gates whether Text mode is reachable:
+    /// non-text sources (Test Tone, AM DSB) skip straight from Info back to Off.
+    pub(super) fn next(self, has_text: bool) -> Self {
+        match self {
+            Self::Off  => Self::Info,
+            Self::Info => if has_text { Self::Text } else { Self::Off },
+            Self::Text => Self::Off,
+        }
+    }
+    pub(super) fn is_visible(self) -> bool { self != Self::Off }
+}
+
+// ── Source mode ───────────────────────────────────────────────────────────────
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum SourceMode {
+    TestTone,
+    AmDsb,
+    Psk31,
+}
+
+impl SourceMode {
+    pub(super) const ALL: &'static [SourceMode] = &[SourceMode::TestTone, SourceMode::AmDsb, SourceMode::Psk31];
+
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            SourceMode::TestTone => "Test Tone",
+            SourceMode::AmDsb => "AM DSB",
+            SourceMode::Psk31 => "PSK31",
+        }
+    }
+
+    pub(super) fn index(self) -> usize {
+        Self::ALL.iter().position(|&m| m == self).unwrap_or(0)
+    }
+
+    pub(super) fn next(self) -> Self {
+        let idx = (self.index() + 1) % Self::ALL.len();
+        Self::ALL[idx]
+    }
+}
