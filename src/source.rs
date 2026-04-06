@@ -14,7 +14,7 @@ use crate::signal::TestSignalGen;
 /// existing `RingBuffer` and spectrum display pipeline.
 ///
 /// `as_any_mut` enables downcasting a `Box<dyn SignalSource>` to a concrete type:
-///   ```
+///   ```ignore
 ///   if let Some(am) = source.as_any_mut().downcast_mut::<AmDsbSource>() { ... }
 ///   ```
 pub trait SignalSource {

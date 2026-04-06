@@ -23,6 +23,10 @@ include = [
 name = "orion-sdr-view"
 path = "src/main.rs"
 
+[lib]
+name = "orion_sdr_view"
+path = "src/lib.rs"
+
 [dependencies]
 eframe = { version = "0.33", default-features = false, features = [
     "default_fonts",
@@ -36,11 +40,6 @@ hound = "3"
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
-
-[features]
-# Enable per-window BW/SNR trace output in the simulate_am_dsb_viewer test.
-# Usage: cargo test --release --features bw-sim -- simulate_am_dsb_viewer --nocapture
-bw-sim = []
 
 [dev-dependencies]
 tempfile = "3"

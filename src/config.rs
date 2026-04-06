@@ -69,8 +69,11 @@ impl Defaults {
     pub const PAUSE_SECS:    f32 = 7.0;
     pub const CARRIER_HZ:    f32 = 12_000.0;
     pub const MOD_INDEX:     f32 = 1.0;
-    pub const LOOP_GAP_SECS: f32 = 7.0;
-    pub const AM_NOISE_AMP:  f32 = 0.05;
+    pub const LOOP_GAP_SECS:          f32   = 7.0;
+    pub const AM_NOISE_AMP:           f32   = 0.05;
+    pub const PSK31_LOOP_GAP_SECS:    f32   = 15.0;
+    pub const PSK31_REPEAT:           usize = 3;
+    pub const PSK31_CUSTOM_TEXT:      &str  = "Custom message";
 }
 
 // ── ViewConfig: three-tier loader + accessors ─────────────────────────────────
@@ -203,7 +206,7 @@ impl ViewConfig {
         self.sources.as_ref()
             .and_then(|s| s.psk31.as_ref())
             .and_then(|p| p.loop_gap_secs)
-            .unwrap_or(crate::source::PSK31_DEFAULT_LOOP_GAP_SECS)
+            .unwrap_or(Defaults::PSK31_LOOP_GAP_SECS)
     }
     pub fn psk31_noise_amp(&self) -> f32 {
         self.sources.as_ref()
@@ -221,13 +224,13 @@ impl ViewConfig {
         self.sources.as_ref()
             .and_then(|s| s.psk31.as_ref())
             .and_then(|p| p.custom_message.as_deref())
-            .unwrap_or(crate::source::PSK31_DEFAULT_CUSTOM_TEXT)
+            .unwrap_or(Defaults::PSK31_CUSTOM_TEXT)
     }
     pub fn psk31_msg_repeat(&self) -> usize {
         self.sources.as_ref()
             .and_then(|s| s.psk31.as_ref())
             .and_then(|p| p.msg_repeat)
             .map(|v| (v as usize).max(1))
-            .unwrap_or(crate::source::PSK31_DEFAULT_REPEAT)
+            .unwrap_or(Defaults::PSK31_REPEAT)
     }
 }
