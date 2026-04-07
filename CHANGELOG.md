@@ -4,6 +4,36 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.6] - 2026-04-06
+
+### Changed
+
+- Reorganized source tree: monolithic `main.rs` (~1490 lines) split into
+  `src/app/` module with `view.rs`, `sources.rs`, and `draw.rs`; settings
+  popover split into per-source modules under `settings/`; viewer modules
+  (freqview, persistence, spectrum, waterfall) merged into `app/`
+- Added lib target for integration tests; moved decode tests to `tests/`
+- Replaced standalone `gen_audio/` mini-crate with `src/utils/audio.rs`
+  (parameterized, marked for Phase 8 migration to orion-sdr)
+- WAV and PSK31 text fields now use two-phase editing: focused state
+  allows navigation, Enter starts editing, Enter again commits
+- Custom audio starts silent ("no audio"); valid WAV path preserved
+  across Morse/Voice/Custom cycling and auto-reloaded on return
+- Failed WAV load shows red filename, keeps focus for re-edit, clears
+  audio to carrier-only, logs descriptive error to stderr
+- Global keys (Q, I, M, N) now work while settings popover is open
+
+### Fixed
+
+- Q key deadlock when settings popover was open (send_viewport_cmd
+  called inside ctx.input() closure)
+- WAV error messages: format hint only on non-OS errors
+
+### Added
+
+- Integration tests: tone generation (12 tests), audio utilities
+  (7 tests), PSK31 and AM DSB config accessors (4 tests)
+
 ## [0.0.5] - 2026-04-05
 
 ### Added
