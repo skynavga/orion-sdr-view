@@ -193,34 +193,6 @@ impl Psk31Rows {
             return result;
         }
 
-        // Check for printable text input — starts editing
-        let has_text_input = events.iter().any(|e| {
-            matches!(e, egui::Event::Text(s) if !s.is_empty())
-        });
-        if has_text_input {
-            let current = if let Row::Text(f) = &self.rows[edit_target] {
-                f.value.clone()
-            } else {
-                String::new()
-            };
-            self.editing_msg_row = Some(edit_target);
-            self.pending_msg = Some(current);
-            // Re-enter so the text goes into the pending buffer this frame.
-            for e in events {
-                if let egui::Event::Text(s) = e {
-                    if let Some(pending) = &mut self.pending_msg {
-                        for c in s.chars() {
-                            if c >= ' ' && c <= '~' {
-                                pending.push(c);
-                            }
-                        }
-                    }
-                }
-            }
-            result.consumed = true;
-            return result;
-        }
-
         // Up/Down/Escape/etc. fall through (consumed = false).
         result
     }

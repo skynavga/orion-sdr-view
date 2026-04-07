@@ -46,8 +46,6 @@ pub(super) struct TextField {
 }
 
 impl TextField {
-    pub fn push_char(&mut self, c: char) { self.value.push(c); self.status = None; }
-    pub fn pop_char(&mut self) { self.value.pop(); self.status = None; }
     pub fn reset(&mut self) { self.value = self.default_value.clone(); self.status = None; }
 }
 

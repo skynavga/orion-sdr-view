@@ -48,6 +48,8 @@ pub struct HandleKeysResult {
     pub wav_load_requested: bool,
     /// True when the user pressed Enter to commit a new PSK31 message.
     pub psk31_msg_accepted: bool,
+    /// True when a text field is actively consuming all keyboard input.
+    pub text_editing:       bool,
 }
 
 // ── SettingsState ──────────────────────────────────────────────────────────
@@ -125,6 +127,11 @@ impl SettingsState {
         self.source_index()
     }
 
+    /// Clear the focused row so arrow keys navigate normally.
+    pub fn defocus(&mut self) {
+        self.focused_row = None;
+    }
+
     pub fn set_source_mode(&mut self, idx: usize) {
         if let Row::Toggle(f) = &mut self.source_selector {
             f.index = idx.min(f.options.len() - 1);
@@ -186,6 +193,7 @@ impl SettingsState {
             am_audio_changed:   false,
             wav_load_requested: false,
             psk31_msg_accepted: false,
+            text_editing:       false,
         };
 
         if !self.visible {
@@ -209,12 +217,13 @@ impl SettingsState {
                     result.wav_load_requested = true;
                 }
                 if wav_result.defocus {
-                    // Move focus up one row
-                    if let Some(r) = self.focused_row {
-                        self.focused_row = Some(r.saturating_sub(1));
-                    }
+                    self.focused_row = None;
                 }
-                return;
+                if wav_result.consumed {
+                    result.text_editing = true;
+                    return;
+                }
+                // Not consumed — fall through to navigation
             }
 
             // PSK31 custom message field handling
@@ -228,16 +237,20 @@ impl SettingsState {
                         self.focused_row = None;
                     }
                     if msg_result.consumed {
+                        result.text_editing = true;
                         return;
                     }
                 }
                 // Not consumed — fall through to navigation
             }
 
-            // If the PSK31 message row is no longer focused (user navigated away),
+            // If a text row is no longer focused (user navigated away),
             // discard any in-progress pending edit.
             if self.psk31.pending_msg.is_some() {
                 self.psk31.discard_pending();
+            }
+            if self.amdsb.pending_wav.is_some() {
+                self.amdsb.discard_pending();
             }
 
             // S or Escape: close
@@ -496,12 +509,14 @@ impl SettingsState {
 
         let psk31_custom_focused = matches!(focused_target, Some(RowTarget::Psk31(i)) if i == Psk31Rows::CUSTOM_MSG_IDX);
 
-        let hint = if wav_focused {
-            "type path   ↵ load   Esc deselect"
+        let hint = if wav_focused && self.amdsb.pending_wav.is_some() {
+            "type path   ↵ load   Esc cancel"
+        } else if wav_focused {
+            "↵ edit path   ↑↓ navigate"
         } else if psk31_custom_focused && self.psk31.pending_msg.is_some() {
             "type message   ↵ accept   Esc cancel"
         } else if psk31_custom_focused {
-            "↵ start editing   ↑↓ navigate   Esc deselect"
+            "↵ edit message   ↑↓ navigate"
         } else if self.focused_row.is_some() {
             "↑↓ navigate   ◀▶ adjust   R reset field   Esc deselect"
         } else {

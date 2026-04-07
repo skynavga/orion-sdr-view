@@ -13,6 +13,9 @@ const REPEAT:   usize = 6;
 
 pub(super) struct AmDsbRows {
     pub rows: Vec<Row>,
+    /// In-progress edit of the WAV file path.  `Some(s)` while the user
+    /// is typing; committed to the row on Enter, discarded on Escape.
+    pub pending_wav: Option<String>,
 }
 
 impl AmDsbRows {
@@ -51,6 +54,7 @@ impl AmDsbRows {
                     step: 1.0, min: 1.0, max: 20.0, unit: "×",
                 }),
             ],
+            pending_wav: None,
         }
     }
 
@@ -81,33 +85,74 @@ impl AmDsbRows {
     }
 
     /// Handle keyboard input when the WAV file text row is focused.
-    /// Returns true if the user pressed Enter (load requested).
+    ///
+    /// Two-phase: focused but not editing (up/down navigate normally) →
+    /// Enter starts editing → Enter commits & loads, Escape cancels.
     pub fn handle_wav_keys(&mut self, events: &[egui::Event]) -> WavKeysResult {
-        let mut result = WavKeysResult { load_requested: false, defocus: false };
-        for e in events {
-            match e {
-                egui::Event::Text(s) => {
-                    for c in s.chars() {
-                        if let Row::Text(f) = &mut self.rows[WAV_FILE] {
-                            f.push_char(c);
+        let mut result = WavKeysResult { load_requested: false, defocus: false, consumed: false };
+
+        let editing = self.pending_wav.is_some();
+
+        if editing {
+            result.consumed = true;
+            for e in events {
+                match e {
+                    egui::Event::Text(s) => {
+                        if let Some(pending) = &mut self.pending_wav {
+                            for c in s.chars() {
+                                if c >= ' ' && c <= '~' {
+                                    pending.push(c);
+                                }
+                            }
                         }
                     }
-                }
-                egui::Event::Key { key: egui::Key::Backspace, pressed: true, .. } => {
-                    if let Row::Text(f) = &mut self.rows[WAV_FILE] {
-                        f.pop_char();
+                    egui::Event::Key { key: egui::Key::Backspace, pressed: true, .. } => {
+                        if let Some(pending) = &mut self.pending_wav {
+                            pending.pop();
+                        }
                     }
+                    egui::Event::Key { key: egui::Key::Enter, pressed: true, .. } => {
+                        if let Some(pending) = self.pending_wav.take() {
+                            if let Row::Text(f) = &mut self.rows[WAV_FILE] {
+                                f.value = pending;
+                            }
+                            result.load_requested = true;
+                            // Don't defocus yet — view.rs defocuses on success,
+                            // keeps focus on failure so user can re-edit.
+                        }
+                    }
+                    egui::Event::Key { key: egui::Key::Escape, pressed: true, .. } => {
+                        self.pending_wav = None;
+                        result.defocus = true;
+                    }
+                    _ => {}
                 }
-                egui::Event::Key { key: egui::Key::Enter, pressed: true, .. } => {
-                    result.load_requested = true;
-                }
-                egui::Event::Key { key: egui::Key::Escape, pressed: true, .. } => {
-                    result.defocus = true;
-                }
-                _ => {}
             }
+            return result;
         }
+
+        // Not editing: Enter starts an edit.
+        let enter_pressed = events.iter().any(|e| {
+            matches!(e, egui::Event::Key { key: egui::Key::Enter, pressed: true, .. })
+        });
+        if enter_pressed {
+            let current = if let Row::Text(f) = &self.rows[WAV_FILE] {
+                f.value.clone()
+            } else {
+                String::new()
+            };
+            self.pending_wav = Some(current);
+            result.consumed = true;
+            return result;
+        }
+
+        // Up/Down/Escape/etc. fall through (consumed = false).
         result
+    }
+
+    /// Discard any in-progress pending WAV edit.
+    pub fn discard_pending(&mut self) {
+        self.pending_wav = None;
     }
 
     /// Draw the WAV file text field value.
@@ -122,27 +167,54 @@ impl AmDsbRows {
         focused: bool,
     ) {
         if let Row::Text(f) = &self.rows[WAV_FILE] {
-            let builtin_placeholder = match self.audio_idx() {
-                1 => "cq_voice.wav (built-in)",
-                _ => "cq_morse.wav (built-in)",
-            };
-            let display = if f.value.is_empty() {
-                builtin_placeholder.to_owned()
+            let editing = self.pending_wav.is_some();
+            let max_chars = 36usize;
+            let is_custom = self.audio_is_custom();
+
+            // Determine the display text and whether it's a dimmed placeholder.
+            let (raw_text, is_placeholder) = if let Some(pending) = &self.pending_wav {
+                (format!("{}\u{258b}", pending), false) // ▋ block cursor
+            } else if !is_custom {
+                // Morse / Voice: always show the built-in name, even if a
+                // custom path is stored (it's preserved for when Custom
+                // is re-selected).
+                let builtin = match self.audio_idx() {
+                    1 => "cq_voice.wav (built-in)",
+                    _ => "cq_morse.wav (built-in)",
+                };
+                (builtin.to_owned(), true)
+            } else if f.value.is_empty() {
+                ("no audio".to_owned(), true)
             } else {
-                let max_chars = 36usize;
-                if f.value.len() > max_chars {
-                    format!("…{}", &f.value[f.value.len() - max_chars..])
-                } else {
-                    f.value.clone()
+                (f.value.clone(), false)
+            };
+
+            let display = if raw_text.chars().count() > max_chars {
+                let skip = raw_text.chars().count() - max_chars;
+                format!("…{}", raw_text.chars().skip(skip).collect::<String>())
+            } else {
+                raw_text
+            };
+
+            let status_suffix = if editing || is_placeholder || !is_custom {
+                ""
+            } else {
+                match f.status {
+                    Some(true)  => "  ✓",
+                    Some(false) => "  ✗",
+                    None        => "",
                 }
             };
-            let status_suffix = match f.status {
-                Some(true)  => "  ✓",
-                Some(false) => "  ✗",
-                None        => "",
-            };
             let full = format!("{}{}", display, status_suffix);
-            let text_color = if focused { egui::Color32::WHITE } else { val_color };
+            let text_color = if f.status == Some(false) && !editing && !is_placeholder {
+                egui::Color32::from_rgb(255, 80, 80)
+            } else if is_placeholder {
+                egui::Color32::from_gray(100)
+            } else if focused || editing {
+                egui::Color32::WHITE
+            } else {
+                val_color
+            };
             painter.text(
                 egui::pos2(val_x, y + row_h / 2.0),
                 egui::Align2::LEFT_CENTER,
@@ -151,10 +223,11 @@ impl AmDsbRows {
                 text_color,
             );
             if focused {
+                let hint = if editing { "\u{21b5} load  Esc cancel" } else { "\u{21b5} edit" };
                 painter.text(
                     egui::pos2(rect_right - 14.0, y + row_h / 2.0),
                     egui::Align2::RIGHT_CENTER,
-                    "↵ load",
+                    hint,
                     small.clone(),
                     egui::Color32::from_gray(140),
                 );
@@ -171,8 +244,10 @@ impl AmDsbRows {
 
 pub(super) struct WavKeysResult {
     pub load_requested: bool,
-    /// True when user pressed Escape — caller should defocus.
+    /// True when user pressed Escape or Enter — caller should defocus.
     pub defocus: bool,
+    /// True if the key event was consumed (don't fall through to navigation).
+    pub consumed: bool,
 }
 
 // ── SettingsState accessors ───────────────────────────────────────────────

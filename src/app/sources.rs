@@ -47,16 +47,34 @@ impl ViewApp {
         )
     }
 
-    /// Reload the built-in audio buffer into the active AmDsbSource after the
-    /// AM audio toggle changes (Morse ↔ Voice). No-op if source is not AM DSB
-    /// or if Custom is selected (user WAV takes precedence).
+    /// Reload audio after the AM audio toggle changes (Morse / Voice / Custom).
+    /// No-op if source is not AM DSB.
     pub(super) fn reload_builtin_audio(&mut self) {
         if self.source_mode != SourceMode::AmDsb {
             return;
         }
         if self.settings.am_audio_is_custom() {
+            // Switched TO Custom: try to reload a previously valid path,
+            // otherwise go carrier-only (no audio).
+            let path_str = self.settings.wav_path().to_owned();
+            if !path_str.is_empty() {
+                if let Ok((audio, rate)) = crate::source::amdsb::load_wav_file(
+                    std::path::Path::new(&path_str),
+                ) {
+                    if let Some(am) = self.source.as_any_mut().downcast_mut::<AmDsbSource>() {
+                        am.set_audio(audio, rate);
+                    }
+                    self.settings.set_wav_status(true);
+                    self.reset_playback();
+                    return;
+                }
+                // Path exists but file no longer valid — mark failed, go silent.
+                self.settings.set_wav_status(false);
+            }
+            self.clear_am_audio();
             return;
         }
+        // Morse or Voice: load built-in audio.
         let audio_idx = self.settings.am_audio_idx();
         self.settings.reset_am_repeat_for_audio(audio_idx);
         let builtin = BuiltinAudio::ALL[audio_idx.min(BuiltinAudio::ALL.len() - 1)];
@@ -69,11 +87,14 @@ impl ViewApp {
     }
 
     /// Attempt to load the WAV path from settings into the AM DSB source.
-    pub(super) fn try_load_wav(&mut self) {
+    /// On failure, clear audio to carrier-only and mark the path as failed.
+    /// Returns true on success.
+    pub(super) fn try_load_wav(&mut self) -> bool {
         let path_str = self.settings.wav_path().to_owned();
         if path_str.is_empty() {
             self.settings.set_wav_status(false);
-            return;
+            self.clear_am_audio();
+            return false;
         }
         match crate::source::amdsb::load_wav_file(std::path::Path::new(&path_str)) {
             Ok((audio, rate)) => {
@@ -84,11 +105,25 @@ impl ViewApp {
                 }
                 self.settings.set_wav_status(true);
                 self.reset_playback();
+                true
             }
-            Err(_) => {
+            Err(e) => {
+                eprintln!("orion-sdr-view: failed to load {:?}: {}", path_str, e);
                 self.settings.set_wav_status(false);
+                self.clear_am_audio();
+                false
             }
         }
+    }
+
+    /// Clear the AM DSB audio buffer to produce carrier-only output.
+    fn clear_am_audio(&mut self) {
+        if self.source_mode == SourceMode::AmDsb {
+            if let Some(am) = self.source.as_any_mut().downcast_mut::<AmDsbSource>() {
+                am.set_audio(Vec::new(), SAMPLE_RATE);
+            }
+        }
+        self.reset_playback();
     }
 
     /// Push current settings values into live signal/display state.

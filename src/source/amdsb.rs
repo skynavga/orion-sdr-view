@@ -58,7 +58,14 @@ pub fn load_builtin(kind: BuiltinAudio) -> (Vec<f32>, f32) {
 
 pub fn load_wav_file(path: &Path) -> Result<(Vec<f32>, f32), String> {
     let mut reader = hound::WavReader::open(path)
-        .map_err(|e| format!("{e}"))?;
+        .map_err(|e| {
+            let msg = format!("{e}");
+            if msg.contains("os error") {
+                msg
+            } else {
+                format!("{msg} (only PCM/float WAV supported)")
+            }
+        })?;
     let spec = reader.spec();
     let fs = spec.sample_rate as f32;
     let samples: Vec<f32> = match spec.sample_format {

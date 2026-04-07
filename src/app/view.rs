@@ -225,12 +225,55 @@ impl ViewApp {
                 self.reload_builtin_audio();
             }
             if result.wav_load_requested {
-                self.try_load_wav();
+                if self.try_load_wav() {
+                    self.settings.defocus();
+                }
             }
             if result.psk31_msg_accepted {
                 self.apply_psk31_message();
             }
             self.sync_settings();
+            // Let global keys (Q, M, N) work even while settings is open,
+            // but not when a text field is actively consuming input.
+            if !result.text_editing {
+                let mut quit = false;
+                let mut toggle_source = false;
+                let mut cycle_mode = false;
+                let mut cycle_audio = false;
+                ctx.input(|i| {
+                    if i.key_pressed(egui::Key::Q) { quit = true; }
+                    if i.key_pressed(egui::Key::I) { toggle_source = true; }
+                    if i.key_pressed(egui::Key::M) { cycle_mode = true; }
+                    if i.key_pressed(egui::Key::N) { cycle_audio = true; }
+                });
+                if quit {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                if toggle_source {
+                    self.switch_source(self.source_mode.next());
+                    self.lock_source_to_center();
+                }
+                if cycle_mode {
+                    if self.source_mode == SourceMode::Psk31 {
+                        self.settings.cycle_psk31_mode();
+                        self.sync_settings();
+                        self.reset_playback();
+                    }
+                }
+                if cycle_audio {
+                    match self.source_mode {
+                        SourceMode::AmDsb => {
+                            self.settings.cycle_am_audio();
+                            self.reload_builtin_audio();
+                        }
+                        SourceMode::Psk31 => {
+                            self.settings.cycle_psk31_msg_mode();
+                            self.apply_psk31_message();
+                        }
+                        _ => {}
+                    }
+                }
+            }
             return;
         }
 
