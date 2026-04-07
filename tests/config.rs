@@ -3,9 +3,7 @@
 use std::io::Write;
 use tempfile::NamedTempFile;
 
-// Pull in the config module via the binary's source path trick.
-// We compile the module directly here since there's no lib target.
-include!("../src/config.rs");
+use orion_sdr_view::config::{ViewConfig, Defaults};
 
 fn defaults_all_match(cfg: &ViewConfig) {
     assert_eq!(cfg.db_min(),        Defaults::DB_MIN,        "db_min");
@@ -19,6 +17,12 @@ fn defaults_all_match(cfg: &ViewConfig) {
     assert_eq!(cfg.mod_index(),     Defaults::MOD_INDEX,     "mod_index");
     assert_eq!(cfg.loop_gap_secs(), Defaults::LOOP_GAP_SECS, "loop_gap_secs");
     assert_eq!(cfg.am_noise_amp(),  Defaults::AM_NOISE_AMP,  "am_noise_amp");
+    assert_eq!(cfg.am_msg_repeat(), 1,                       "am_msg_repeat");
+    assert_eq!(cfg.psk31_mode(),    "BPSK31",                "psk31_mode");
+    assert_eq!(cfg.psk31_carrier_hz(), Defaults::CARRIER_HZ, "psk31_carrier_hz");
+    assert_eq!(cfg.psk31_noise_amp(),  Defaults::AM_NOISE_AMP, "psk31_noise_amp");
+    assert_eq!(cfg.psk31_message(), "CQ CQ CQ DE N0GNR",    "psk31_message");
+    assert_eq!(cfg.psk31_msg_repeat(), orion_sdr_view::source::psk31::PSK31_DEFAULT_REPEAT, "psk31_msg_repeat");
 }
 
 // ── Scenario 1: explicit --config with full YAML ─────────────────────────────
@@ -132,6 +136,88 @@ fn cwd_config_scenarios() {
 
         defaults_all_match(&cfg);
     }
+}
+
+// ── PSK31 config: full YAML with all PSK31 fields ────────────────────────────
+
+#[test]
+fn psk31_config_full() {
+    let yaml = r#"
+view:
+  sources:
+    psk31:
+      mode: QPSK31
+      carrier_hz: 1500.0
+      loop_gap_secs: 5.0
+      noise_amp: 0.10
+      message: "TEST MSG"
+      custom_message: "CUSTOM MSG"
+      msg_repeat: 7
+"#;
+    let mut f = NamedTempFile::new().unwrap();
+    f.write_all(yaml.as_bytes()).unwrap();
+
+    let cfg = ViewConfig::load(Some(f.path().to_path_buf()));
+    assert_eq!(cfg.psk31_mode(), "QPSK31");
+    assert_eq!(cfg.psk31_carrier_hz(), 1500.0);
+    assert_eq!(cfg.psk31_loop_gap_secs(), 5.0);
+    assert_eq!(cfg.psk31_noise_amp(), 0.10);
+    assert_eq!(cfg.psk31_message(), "TEST MSG");
+    assert_eq!(cfg.psk31_custom_message(), "CUSTOM MSG");
+    assert_eq!(cfg.psk31_msg_repeat(), 7);
+}
+
+// ── PSK31 config: partial YAML → defaults for missing fields ─────────────────
+
+#[test]
+fn psk31_config_partial() {
+    let yaml = r#"
+view:
+  sources:
+    psk31:
+      mode: QPSK31
+"#;
+    let mut f = NamedTempFile::new().unwrap();
+    f.write_all(yaml.as_bytes()).unwrap();
+
+    let cfg = ViewConfig::load(Some(f.path().to_path_buf()));
+    assert_eq!(cfg.psk31_mode(), "QPSK31");
+    // Everything else falls back to defaults
+    assert_eq!(cfg.psk31_carrier_hz(), Defaults::CARRIER_HZ);
+    assert_eq!(cfg.psk31_message(), "CQ CQ CQ DE N0GNR");
+    assert_eq!(cfg.psk31_msg_repeat(), orion_sdr_view::source::psk31::PSK31_DEFAULT_REPEAT);
+}
+
+// ── AM DSB config: msg_repeat field ──────────────────────────────────────────
+
+#[test]
+fn am_dsb_msg_repeat() {
+    let yaml = r#"
+view:
+  sources:
+    am_dsb:
+      msg_repeat: 5
+"#;
+    let mut f = NamedTempFile::new().unwrap();
+    f.write_all(yaml.as_bytes()).unwrap();
+
+    let cfg = ViewConfig::load(Some(f.path().to_path_buf()));
+    assert_eq!(cfg.am_msg_repeat(), 5);
+}
+
+#[test]
+fn am_dsb_msg_repeat_zero_clamps_to_one() {
+    let yaml = r#"
+view:
+  sources:
+    am_dsb:
+      msg_repeat: 0
+"#;
+    let mut f = NamedTempFile::new().unwrap();
+    f.write_all(yaml.as_bytes()).unwrap();
+
+    let cfg = ViewConfig::load(Some(f.path().to_path_buf()));
+    assert_eq!(cfg.am_msg_repeat(), 1);
 }
 
 // ── Scenario 8: YAML with unknown top-level keys → silently ignored ───────────

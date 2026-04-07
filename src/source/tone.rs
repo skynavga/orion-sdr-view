@@ -1,3 +1,7 @@
+use super::SignalSource;
+
+// ── CycleState ────────────────────────────────────────────────────────────────
+
 /// Amplitude cycling state machine.
 ///
 /// Sequence: RampUp → PauseHigh → RampDown → PauseLow → RampUp → …
@@ -9,6 +13,8 @@ enum CycleState {
     RampDown,
     PauseLow,
 }
+
+// ── TestSignalGen ─────────────────────────────────────────────────────────────
 
 /// Simple test signal generator: sine tone + AWGN.
 ///
@@ -170,5 +176,32 @@ impl TestSignalGen {
         self.rng ^= self.rng << 17;
         // Map to [0, 1)
         (self.rng >> 11) as f32 * (1.0 / (1u64 << 53) as f32)
+    }
+}
+
+// ── TestToneSource ────────────────────────────────────────────────────────────
+
+/// Adapts the existing `TestSignalGen` to the `SignalSource` trait.
+/// All cycling/settings on the inner generator remain accessible via `.gen`.
+pub struct TestToneSource {
+    pub signal_gen: TestSignalGen,
+}
+
+impl TestToneSource {
+    pub fn new(signal_gen: TestSignalGen) -> Self {
+        Self { signal_gen }
+    }
+}
+
+impl SignalSource for TestToneSource {
+    fn next_samples(&mut self, n: usize) -> Vec<f32> {
+        (0..n).map(|_| self.signal_gen.next_sample()).collect()
+    }
+    fn sample_rate(&self) -> f32 {
+        self.signal_gen.sample_rate
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+    fn restart(&mut self) {
+        self.signal_gen.restart();
     }
 }

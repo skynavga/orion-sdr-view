@@ -1,24 +1,17 @@
-/// Standalone generator for built-in audio assets.
-///
-/// Writes:
-///   crates/orion-sdr-view/assets/audio/cq_morse.wav  — morse-like tone bursts
-///
-/// Run from the workspace root:
-///   cargo run --manifest-path crates/orion-sdr-view/gen_audio/Cargo.toml
-///
-/// File: 8000 Hz, mono, 32-bit float PCM.
-/// A ~2 s silence is appended as the PTT inter-loop gap.
+// Phase 8 migration candidate: tone generation, morse encoding, and WAV
+// writing utilities.  orion-sdr may already provide some of these; merge
+// or replace as appropriate when migrating.
 
 use std::f32::consts::PI;
 use std::path::Path;
 
-const FS: f32 = 8_000.0;
-const GAP_SECS: f32 = 2.0;
+// ── WAV I/O ───────────────────────────────────────────────────────────────────
 
-fn write_wav(path: &Path, samples: &[f32]) {
+/// Write mono 32-bit float PCM WAV at the given sample rate.
+pub fn write_wav(path: &Path, samples: &[f32], sample_rate: u32) {
     let spec = hound::WavSpec {
         channels: 1,
-        sample_rate: FS as u32,
+        sample_rate,
         bits_per_sample: 32,
         sample_format: hound::SampleFormat::Float,
     };
@@ -29,14 +22,26 @@ fn write_wav(path: &Path, samples: &[f32]) {
     writer.finalize().expect("finalize wav");
 }
 
-fn silence(secs: f32) -> Vec<f32> {
-    vec![0.0f32; (secs * FS) as usize]
+// ── Tone primitives ───────────────────────────────────────────────────────────
+
+/// Generate a buffer of silence.
+pub fn silence(secs: f32, sample_rate: f32) -> Vec<f32> {
+    vec![0.0f32; (secs * sample_rate) as usize]
 }
 
-fn sine_burst(freq_hz: f32, dur_secs: f32, amp: f32, phase: &mut f32) -> Vec<f32> {
-    let n = (dur_secs * FS) as usize;
-    let dphi = 2.0 * PI * freq_hz / FS;
-    let ramp = (0.005 * FS) as usize;
+/// Generate a windowed sine burst with 5 ms raised-cosine ramps.
+///
+/// `phase` is carried across calls for phase-continuous bursts.
+pub fn sine_burst(
+    freq_hz: f32,
+    dur_secs: f32,
+    amp: f32,
+    sample_rate: f32,
+    phase: &mut f32,
+) -> Vec<f32> {
+    let n = (dur_secs * sample_rate) as usize;
+    let dphi = 2.0 * PI * freq_hz / sample_rate;
+    let ramp = (0.005 * sample_rate) as usize;
     (0..n)
         .map(|i| {
             let env = if i < ramp {
@@ -54,12 +59,16 @@ fn sine_burst(freq_hz: f32, dur_secs: f32, amp: f32, phase: &mut f32) -> Vec<f32
         .collect()
 }
 
+// ── Morse code ────────────────────────────────────────────────────────────────
+
 const DIT: f32 = 0.080;
 const DAH: f32 = 3.0 * DIT;
 const TONE_HZ: f32 = 800.0;
 const TONE_AMP: f32 = 0.8;
 
-fn morse(c: char) -> &'static [bool] {
+/// Return the dit/dah pattern for an alphanumeric character.
+/// `false` = dit, `true` = dah. Returns empty for unsupported chars.
+pub fn morse(c: char) -> &'static [bool] {
     match c {
         'A' => &[false, true],
         'B' => &[true, false, false, false],
@@ -101,7 +110,11 @@ fn morse(c: char) -> &'static [bool] {
     }
 }
 
-fn gen_morse() -> Vec<f32> {
+/// Render a morse CQ message as audio samples.
+///
+/// Words are separated by 4-dit gaps, characters by 2-dit gaps, elements
+/// by 1-dit gaps.  A trailing silence of `gap_secs` is appended.
+pub fn gen_morse_cq(sample_rate: f32, gap_secs: f32) -> Vec<f32> {
     let words: &[&str] = &["CQ", "CQ", "CQ", "DE", "N0GNR", "N0GNR", "K"];
     let mut out: Vec<f32> = Vec::new();
     let mut phase = 0.0f32;
@@ -111,33 +124,19 @@ fn gen_morse() -> Vec<f32> {
             let elements = morse(ch);
             for (ei, &is_dah) in elements.iter().enumerate() {
                 let dur = if is_dah { DAH } else { DIT };
-                out.extend(sine_burst(TONE_HZ, dur, TONE_AMP, &mut phase));
+                out.extend(sine_burst(TONE_HZ, dur, TONE_AMP, sample_rate, &mut phase));
                 if ei + 1 < elements.len() {
-                    out.extend(silence(DIT));
+                    out.extend(silence(DIT, sample_rate));
                 }
             }
             if ci + 1 < word.len() {
-                out.extend(silence(2.0 * DIT));
+                out.extend(silence(2.0 * DIT, sample_rate));
             }
         }
         if wi + 1 < words.len() {
-            out.extend(silence(4.0 * DIT));
+            out.extend(silence(4.0 * DIT, sample_rate));
         }
     }
-    out.extend(silence(GAP_SECS));
+    out.extend(silence(gap_secs, sample_rate));
     out
-}
-
-fn main() {
-    let base = Path::new("crates/orion-sdr-view/assets/audio");
-
-    let morse_samples = gen_morse();
-    let morse_path = base.join("cq_morse.wav");
-    write_wav(&morse_path, &morse_samples);
-    println!(
-        "Wrote {} ({:.1} s, {} samples)",
-        morse_path.display(),
-        morse_samples.len() as f32 / FS,
-        morse_samples.len()
-    );
 }
