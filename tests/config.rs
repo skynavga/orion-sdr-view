@@ -240,6 +240,100 @@ library:
     assert_eq!(cfg.db_max(), Defaults::DB_MAX);
 }
 
+// ── FT8 config: full YAML with all FT8 fields ────────────────────────────────
+
+#[test]
+fn ft8_config_full() {
+    let yaml = r#"
+view:
+  sources:
+    ft8:
+      mode: FT4
+      carrier_hz: 1200.0
+      loop_gap_secs: 30.0
+      noise_amp: 0.03
+      call_to: W1AW
+      call_de: K0KE
+      grid: DN70
+      free_text: 73 DE K0KE
+      msg_repeat: 4
+"#;
+    let mut f = NamedTempFile::new().unwrap();
+    f.write_all(yaml.as_bytes()).unwrap();
+
+    let cfg = ViewConfig::load(Some(f.path().to_path_buf()));
+    assert_eq!(cfg.ft8_mode(), "FT4");
+    assert_eq!(cfg.ft8_carrier_hz(), 1200.0);
+    assert_eq!(cfg.ft8_loop_gap_secs(), 30.0);
+    assert_eq!(cfg.ft8_noise_amp(), 0.03);
+    assert_eq!(cfg.ft8_call_to(), "W1AW");
+    assert_eq!(cfg.ft8_call_de(), "K0KE");
+    assert_eq!(cfg.ft8_grid(), "DN70");
+    assert_eq!(cfg.ft8_free_text(), "73 DE K0KE");
+    assert_eq!(cfg.ft8_msg_repeat(), 4);
+}
+
+// ── FT8 config: partial YAML → defaults for missing fields ───────────────────
+
+#[test]
+fn ft8_config_partial() {
+    let yaml = r#"
+view:
+  sources:
+    ft8:
+      carrier_hz: 900.0
+"#;
+    let mut f = NamedTempFile::new().unwrap();
+    f.write_all(yaml.as_bytes()).unwrap();
+
+    let cfg = ViewConfig::load(Some(f.path().to_path_buf()));
+    assert_eq!(cfg.ft8_carrier_hz(), 900.0);
+    // Everything else falls back to defaults.
+    assert_eq!(cfg.ft8_mode(), "FT8");
+    assert_eq!(cfg.ft8_loop_gap_secs(), orion_sdr_view::source::ft8::FT8_DEFAULT_LOOP_GAP_SECS);
+    assert_eq!(cfg.ft8_noise_amp(), Defaults::AM_NOISE_AMP);
+    assert_eq!(cfg.ft8_call_to(), orion_sdr_view::source::ft8::FT8_DEFAULT_CALL_TO);
+    assert_eq!(cfg.ft8_call_de(), orion_sdr_view::source::ft8::FT8_DEFAULT_CALL_DE);
+    assert_eq!(cfg.ft8_grid(), orion_sdr_view::source::ft8::FT8_DEFAULT_GRID);
+    assert_eq!(cfg.ft8_free_text(), orion_sdr_view::source::ft8::FT8_DEFAULT_FREE_TEXT);
+    assert_eq!(cfg.ft8_msg_repeat(), orion_sdr_view::source::ft8::FT8_DEFAULT_REPEAT);
+}
+
+// ── FT8 config: no ft8 section → all defaults ────────────────────────────────
+
+#[test]
+fn ft8_config_defaults_when_absent() {
+    let yaml = "view:\n  display:\n    db_min: -80.0\n";
+    let mut f = NamedTempFile::new().unwrap();
+    f.write_all(yaml.as_bytes()).unwrap();
+
+    let cfg = ViewConfig::load(Some(f.path().to_path_buf()));
+    assert_eq!(cfg.ft8_mode(), "FT8");
+    assert_eq!(cfg.ft8_carrier_hz(), orion_sdr_view::source::ft8::FT8_DEFAULT_CARRIER_HZ);
+    assert_eq!(cfg.ft8_loop_gap_secs(), orion_sdr_view::source::ft8::FT8_DEFAULT_LOOP_GAP_SECS);
+    assert_eq!(cfg.ft8_call_to(), orion_sdr_view::source::ft8::FT8_DEFAULT_CALL_TO);
+    assert_eq!(cfg.ft8_call_de(), orion_sdr_view::source::ft8::FT8_DEFAULT_CALL_DE);
+    assert_eq!(cfg.ft8_grid(), orion_sdr_view::source::ft8::FT8_DEFAULT_GRID);
+    assert_eq!(cfg.ft8_msg_repeat(), orion_sdr_view::source::ft8::FT8_DEFAULT_REPEAT);
+}
+
+// ── FT8 config: msg_repeat = 0 clamps to 1 ───────────────────────────────────
+
+#[test]
+fn ft8_msg_repeat_zero_clamps_to_one() {
+    let yaml = r#"
+view:
+  sources:
+    ft8:
+      msg_repeat: 0
+"#;
+    let mut f = NamedTempFile::new().unwrap();
+    f.write_all(yaml.as_bytes()).unwrap();
+
+    let cfg = ViewConfig::load(Some(f.path().to_path_buf()));
+    assert_eq!(cfg.ft8_msg_repeat(), 1);
+}
+
 // ── Scenario 9: YAML with missing `view:` key → all defaults ─────────────────
 
 #[test]
