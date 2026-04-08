@@ -3,6 +3,7 @@ use eframe::egui;
 use crate::decode::DecodeResult;
 use super::{PANE_BG, DecodeBarMode, SourceMode};
 use super::view::ViewApp;
+use crate::source::ft8::{Ft8Mode, Ft8MsgType};
 
 impl ViewApp {
     pub(super) fn draw_hud(&self, ctx: &egui::Context) {
@@ -75,6 +76,11 @@ impl ViewApp {
                         "Custom" => "c",
                         _        => "n",
                     };
+                    format!("  mode {mode_ch}  msg {msg_ch}")
+                }
+                SourceMode::Ft8 => {
+                    let mode_ch = match self.ft_mode { Ft8Mode::Ft8 => "8", Ft8Mode::Ft4 => "4" };
+                    let msg_ch  = match self.ft_msg_type { Ft8MsgType::Standard => "s", Ft8MsgType::FreeText => "f" };
                     format!("  mode {mode_ch}  msg {msg_ch}")
                 }
                 _ => String::new(),
@@ -188,10 +194,26 @@ impl ViewApp {
         let timer_label = self.loop_timer.label();
         let timer_w = painter.layout_no_wrap(timer_label.clone(), font.clone(), TEXT_COL).size().x;
         let em_w    = painter.layout_no_wrap("M".to_owned(),       font.clone(), TEXT_COL).size().x;
+
+        // For FT8/FT4 sources, prepend "frm xxx err yyy HH:MM:SS" to the right margin.
+        let ft_label: Option<String> = if self.source_mode == SourceMode::Ft8 {
+            let ts = if self.ft_last_timestamp.is_empty() {
+                "--:--:--".to_owned()
+            } else {
+                self.ft_last_timestamp.clone()
+            };
+            Some(format!("frm {:03} err {:03} {}  ", self.ft_frame_count, self.ft_err_count, ts))
+        } else {
+            None
+        };
+        let ft_label_w = ft_label.as_ref().map_or(0.0, |s| {
+            painter.layout_no_wrap(s.clone(), font.clone(), TEXT_COL).size().x
+        });
+
         // Right-aligned loop timer: "sig  12.34s loop 007" / "gap   2.00s loop 007"
         let timer_x = rect.right() - 6.0;
-        let timer_left = timer_x - timer_w;
-        // Right boundary for the scrolling text region: one 'M'-width gap before the timer.
+        let timer_left = timer_x - timer_w - ft_label_w;
+        // Right boundary for the scrolling text region: one 'M'-width gap before the timer block.
         let scroll_right = timer_left - em_w;
 
         // Build the static (non-scrolling) text for Di mode and fallback states.
@@ -255,6 +277,16 @@ impl ViewApp {
             );
         }
 
+        // Paint FT counter prefix (if any) then the loop timer.
+        if let Some(ref ft_str) = ft_label {
+            painter.text(
+                egui::pos2(timer_left, text_y),
+                egui::Align2::LEFT_CENTER,
+                ft_str,
+                font.clone(),
+                TEXT_COL,
+            );
+        }
         painter.text(
             egui::pos2(timer_x, text_y),
             egui::Align2::RIGHT_CENTER,

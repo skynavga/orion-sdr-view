@@ -19,6 +19,20 @@ use super::{
     LoopTimer, DecodeBarMode, SourceMode,
 };
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Format a `SystemTime` as `HH:MM:SS` UTC.
+fn format_utc_time(t: std::time::SystemTime) -> String {
+    let secs = t
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let s = secs % 60;
+    let m = (secs / 60) % 60;
+    let h = (secs / 3600) % 24;
+    format!("{h:02}:{m:02}:{s:02}")
+}
+
 // ── ViewApp ───────────────────────────────────────────────────────────────────
 
 pub(crate) struct ViewApp {
@@ -79,6 +93,17 @@ pub(crate) struct ViewApp {
     pub(super) last_block_was_signal: bool,
     /// Wall-clock time of the previous frame, for real-time dt calculation.
     pub(super) last_frame_time: std::time::Instant,
+
+    // FT8/FT4 frame counters (reset on source switch, mode change, or R key).
+    pub(super) ft_frame_count: u32,
+    pub(super) ft_err_count:   u32,
+    /// Timestamp string (HH:MM:SS UTC) of the most recently decoded frame's signal onset.
+    pub(super) ft_last_timestamp: String,
+    /// Wall-clock time when the current FT8/FT4 signal burst started (for timestamp capture).
+    pub(super) ft_signal_onset: Option<std::time::SystemTime>,
+    /// Cached FT8/FT4 sub-mode for use in draw functions (updated on mode cycle).
+    pub(super) ft_mode:     crate::source::ft8::Ft8Mode,
+    pub(super) ft_msg_type: crate::source::ft8::Ft8MsgType,
 }
 
 impl ViewApp {
@@ -158,6 +183,13 @@ impl ViewApp {
             decode_ticker: DecodeTicker::new(),
             last_block_was_signal: false,
             last_frame_time: std::time::Instant::now(),
+
+            ft_frame_count:    0,
+            ft_err_count:      0,
+            ft_last_timestamp: String::new(),
+            ft_signal_onset:   None,
+            ft_mode:           crate::source::ft8::Ft8Mode::Ft8,
+            ft_msg_type:       crate::source::ft8::Ft8MsgType::Standard,
         };
         app.sync_decode_config();
         app
@@ -170,6 +202,10 @@ impl ViewApp {
         self.loop_timer.reset();
         self.decode_ticker.reset();
         self.last_block_was_signal = false;
+        self.ft_frame_count    = 0;
+        self.ft_err_count      = 0;
+        self.ft_last_timestamp = String::new();
+        self.ft_signal_onset   = None;
         while self.decode_rx.try_recv().is_ok() {}
         let _ = self.decode_tx.try_send(Vec::new());
     }
@@ -201,7 +237,11 @@ impl ViewApp {
             }
             SourceMode::AmDsb  => Box::new(self.make_am_source()),
             SourceMode::Psk31  => Box::new(self.make_psk31_source()),
-            SourceMode::Ft8    => Box::new(self.make_ft8_source()),
+            SourceMode::Ft8    => {
+                self.ft_mode     = crate::source::ft8::Ft8Mode::Ft8;
+                self.ft_msg_type = crate::source::ft8::Ft8MsgType::Standard;
+                Box::new(self.make_ft8_source())
+            }
         };
         self.settings.set_source_mode(mode as usize);
         self.sync_decode_config();
@@ -586,12 +626,38 @@ impl eframe::App for ViewApp {
         self.loop_timer.tick(block_rms, dt);
 
         let block_is_signal = block_rms >= SIGNAL_THRESHOLD;
+
+        // Track FT8/FT4 signal onset for timestamp capture.
+        let is_ft8_mode = self.source_mode == SourceMode::Ft8;
+        if is_ft8_mode {
+            let was_signal = self.last_block_was_signal;
+            if block_is_signal && !was_signal {
+                // Rising edge: capture onset time for timestamp.
+                self.ft_signal_onset = Some(std::time::SystemTime::now());
+            }
+        }
+
         self.last_block_was_signal = block_is_signal;
 
         // Drain decode results first so Info/Text from the decode thread are
         // processed before any gap state change.
         while let Ok(result) = self.decode_rx.try_recv() {
-            self.decode_ticker.push_result(result);
+            if let DecodeResult::Gap { decoded } = result {
+                // For FT8/FT4: update frm/err counters; capture timestamp on success.
+                if is_ft8_mode {
+                    if decoded {
+                        self.ft_frame_count = self.ft_frame_count.saturating_add(1).min(999);
+                        if let Some(onset) = self.ft_signal_onset.take() {
+                            self.ft_last_timestamp = format_utc_time(onset);
+                        }
+                    } else {
+                        self.ft_err_count = self.ft_err_count.saturating_add(1).min(999);
+                    }
+                }
+                self.decode_ticker.push_result(DecodeResult::Gap { decoded });
+            } else {
+                self.decode_ticker.push_result(result);
+            }
         }
 
         if !block_is_signal && self.decode_bar.is_visible() {
@@ -601,7 +667,7 @@ impl eframe::App for ViewApp {
             // source; it keeps last_result=NoSignal throughout the gap.
             // Gap also sets in_gap=true in the ticker, which drives SPACE
             // injection during tick() at the nominal character scroll rate.
-            self.decode_ticker.push_result(DecodeResult::Gap);
+            self.decode_ticker.push_result(DecodeResult::Gap { decoded: false });
         }
         self.decode_ticker.tick(dt);
 

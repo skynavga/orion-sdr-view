@@ -214,6 +214,7 @@ impl ViewApp {
                 Ft8Mode::Ft8 => Ft8Mode::Ft4,
                 Ft8Mode::Ft4 => Ft8Mode::Ft8,
             };
+            self.ft_mode = ft8.ft8_mode;
             ft8.render();
         }
         self.sync_decode_config();
@@ -227,6 +228,7 @@ impl ViewApp {
                 Ft8MsgType::Standard => Ft8MsgType::FreeText,
                 Ft8MsgType::FreeText => Ft8MsgType::Standard,
             };
+            self.ft_msg_type = ft8.msg_type;
             ft8.render();
         }
         self.reset_playback();
@@ -251,7 +253,10 @@ impl ViewApp {
             },
             SourceMode::AmDsb    => DecodeMode::AmDsb,
             SourceMode::TestTone => DecodeMode::TestTone,
-            SourceMode::Ft8      => DecodeMode::Ft8,  // Phase 2 will handle decode
+            SourceMode::Ft8      => match self.ft_mode {
+                Ft8Mode::Ft8 => DecodeMode::Ft8,
+                Ft8Mode::Ft4 => DecodeMode::Ft4,
+            },
         };
         let carrier_hz = match self.source_mode {
             SourceMode::Psk31    => self.settings.psk31_carrier_hz(),

@@ -492,7 +492,7 @@ fn simulate_dt_ticker() {
                     None        => println!("  (no text)"),
                 }
             }
-            ticker.push_result(DecodeResult::Gap);
+            ticker.push_result(DecodeResult::Gap { decoded: false });
             was_silent = true;
         } else {
             iq_buf.extend(samples.iter().map(|&s| C32::new(s, 0.0)));
