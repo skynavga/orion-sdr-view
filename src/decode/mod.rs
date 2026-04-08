@@ -18,12 +18,9 @@ use std::sync::mpsc::{Receiver, SyncSender};
 use num_complex::Complex32 as C32;
 use orion_sdr::util::rms;
 use orion_sdr::sync::psk31_sync::psk31_sync;
-use orion_sdr::sync::{ft8_sync, ft4_sync};
 use orion_sdr::modulate::psk31::{psk31_sps, PSK31_BAUD};
-use orion_sdr::modulate::ft8::FT8_FRAME_LEN;
-use orion_sdr::modulate::ft4::FT4_FRAME_LEN;
-use orion_sdr::codec::{Ft8Codec, Ft4Codec};
-use orion_sdr::message::{CallsignHashTable, gridfield_to_str, unpack77, Ft8Message};
+use orion_sdr::codec::Ft8StreamDecoder;
+use orion_sdr::message::{gridfield_to_str, Ft8Message};
 
 // Re-exports from orion-sdr (migrated from local definitions).
 pub use orion_sdr::codec::psk31::Psk31Stream;
@@ -239,12 +236,8 @@ pub const SPECTRUM_WINDOW_SAMPLES: usize = 4096;
 pub const FT8_BW_HZ: f32 = 50.0;
 /// FT4 signal bandwidth: 4 tones × 20.833 Hz spacing ≈ 83 Hz.
 pub const FT4_BW_HZ: f32 = 83.0;
-/// Upsample factor: viewer runs at 48 kHz, FT8/FT4 native rate is 12 kHz.
+/// Downsample factor: viewer runs at 48 kHz, FT8/FT4 native rate is 12 kHz.
 const FT8_UPSAMPLE: usize = 4;
-/// Maximum FT8 accumulation buffer at 12 kHz (one frame + one symbol of margin).
-const FT8_MAX_ACCUM: usize = FT8_FRAME_LEN + FT8_FRAME_LEN / 79;
-/// Maximum FT4 accumulation buffer at 12 kHz (one frame + one symbol of margin).
-const FT4_MAX_ACCUM: usize = FT4_FRAME_LEN + FT4_FRAME_LEN / 105;
 /// Sync search half-width for FT8/FT4 (±200 Hz around configured carrier).
 const FT8_SEARCH_HZ: f32 = 200.0;
 
@@ -280,6 +273,8 @@ impl DecodeWorker {
         let mut spec_buf: Vec<C32> = Vec::new();
         // Streaming PSK31 decode state (created after first sync, destroyed at gap).
         let mut psk31_stream: Option<Psk31Stream> = None;
+        // FT8/FT4 stream decoder (created on first FT8/FT4 signal, replaced on mode change).
+        let mut ft_decoder: Option<Ft8StreamDecoder> = None;
         // Sample counter for Info throttling (~250 ms between updates, all modes).
         let mut info_counter: usize = 0;
         const INFO_INTERVAL: usize = 48_000; // 1 s at 48 kHz
@@ -307,6 +302,7 @@ impl DecodeWorker {
                 was_signal      = false;
                 info_counter    = 0;
                 psk31_stream    = None;
+                ft_decoder      = None;
                 last_mode       = mode;
                 last_carrier    = carrier_hz;
                 continue;
@@ -321,6 +317,7 @@ impl DecodeWorker {
                 was_signal      = false;
                 info_counter    = 0;
                 psk31_stream    = None;
+                ft_decoder      = None;
                 last_mode       = mode;
                 last_carrier    = carrier_hz;
             }
@@ -515,52 +512,78 @@ impl DecodeWorker {
                 }
 
                 DecodeMode::Ft8 | DecodeMode::Ft4 => {
-                    let is_ft8    = mode == DecodeMode::Ft8;
-                    let label     = if is_ft8 { "FT8" } else { "FT4" };
-                    let bw_hz     = if is_ft8 { FT8_BW_HZ } else { FT4_BW_HZ };
-                    let max_accum = if is_ft8 { FT8_MAX_ACCUM } else { FT4_MAX_ACCUM };
+                    let is_ft8 = mode == DecodeMode::Ft8;
+                    let label  = if is_ft8 { "FT8" } else { "FT4" };
+                    let bw_hz  = if is_ft8 { FT8_BW_HZ } else { FT4_BW_HZ };
+                    let native_fs = fs / FT8_UPSAMPLE as f32; // 12 kHz
 
                     if !is_signal {
-                        if gap_edge && !iq_buf.is_empty() {
-                            // Decode the accumulated 12 kHz buffer.
-                            let (decoded, found_snr) = ft8_ft4_decode(
-                                &iq_buf, is_ft8, carrier_hz, &mut smoothed_snr_db,
-                                &self.tx, label,
-                            );
-                            // Report SNR-based Info (zeroed BW on no-decode).
-                            let _ = self.tx.try_send(DecodeResult::Info {
-                                modulation: label.to_owned(),
-                                center_hz:  carrier_hz,
-                                bw_hz:      if decoded { bw_hz } else { 0.0 },
-                                snr_db:     found_snr,
-                            });
-                            let _ = self.tx.try_send(DecodeResult::Gap { decoded });
-                            iq_buf.clear();
+                        if gap_edge {
+                            if let Some(ref mut dec) = ft_decoder {
+                                // Flush whatever accumulated before the gap edge.
+                                let results = dec.flush();
+                                let decoded = !results.is_empty();
+                                for r in results {
+                                    let text = format_ft8_message(&r.message, label);
+                                    let _ = self.tx.try_send(DecodeResult::Text(text));
+                                }
+                                // SNR from the last spectral update.
+                                let _ = self.tx.try_send(DecodeResult::Info {
+                                    modulation: label.to_owned(),
+                                    center_hz:  carrier_hz,
+                                    bw_hz:      if decoded { bw_hz } else { 0.0 },
+                                    snr_db:     smoothed_snr_db,
+                                });
+                                let _ = self.tx.try_send(DecodeResult::Gap { decoded });
+                                dec.clear();
+                            }
                             smoothed_snr_db = 0.0;
+                            info_counter    = 0;
                         }
                     } else {
-                        // Downsample 4:1 from 48 kHz → 12 kHz by taking every 4th sample.
-                        for chunk in samples.chunks(FT8_UPSAMPLE) {
-                            iq_buf.push(C32::new(chunk[0], 0.0));
+                        // Create decoder on first signal after a gap or mode switch.
+                        if ft_decoder.is_none() {
+                            let base_hz = (carrier_hz - FT8_SEARCH_HZ).max(0.0);
+                            let max_hz  = carrier_hz + FT8_SEARCH_HZ;
+                            ft_decoder = Some(if is_ft8 {
+                                Ft8StreamDecoder::new_ft8(native_fs, base_hz, max_hz, 8)
+                            } else {
+                                Ft8StreamDecoder::new_ft4(native_fs, base_hz, max_hz, 8)
+                            });
                         }
 
-                        // Safety cap at one frame length.
-                        if iq_buf.len() > max_accum {
-                            let drop = iq_buf.len() - max_accum;
-                            iq_buf.drain(..drop);
+                        // Downsample 4:1 from 48 kHz → 12 kHz and feed the decoder.
+                        let downsampled: Vec<C32> = samples
+                            .chunks(FT8_UPSAMPLE)
+                            .map(|c| C32::new(c[0], 0.0))
+                            .collect();
+
+                        if let Some(ref mut dec) = ft_decoder {
+                            // feed() returns results only when frame_len is reached;
+                            // in practice this shouldn't happen mid-signal for a
+                            // well-timed source, but handle it gracefully.
+                            let results = dec.feed(&downsampled);
+                            for r in results {
+                                let text = format_ft8_message(&r.message, label);
+                                let _ = self.tx.try_send(DecodeResult::Text(text));
+                            }
                         }
 
                         // Periodic SNR update (~1 s) during accumulation.
                         info_counter += samples.len();
                         if info_counter >= INFO_INTERVAL {
                             info_counter = 0;
-                            let real: Vec<f32> = iq_buf.iter().map(|c| c.re).collect();
-                            let raw_snr = spectrum_snr_db(&real, fs / FT8_UPSAMPLE as f32, carrier_hz);
-                            smoothed_snr_db = if smoothed_snr_db == 0.0 {
-                                raw_snr
-                            } else {
-                                0.2 * raw_snr + 0.8 * smoothed_snr_db
-                            };
+                            if let Some(ref dec) = ft_decoder {
+                                // Use the decoder's buffer for SNR estimation.
+                                let real: Vec<f32> = dec.view_buf()
+                                    .iter().map(|c| c.re).collect();
+                                let raw_snr = spectrum_snr_db(&real, native_fs, carrier_hz);
+                                smoothed_snr_db = if smoothed_snr_db == 0.0 {
+                                    raw_snr
+                                } else {
+                                    0.2 * raw_snr + 0.8 * smoothed_snr_db
+                                };
+                            }
                             let _ = self.tx.try_send(DecodeResult::Info {
                                 modulation: label.to_owned(),
                                 center_hz:  carrier_hz,
@@ -578,67 +601,6 @@ impl DecodeWorker {
 
 }
 
-// ── FT8/FT4 decode helper ─────────────────────────────────────────────────────
-
-/// Attempt to sync and decode FT8 or FT4 candidates from a 12 kHz IQ buffer.
-///
-/// Sends `DecodeResult::Text` for each CRC-pass candidate.
-/// Returns `(decoded, snr_db)`: `decoded` is true if at least one frame passed CRC.
-fn ft8_ft4_decode(
-    iq:      &[C32],
-    is_ft8:  bool,
-    carrier_hz: f32,
-    smoothed_snr: &mut f32,
-    tx:      &SyncSender<DecodeResult>,
-    label:   &str,
-) -> (bool, f32) {
-    const NATIVE_FS: f32 = 12_000.0;
-    let base_hz = (carrier_hz - FT8_SEARCH_HZ).max(0.0);
-    let max_hz  = carrier_hz + FT8_SEARCH_HZ;
-    let mut hash_table = CallsignHashTable::new();
-    let mut any_decoded = false;
-
-    // Compute SNR from the accumulated real samples.
-    let real: Vec<f32> = iq.iter().map(|c| c.re).collect();
-    let raw_snr = spectrum_snr_db(&real, NATIVE_FS, carrier_hz);
-    *smoothed_snr = if *smoothed_snr == 0.0 { raw_snr } else { 0.2 * raw_snr + 0.8 * *smoothed_snr };
-
-    if is_ft8 {
-        let candidates = ft8_sync(iq, NATIVE_FS, base_hz, max_hz, 0, 0, 8);
-        for cand in &candidates {
-            if let Some(bits) = Ft8Codec::decode_soft(&cand.llr) {
-                let payload = bits;
-                let msg     = unpack77(&payload, &hash_table);
-                // Update hash table with any callsigns in this message.
-                if let Ft8Message::Standard { ref call_to, ref call_de, .. } = msg {
-                    let _ = orion_sdr::message::pack77(&msg.clone(), &mut hash_table);
-                    let _ = (call_to, call_de); // hash_table updated via pack77
-                }
-                let text = format_ft8_message(&msg, label);
-                let _ = tx.try_send(DecodeResult::Text(text));
-                any_decoded = true;
-                break; // best candidate first — stop after first CRC pass
-            }
-        }
-    } else {
-        let candidates = ft4_sync(iq, NATIVE_FS, base_hz, max_hz, 0, 0, 8);
-        for cand in &candidates {
-            if let Some(bits) = Ft4Codec::decode_soft(&cand.llr) {
-                let payload = bits;
-                let msg     = unpack77(&payload, &hash_table);
-                if let Ft8Message::Standard { .. } = msg {
-                    let _ = orion_sdr::message::pack77(&msg.clone(), &mut hash_table);
-                }
-                let text = format_ft8_message(&msg, label);
-                let _ = tx.try_send(DecodeResult::Text(text));
-                any_decoded = true;
-                break;
-            }
-        }
-    }
-
-    (any_decoded, *smoothed_snr)
-}
 
 /// Format a decoded `Ft8Message` for the Dt ticker.
 ///
