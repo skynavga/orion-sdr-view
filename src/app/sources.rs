@@ -2,6 +2,9 @@ use crate::decode::{DecodeMode};
 use crate::source::tone::TestToneSource;
 use crate::source::amdsb::{AmDsbSource, BuiltinAudio, load_builtin};
 use crate::source::psk31::{Psk31Mode, Psk31Source};
+use crate::source::ft8::{Ft8Source, Ft8Mode, Ft8MsgType,
+    FT8_DEFAULT_CARRIER_HZ, FT8_DEFAULT_LOOP_GAP_SECS, FT8_DEFAULT_REPEAT,
+    FT8_DEFAULT_CALL_TO, FT8_DEFAULT_CALL_DE, FT8_DEFAULT_GRID, FT8_DEFAULT_FREE_TEXT};
 
 use super::{SAMPLE_RATE, SourceMode};
 use super::view::ViewApp;
@@ -43,6 +46,23 @@ impl ViewApp {
             mode,
             self.settings.psk31_message().to_owned(),
             self.settings.psk31_msg_repeat(),
+            SAMPLE_RATE,
+        )
+    }
+
+    /// Build a fresh Ft8Source from defaults.
+    pub(super) fn make_ft8_source(&self) -> Ft8Source {
+        Ft8Source::new(
+            FT8_DEFAULT_CARRIER_HZ,
+            FT8_DEFAULT_LOOP_GAP_SECS,
+            0.0,
+            Ft8Mode::Ft8,
+            Ft8MsgType::Standard,
+            FT8_DEFAULT_CALL_TO.to_owned(),
+            FT8_DEFAULT_CALL_DE.to_owned(),
+            FT8_DEFAULT_GRID.to_owned(),
+            FT8_DEFAULT_FREE_TEXT.to_owned(),
+            FT8_DEFAULT_REPEAT,
             SAMPLE_RATE,
         )
     }
@@ -187,6 +207,31 @@ impl ViewApp {
         self.sync_decode_config();
     }
 
+    /// Cycle the FT8 source between FT8 and FT4 modes (M key).
+    pub(super) fn cycle_ft8_mode(&mut self) {
+        if let Some(ft8) = self.source.as_any_mut().downcast_mut::<Ft8Source>() {
+            ft8.ft8_mode = match ft8.ft8_mode {
+                Ft8Mode::Ft8 => Ft8Mode::Ft4,
+                Ft8Mode::Ft4 => Ft8Mode::Ft8,
+            };
+            ft8.render();
+        }
+        self.sync_decode_config();
+        self.reset_playback();
+    }
+
+    /// Cycle the FT8 source message type (N key): Standard → FreeText → Standard.
+    pub(super) fn cycle_ft8_msg_type(&mut self) {
+        if let Some(ft8) = self.source.as_any_mut().downcast_mut::<Ft8Source>() {
+            ft8.msg_type = match ft8.msg_type {
+                Ft8MsgType::Standard => Ft8MsgType::FreeText,
+                Ft8MsgType::FreeText => Ft8MsgType::Standard,
+            };
+            ft8.render();
+        }
+        self.reset_playback();
+    }
+
     /// Apply the committed PSK31 message and repeat count to the live source and
     /// re-render.  Called only when the user explicitly accepts the message edit.
     pub(super) fn apply_psk31_message(&mut self) {
@@ -206,11 +251,13 @@ impl ViewApp {
             },
             SourceMode::AmDsb    => DecodeMode::AmDsb,
             SourceMode::TestTone => DecodeMode::TestTone,
+            SourceMode::Ft8      => DecodeMode::Ft8,  // Phase 2 will handle decode
         };
         let carrier_hz = match self.source_mode {
             SourceMode::Psk31    => self.settings.psk31_carrier_hz(),
             SourceMode::AmDsb    => self.settings.am_carrier_hz(),
             SourceMode::TestTone => self.settings.freq_hz(),
+            SourceMode::Ft8      => FT8_DEFAULT_CARRIER_HZ,
         };
         if let Ok(mut cfg) = self.decode_config.lock() {
             cfg.mode       = mode;

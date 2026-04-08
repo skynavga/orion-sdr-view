@@ -36,6 +36,11 @@ pub enum DecodeMode {
     Qpsk31,
     AmDsb,
     TestTone,
+    /// FT8 full-frame accumulate+decode (Phase 2).
+    Ft8,
+    /// FT4 full-frame accumulate+decode (Phase 2).
+    #[allow(dead_code)]
+    Ft4,
 }
 
 #[derive(Clone, Debug)]
@@ -489,7 +494,8 @@ impl DecodeWorker {
                     }
                 }
 
-                DecodeMode::Off => {}
+                // Phase 2 will add FT8/FT4 full-frame decode branches here.
+                DecodeMode::Ft8 | DecodeMode::Ft4 | DecodeMode::Off => {}
             }
         }
     }

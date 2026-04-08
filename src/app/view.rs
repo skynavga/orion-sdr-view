@@ -183,6 +183,7 @@ impl ViewApp {
             SourceMode::TestTone => self.settings.set_freq_hz(hz),
             SourceMode::AmDsb    => self.settings.set_am_carrier_hz(hz),
             SourceMode::Psk31    => self.settings.set_psk31_carrier_hz(hz),
+            SourceMode::Ft8      => {}  // Phase 3 will add ft8 carrier setting
         }
         self.sync_settings();
     }
@@ -200,12 +201,14 @@ impl ViewApp {
             }
             SourceMode::AmDsb  => Box::new(self.make_am_source()),
             SourceMode::Psk31  => Box::new(self.make_psk31_source()),
+            SourceMode::Ft8    => Box::new(self.make_ft8_source()),
         };
         self.settings.set_source_mode(mode as usize);
         self.sync_decode_config();
         self.reset_playback();
-        // Text mode is only valid for PSK31; clamp if we switched away.
-        if mode != SourceMode::Psk31 && self.decode_bar == DecodeBarMode::Text {
+        // Text mode is only valid for PSK31/FT8; clamp if we switched away.
+        let has_text = matches!(mode, SourceMode::Psk31 | SourceMode::Ft8);
+        if !has_text && self.decode_bar == DecodeBarMode::Text {
             self.decode_bar = DecodeBarMode::Info;
         }
     }
@@ -254,10 +257,16 @@ impl ViewApp {
                     self.lock_source_to_center();
                 }
                 if cycle_mode {
-                    if self.source_mode == SourceMode::Psk31 {
-                        self.settings.cycle_psk31_mode();
-                        self.sync_settings();
-                        self.reset_playback();
+                    match self.source_mode {
+                        SourceMode::Psk31 => {
+                            self.settings.cycle_psk31_mode();
+                            self.sync_settings();
+                            self.reset_playback();
+                        }
+                        SourceMode::Ft8 => {
+                            self.cycle_ft8_mode();
+                        }
+                        _ => {}
                     }
                 }
                 if cycle_audio {
@@ -269,6 +278,9 @@ impl ViewApp {
                         SourceMode::Psk31 => {
                             self.settings.cycle_psk31_msg_mode();
                             self.apply_psk31_message();
+                        }
+                        SourceMode::Ft8 => {
+                            self.cycle_ft8_msg_type();
                         }
                         _ => {}
                     }
@@ -319,7 +331,7 @@ impl ViewApp {
                 self.reset_playback();
             }
             if i.key_pressed(egui::Key::D) {
-                let has_text = self.source_mode == SourceMode::Psk31;
+                let has_text = matches!(self.source_mode, SourceMode::Psk31 | SourceMode::Ft8);
                 self.decode_bar = self.decode_bar.next(has_text);
             }
             if i.key_pressed(egui::Key::E) { self.envelope_visible ^= true; }
@@ -517,6 +529,9 @@ impl ViewApp {
                     self.sync_settings();
                     self.reset_playback();
                 }
+                SourceMode::Ft8 => {
+                    self.cycle_ft8_mode();
+                }
                 _ => {}
             }
         }
@@ -529,6 +544,9 @@ impl ViewApp {
                 SourceMode::Psk31 => {
                     self.settings.cycle_psk31_msg_mode();
                     self.apply_psk31_message();
+                }
+                SourceMode::Ft8 => {
+                    self.cycle_ft8_msg_type();
                 }
                 _ => {}
             }

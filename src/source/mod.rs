@@ -1,9 +1,12 @@
 pub mod amdsb;
+pub mod ft8;
 pub mod psk31;
 pub mod tone;
 
 #[allow(unused_imports)]
 pub use amdsb::{AmDsbSource, BuiltinAudio, load_builtin};
+#[allow(unused_imports)]
+pub use ft8::{Ft8Source, Ft8Mode, Ft8MsgType};
 #[allow(unused_imports)]
 pub use psk31::{Psk31Source, Psk31Mode};
 
