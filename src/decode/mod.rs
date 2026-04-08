@@ -16,13 +16,16 @@ use std::sync::{Arc, Mutex};
 use std::sync::mpsc::{Receiver, SyncSender};
 
 use num_complex::Complex32 as C32;
-use orion_sdr::{Block, util::rms};
-use orion_sdr::demodulate::psk31::{Bpsk31Demod, Bpsk31Decider, Qpsk31Demod};
-use orion_sdr::codec::psk31_conv::{StreamingViterbi, DQPSK_EXP};
-use orion_sdr::codec::varicode::VaricodeDecoder;
-use orion_sdr::sync::psk31_sync::{psk31_sync, Psk31SyncResult};
+use orion_sdr::util::rms;
+use orion_sdr::sync::psk31_sync::psk31_sync;
 use orion_sdr::modulate::psk31::{psk31_sps, PSK31_BAUD};
-use rustfft::{FftPlanner, num_complex::Complex};
+
+// Re-exports from orion-sdr (migrated from local definitions).
+pub use orion_sdr::codec::psk31::Psk31Stream;
+pub use orion_sdr::util::{
+    SIGNAL_THRESHOLD, PSK31_BW_HZ,
+    power_spectrum, spectrum_snr_db, spectrum_bw_hz, best_sync,
+};
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -209,15 +212,6 @@ impl DecodeTicker {
 
 // ── Decode worker ─────────────────────────────────────────────────────────────
 
-/// PSK31 bandwidth: raised-cosine pulse shaping gives exactly 2× the baud rate.
-pub const PSK31_BW_HZ: f32 = PSK31_BAUD * 2.0; // 62.5 Hz
-
-/// RMS threshold below which a sample block is treated as silence (loop gap).
-/// Must sit above the AWGN noise floor (~0.029 at noise_amp=0.05) and below
-/// the modulated signal level (~0.5+ for AM DSB / PSK31 at gain=1.0).
-/// Public so main.rs can apply the same threshold for in-frame gap detection.
-pub const SIGNAL_THRESHOLD: f32 = 0.1;
-
 /// Maximum PSK31 accumulation buffer: caps memory and limits decode latency.
 /// 1200 symbols ≈ 38 s at 31.25 baud — comfortably larger than the default
 /// transmission (msg×5 + preamble + postamble ≈ 1100 symbols) so a full frame
@@ -234,141 +228,6 @@ pub const SYNC_SEARCH_HZ: f32 = 200.0;
 
 /// Minimum accumulated samples before attempting psk31_sync (64 symbols).
 pub const SYNC_MIN_SYMS: usize = 64;
-
-/// Persistent state for streaming PSK31 decode within one transmission.
-/// Created after the first successful `psk31_sync`, destroyed at gap edge.
-///
-/// BPSK31: fully incremental — Bpsk31Decider produces hard bits instantly,
-/// which are pushed through the VaricodeDecoder character by character.
-///
-/// QPSK31: the Qpsk31Decider accumulates soft symbols for Viterbi.  We
-/// periodically run Viterbi on the full accumulation and send only the
-/// delta (new bits since last flush) through the VaricodeDecoder.
-pub enum Psk31Stream {
-    Bpsk {
-        demod:     Bpsk31Demod,
-        decider:   Bpsk31Decider,
-        vdec:      VaricodeDecoder,
-        fed_up_to: usize,
-    },
-    Qpsk {
-        demod:      Qpsk31Demod,
-        viterbi:    StreamingViterbi,
-        vdec:       VaricodeDecoder,
-        fed_up_to:  usize,
-    },
-}
-
-impl Psk31Stream {
-    pub fn fed_up_to(&self) -> usize {
-        match self {
-            Psk31Stream::Bpsk { fed_up_to, .. } => *fed_up_to,
-            Psk31Stream::Qpsk { fed_up_to, .. } => *fed_up_to,
-        }
-    }
-
-    pub fn set_fed_up_to(&mut self, v: usize) {
-        match self {
-            Psk31Stream::Bpsk { fed_up_to, .. } => *fed_up_to = v,
-            Psk31Stream::Qpsk { fed_up_to, .. } => *fed_up_to = v,
-        }
-    }
-
-    /// Feed new IQ samples through the demod chain.
-    /// Returns any newly decoded printable characters.
-    pub fn feed(&mut self, iq: &[C32]) -> String {
-        if iq.is_empty() { return String::new(); }
-
-        match self {
-            Psk31Stream::Bpsk { demod, decider, vdec, .. } => {
-                let max_syms = iq.len() / 32 + 4;
-                let mut soft = vec![0.0_f32; max_syms];
-                let wr = demod.process(iq, &mut soft);
-                soft.truncate(wr.out_written);
-
-                let mut bits = vec![0_u8; soft.len()];
-                let dr = decider.process(&soft, &mut bits);
-                bits.truncate(dr.out_written);
-
-                let mut text = String::new();
-                for &b in &bits {
-                    vdec.push_bit(b);
-                    while let Some(ch) = vdec.pop_char() {
-                        if ch >= 0x20 && ch < 0x7f {
-                            text.push(ch as char);
-                        }
-                    }
-                }
-                text
-            }
-            Psk31Stream::Qpsk { demod, viterbi, vdec, .. } => {
-                // Demod IQ → differential DQPSK products, feed each symbol
-                // through the streaming Viterbi → varicode decoder.
-                let max_soft = iq.len() / 32 + 8;
-                let mut soft = vec![0.0_f32; max_soft];
-                let wr = demod.process(iq, &mut soft);
-                soft.truncate(wr.out_written);
-
-                let mut text = String::new();
-                let n_syms = soft.len() / 2;
-                for i in 0..n_syms {
-                    let d_re = soft[i * 2];
-                    let d_im = soft[i * 2 + 1];
-                    // Skip near-zero symbols (silence/startup).
-                    if d_re * d_re + d_im * d_im < 0.01 { continue; }
-
-                    if let Some(b) = viterbi.feed_symbol(d_re, d_im) {
-                        vdec.push_bit(b);
-                        while let Some(ch) = vdec.pop_char() {
-                            if ch >= 0x20 && ch < 0x7f {
-                                text.push(ch as char);
-                            }
-                        }
-                    }
-                }
-                text
-            }
-        }
-    }
-
-    /// Flush the decoder to emit the last character(s).
-    pub fn flush(&mut self) -> String {
-        match self {
-            Psk31Stream::Bpsk { vdec, .. } => {
-                vdec.push_bit(0);
-                vdec.push_bit(0);
-                let mut text = String::new();
-                while let Some(ch) = vdec.pop_char() {
-                    if ch >= 0x20 && ch < 0x7f {
-                        text.push(ch as char);
-                    }
-                }
-                text
-            }
-            Psk31Stream::Qpsk { viterbi, vdec, .. } => {
-                // Flush Viterbi tail + varicode.
-                let mut text = String::new();
-                for b in viterbi.flush() {
-                    vdec.push_bit(b);
-                    while let Some(ch) = vdec.pop_char() {
-                        if ch >= 0x20 && ch < 0x7f {
-                            text.push(ch as char);
-                        }
-                    }
-                }
-                vdec.push_bit(0);
-                vdec.push_bit(0);
-                while let Some(ch) = vdec.pop_char() {
-                    if ch >= 0x20 && ch < 0x7f {
-                        text.push(ch as char);
-                    }
-                }
-                text
-            }
-        }
-    }
-
-}
 
 pub struct DecodeWorker {
     config: Arc<Mutex<DecodeConfig>>,
@@ -453,9 +312,15 @@ impl DecodeWorker {
 
                     if !is_signal {
                         if gap_edge {
-
                             info_counter    = 0;
                             smoothed_snr_db = 0.0;
+                            // Send zeroed Info so the Di bar clears immediately.
+                            let _ = self.tx.try_send(DecodeResult::Info {
+                                modulation: mode_label.to_owned(),
+                                center_hz:  carrier_hz,
+                                bw_hz:      0.0,
+                                snr_db:     0.0,
+                            });
                             if let Some(ref mut stream) = psk31_stream {
                                 // Flush remaining samples + Viterbi tail + varicode.
                                 if stream.fed_up_to() < iq_buf.len() {
@@ -483,7 +348,7 @@ impl DecodeWorker {
                             let base_hz = (carrier_hz - SYNC_SEARCH_HZ).max(0.0);
                             let max_hz  = carrier_hz + SYNC_SEARCH_HZ;
                             let results = psk31_sync(&iq_buf, fs, base_hz, max_hz, 4, margin, 256, 5);
-                            if let Some((_found_hz, time_sym)) = best_sync(&results, carrier_hz) {
+                            if let Some((_found_hz, time_sym)) = best_sync(&results, carrier_hz, PSK31_BAUD) {
                                 let scan_end = ((time_sym + 2) as usize * sps).min(iq_buf.len());
                                 let onset = iq_buf[..scan_end]
                                     .iter()
@@ -497,18 +362,16 @@ impl DecodeWorker {
                                 let start = onset;
 
                                 let mut stream = match mode {
-                                    DecodeMode::Bpsk31 => Psk31Stream::Bpsk {
-                                        demod:     Bpsk31Demod::new(fs, carrier_hz, 1.0),
-                                        decider:   Bpsk31Decider::new(),
-                                        vdec:      VaricodeDecoder::new(),
-                                        fed_up_to: start,
-                                    },
-                                    _ => Psk31Stream::Qpsk {
-                                        demod:     Qpsk31Demod::new(fs, carrier_hz, 1.0),
-                                        viterbi:   StreamingViterbi::new(&DQPSK_EXP),
-                                        vdec:      VaricodeDecoder::new(),
-                                        fed_up_to: start,
-                                    },
+                                    DecodeMode::Bpsk31 => {
+                                        let mut s = Psk31Stream::new_bpsk(fs, carrier_hz, 1.0);
+                                        s.set_fed_up_to(start);
+                                        s
+                                    }
+                                    _ => {
+                                        let mut s = Psk31Stream::new_qpsk(fs, carrier_hz, 1.0);
+                                        s.set_fed_up_to(start);
+                                        s
+                                    }
                                 };
                                 let text = stream.feed(&iq_buf[start..]);
                                 if !text.is_empty() {
@@ -573,6 +436,14 @@ impl DecodeWorker {
                             info_counter    = 0;
                             smoothed_snr_db = 0.0;
                             smoothed_bw_hz  = 0.0;
+                            // Send zeroed Info so the Di bar clears immediately.
+                            let label = if mode == DecodeMode::AmDsb { "AM DSB" } else { "Test Tone" };
+                            let _ = self.tx.try_send(DecodeResult::Info {
+                                modulation: label.to_owned(),
+                                center_hz:  carrier_hz,
+                                bw_hz:      0.0,
+                                snr_db:     0.0,
+                            });
                         }
                         continue;
                     }
@@ -625,153 +496,4 @@ impl DecodeWorker {
 
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-/// Pick the best sync result within 2 × PSK31_BAUD of `carrier_hz`.
-/// Primary sort: earliest time_sym (more data available for the demodulator,
-/// and the preamble is essential for varicode frame lock).
-/// Secondary sort: smallest frequency offset (for tie-breaking among concurrent starts).
-/// Returns `(carrier_hz, time_sym)`.
-pub fn best_sync(results: &[Psk31SyncResult], carrier_hz: f32) -> Option<(f32, usize)> {
-    results
-        .iter()
-        .filter(|r| (r.carrier_hz - carrier_hz).abs() <= 2.0 * PSK31_BAUD)
-        .min_by(|a, b| {
-            let da = (a.carrier_hz - carrier_hz).abs();
-            let db = (b.carrier_hz - carrier_hz).abs();
-            a.time_sym.cmp(&b.time_sym)
-                .then(da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal))
-        })
-        .map(|r| (r.carrier_hz, r.time_sym))
-}
-
-
-/// Compute a power spectrum (dB, same scaling as the display) from real samples,
-/// using an FFT whose size is the next power of two ≥ `samples.len()` clamped to
-/// a maximum of 4096 for speed.  Returns `(power_db_bins, bin_hz)`.
-fn power_spectrum(samples: &[f32], fs: f32) -> (Vec<f32>, f32) {
-    let n = samples.len().next_power_of_two().min(4096).max(64);
-    let bin_hz = fs / n as f32;
-
-    // Hann window + zero-pad.
-    let mut buf: Vec<Complex<f32>> = (0..n)
-        .map(|i| {
-            let s = if i < samples.len() { samples[i] } else { 0.0 };
-            let w = 0.5 - 0.5 * (std::f32::consts::TAU * i as f32 / n as f32).cos();
-            Complex { re: s * w, im: 0.0 }
-        })
-        .collect();
-
-    FftPlanner::new().plan_fft_forward(n).process(&mut buf);
-
-    let scale = 1.0 / n as f32;
-    let bins = n / 2 + 1;
-    let power_db: Vec<f32> = buf[..bins]
-        .iter()
-        .map(|c| {
-            let mag_sq = (c.re * c.re + c.im * c.im) * scale * scale;
-            10.0 * (mag_sq + 1e-12_f32).log10()
-        })
-        .collect();
-
-    (power_db, bin_hz)
-}
-
-/// Estimate SNR (dB) at `carrier_hz` using the same power-spectrum approach as
-/// the display: peak bin power vs median of bins 10–50 bins away from the peak.
-pub fn spectrum_snr_db(samples: &[f32], fs: f32, carrier_hz: f32) -> f32 {
-    let (power_db, bin_hz) = power_spectrum(samples, fs);
-    let n_bins = power_db.len();
-    if n_bins < 3 { return 0.0; }
-
-    let peak_bin = ((carrier_hz / bin_hz).round() as usize).min(n_bins - 1);
-
-    // Find the actual peak within ±3 bins of expected (AFC tolerance).
-    let search_r = 3_usize;
-    let lo = peak_bin.saturating_sub(search_r);
-    let hi = (peak_bin + search_r).min(n_bins - 1);
-    let sig_bin = (lo..=hi)
-        .max_by(|&a, &b| power_db[a].partial_cmp(&power_db[b]).unwrap_or(std::cmp::Ordering::Equal))
-        .unwrap_or(peak_bin);
-
-    let sig_db = power_db[sig_bin];
-
-    // Noise floor: collect bins at least 10 bins away from the signal bin,
-    // excluding DC (bin 0).  Use the median of those bins.
-    let guard = 10_usize;
-    let mut noise_bins: Vec<f32> = power_db
-        .iter()
-        .enumerate()
-        .filter(|&(i, _)| i > 0 && (i as isize - sig_bin as isize).unsigned_abs() >= guard)
-        .map(|(_, &v)| v)
-        .collect();
-
-    if noise_bins.is_empty() { return 0.0; }
-    noise_bins.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let noise_db = noise_bins[noise_bins.len() / 2]; // median
-
-    sig_db - noise_db
-}
-
-/// Estimate AM DSB occupied bandwidth (Hz).
-///
-/// AM DSB has a strong carrier with audio sidebands spreading outward on each
-/// side.  BW is measured as the span from the outer −7 dB point of the LSB to
-/// the outer −7 dB point of the USB, where −7 dB is relative to each
-/// sideband's own peak (≈ 20 % power level, matching the visual BW markers).
-///
-/// Strategy: carrier-relative outer-edge scan.
-///
-/// Assumes audio has been normalised to peak ≈ 0.9 before modulation.
-/// With mod_index = 1.0 the sidebands peak at −6 dB relative to the carrier.
-/// We scan outward from the carrier guard and find the outermost bin on each
-/// side still within `carrier_drop_db` of the carrier peak.  This threshold
-/// sits below the sideband peaks for both CW tones (strong narrow peaks) and
-/// broadband voice (many moderate bins), and above the AWGN noise floor.
-///
-/// −20 dB from carrier = 1 % of carrier power.  For normalised audio:
-///   - CW tone: sidebands at −6 dB → well above −20 dB cutoff.
-///   - Voice:   broadband sidebands at −6 to −15 dB per formant → above cutoff.
-///   - Silence: no modulation → sideband bins at noise floor (< −40 dB) → below.
-pub fn spectrum_bw_hz(samples: &[f32], fs: f32, carrier_hz: f32, _threshold_db: f32) -> f32 {
-    let search_hz         = 4_000.0_f32;
-    let carrier_drop_db   = 35.0_f32;   // outermost bin within 35 dB of carrier
-    let carrier_guard_bins = 3_usize;
-
-    let (power_db, bin_hz) = power_spectrum(samples, fs);
-    let n_bins = power_db.len();
-    if n_bins < 3 { return bin_hz; }
-
-    // Locate the carrier bin.
-    let nominal_bin = ((carrier_hz / bin_hz).round() as usize).min(n_bins - 1);
-    let cr = 3_usize;
-    let c_lo = nominal_bin.saturating_sub(cr);
-    let c_hi = (nominal_bin + cr).min(n_bins - 1);
-    let carrier_bin = (c_lo..=c_hi)
-        .max_by(|&a, &b| power_db[a].partial_cmp(&power_db[b]).unwrap_or(std::cmp::Ordering::Equal))
-        .unwrap_or(nominal_bin);
-
-    let cutoff = power_db[carrier_bin] - carrier_drop_db;
-    let search_bins = (search_hz / bin_hz).ceil() as usize;
-
-    // Left edge: outermost LSB bin above cutoff.
-    let lsb_lo = carrier_bin.saturating_sub(search_bins);
-    let lsb_hi = carrier_bin.saturating_sub(carrier_guard_bins);
-    let left_edge = if lsb_lo < lsb_hi {
-        (lsb_lo..=lsb_hi).find(|&i| power_db[i] >= cutoff).unwrap_or(carrier_bin)
-    } else {
-        carrier_bin
-    };
-
-    // Right edge: outermost USB bin above cutoff.
-    let usb_lo = (carrier_bin + carrier_guard_bins).min(n_bins - 1);
-    let usb_hi = (carrier_bin + search_bins).min(n_bins - 1);
-    let right_edge = if usb_lo < usb_hi {
-        (usb_lo..=usb_hi).rfind(|&i| power_db[i] >= cutoff).unwrap_or(carrier_bin)
-    } else {
-        carrier_bin
-    };
-
-    ((right_edge.max(left_edge) - left_edge + 1) as f32) * bin_hz
-}
 

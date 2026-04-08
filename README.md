@@ -8,7 +8,8 @@ and waterfall from a configurable signal source.
 
 - **Three display panes** — instantaneous spectrum, persistence density map, and scrolling waterfall
 - **Multiple signal sources** — synthetic test tone (sine + AWGN), AM DSB from looped audio, and PSK31 (BPSK31/QPSK31)
-- **Decode bar** — optional bottom bar (cycled by `D`) showing either signal info (Di mode: modulation, carrier, BW, SNR) or decoded text (Dt mode: smooth-scrolling PSK31 text ticker)
+- **Decode bar** — optional bottom bar (cycled by `D`) showing signal info
+  (Di: modulation, carrier, BW, SNR) or decoded text (Dt: smooth-scrolling PSK31 ticker)
 - **Frequency pan and zoom** — keyboard-driven viewport with coarse/fine pan snap, coarse/fine zoom, and span steps
 - **Source lock** — lock source frequency/carrier to the display center marker; tracks pan, zoom, and span changes
 - **Frequency markers** — primary center marker plus two bracket markers (A/B) with label display
@@ -19,7 +20,7 @@ and waterfall from a configurable signal source.
 
 - Rust (edition 2024)
 - macOS or Linux (uses OpenGL via `eframe` glow backend)
-- [orion-sdr](https://crates.io/crates/orion-sdr) 0.0.26 (pulled automatically from crates.io)
+- [orion-sdr](https://crates.io/crates/orion-sdr) 0.0.28 (pulled automatically from crates.io)
 
 ## Screen Shots
 
@@ -58,6 +59,7 @@ view:
       mod_index:     1.0
       loop_gap_secs: 7.0
       noise_amp:     0.05
+      msg_repeat:    1
     psk31:
       mode:           BPSK31   # or QPSK31
       carrier_hz:     12000.0
@@ -81,7 +83,7 @@ All fields are optional; missing fields fall back to built-in defaults.
 | `E` | Toggle persistence envelope overlay |
 | `L` | Lock source freq/carrier to display center (tracks pan/zoom/span) |
 | `P` | Toggle peak hold line |
-| `R` | Reset source, timers, and decode state |
+| `R` | Reset source, timers, decode state, and frequency view |
 | `S` | Open/close settings popover |
 | `H` or `?` | Toggle help overlay |
 | `Escape` | Dismiss overlays |
