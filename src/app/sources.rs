@@ -2,9 +2,7 @@ use crate::decode::{DecodeMode};
 use crate::source::tone::TestToneSource;
 use crate::source::amdsb::{AmDsbSource, BuiltinAudio, load_builtin};
 use crate::source::psk31::{Psk31Mode, Psk31Source};
-use crate::source::ft8::{Ft8Source, Ft8Mode, Ft8MsgType,
-    FT8_DEFAULT_CARRIER_HZ, FT8_DEFAULT_LOOP_GAP_SECS, FT8_DEFAULT_REPEAT,
-    FT8_DEFAULT_CALL_TO, FT8_DEFAULT_CALL_DE, FT8_DEFAULT_GRID, FT8_DEFAULT_FREE_TEXT};
+use crate::source::ft8::{Ft8Source, Ft8Mode, Ft8MsgType};
 
 use super::{SAMPLE_RATE, SourceMode};
 use super::view::ViewApp;
@@ -50,19 +48,28 @@ impl ViewApp {
         )
     }
 
-    /// Build a fresh Ft8Source from defaults.
+    /// Build a fresh Ft8Source from current settings values.
     pub(super) fn make_ft8_source(&self) -> Ft8Source {
+        let mode = match self.settings.ft8_mode_str() {
+            "FT4" => Ft8Mode::Ft4,
+            _     => Ft8Mode::Ft8,
+        };
+        let msg_type = if self.settings.ft8_msg_is_free_text() {
+            Ft8MsgType::FreeText
+        } else {
+            Ft8MsgType::Standard
+        };
         Ft8Source::new(
-            FT8_DEFAULT_CARRIER_HZ,
-            FT8_DEFAULT_LOOP_GAP_SECS,
-            0.0,
-            Ft8Mode::Ft8,
-            Ft8MsgType::Standard,
-            FT8_DEFAULT_CALL_TO.to_owned(),
-            FT8_DEFAULT_CALL_DE.to_owned(),
-            FT8_DEFAULT_GRID.to_owned(),
-            FT8_DEFAULT_FREE_TEXT.to_owned(),
-            FT8_DEFAULT_REPEAT,
+            self.settings.ft8_carrier_hz(),
+            self.settings.ft8_loop_gap_secs(),
+            self.settings.ft8_noise_amp(),
+            mode,
+            msg_type,
+            self.settings.ft8_call_to().to_owned(),
+            self.settings.ft8_call_de().to_owned(),
+            self.settings.ft8_grid().to_owned(),
+            self.settings.ft8_free_text().to_owned(),
+            self.settings.ft8_msg_repeat(),
             SAMPLE_RATE,
         )
     }
@@ -204,6 +211,37 @@ impl ViewApp {
             if carrier_changed || mode_changed || repeat_changed { psk31.render(); }
             psk31.update_loop_gap();
         }
+
+        if let Some(ft8) = self.source.as_any_mut().downcast_mut::<Ft8Source>() {
+            let new_mode = match self.settings.ft8_mode_str() {
+                "FT4" => Ft8Mode::Ft4,
+                _     => Ft8Mode::Ft8,
+            };
+            let new_msg_type = if self.settings.ft8_msg_is_free_text() {
+                Ft8MsgType::FreeText
+            } else {
+                Ft8MsgType::Standard
+            };
+            let new_repeat       = self.settings.ft8_msg_repeat();
+            let carrier_changed  = (ft8.carrier_hz - self.settings.ft8_carrier_hz()).abs() > 0.01;
+            let mode_changed     = ft8.ft8_mode != new_mode;
+            let msg_type_changed = ft8.msg_type != new_msg_type;
+            let repeat_changed   = ft8.msg_repeat != new_repeat;
+            ft8.carrier_hz    = self.settings.ft8_carrier_hz();
+            ft8.noise_amp     = self.settings.ft8_noise_amp();
+            ft8.loop_gap_secs = self.settings.ft8_loop_gap_secs();
+            ft8.ft8_mode      = new_mode;
+            ft8.msg_type      = new_msg_type;
+            ft8.msg_repeat    = new_repeat.max(1);
+            // free_text is NOT synced here — applied only on explicit text edit accept
+            if carrier_changed || mode_changed || msg_type_changed || repeat_changed {
+                ft8.render();
+            }
+            ft8.update_loop_gap();
+            self.ft_mode     = ft8.ft8_mode;
+            self.ft_msg_type = ft8.msg_type;
+        }
+
         self.sync_decode_config();
     }
 
@@ -244,6 +282,16 @@ impl ViewApp {
         self.reset_playback();
     }
 
+    /// Apply the committed FT8 free-text message to the live source and re-render.
+    /// Called only when the user explicitly accepts the text edit via Enter.
+    pub(super) fn apply_ft8_free_text(&mut self) {
+        if let Some(ft8) = self.source.as_any_mut().downcast_mut::<Ft8Source>() {
+            ft8.free_text = self.settings.ft8_free_text().to_owned();
+            ft8.render();
+        }
+        self.reset_playback();
+    }
+
     /// Update the shared DecodeConfig to match the current source mode and carrier.
     pub(super) fn sync_decode_config(&mut self) {
         let mode = match self.source_mode {
@@ -262,7 +310,7 @@ impl ViewApp {
             SourceMode::Psk31    => self.settings.psk31_carrier_hz(),
             SourceMode::AmDsb    => self.settings.am_carrier_hz(),
             SourceMode::TestTone => self.settings.freq_hz(),
-            SourceMode::Ft8      => FT8_DEFAULT_CARRIER_HZ,
+            SourceMode::Ft8      => self.settings.ft8_carrier_hz(),
         };
         if let Ok(mut cfg) = self.decode_config.lock() {
             cfg.mode       = mode;

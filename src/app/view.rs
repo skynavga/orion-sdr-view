@@ -21,17 +21,77 @@ use super::{
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/// Format a `SystemTime` as `HH:MM:SS` UTC.
-fn format_utc_time(t: std::time::SystemTime) -> String {
-    let secs = t
+/// Format a `SystemTime` as `HH:MM:SS`.
+///
+/// When `utc` is true the time is expressed in UTC.  When false it is adjusted
+/// to local civil time using the system's UTC offset at the moment of the call.
+fn format_time(t: std::time::SystemTime, utc: bool) -> String {
+    let unix_secs = t
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
+        .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
-    let s = secs % 60;
-    let m = (secs / 60) % 60;
-    let h = (secs / 3600) % 24;
+
+    let secs = if utc {
+        unix_secs
+    } else {
+        // Compute the local UTC offset by comparing local and UTC broken-down
+        // times using only the std library (no chrono dependency).
+        let offset = local_utc_offset_secs();
+        unix_secs + offset
+    };
+
+    let s = secs.rem_euclid(60);
+    let m = (secs / 60).rem_euclid(60);
+    let h = (secs / 3600).rem_euclid(24);
     format!("{h:02}:{m:02}:{s:02}")
 }
+
+/// Return the local UTC offset in seconds using POSIX `localtime_r` / `gmtime_r`.
+/// Returns 0 on non-Unix platforms.
+#[cfg(unix)]
+fn local_utc_offset_secs() -> i64 {
+    // Raw C bindings — avoids a libc crate dependency.
+    // tm struct layout is identical on macOS and Linux (9 × i32).
+    #[repr(C)]
+    struct Tm {
+        tm_sec:   i32, tm_min:  i32, tm_hour: i32,
+        tm_mday:  i32, tm_mon:  i32, tm_year: i32,
+        tm_wday:  i32, tm_yday: i32, tm_isdst: i32,
+        // macOS has two extra fields; pad generously.
+        _pad: [i32; 8],
+    }
+    unsafe extern "C" {
+        fn localtime_r(timep: *const i64, result: *mut Tm) -> *mut Tm;
+        fn gmtime_r   (timep: *const i64, result: *mut Tm) -> *mut Tm;
+    }
+
+    let unix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    let mut local_tm: Tm = unsafe { std::mem::zeroed() };
+    let mut gm_tm:    Tm = unsafe { std::mem::zeroed() };
+    unsafe {
+        localtime_r(&unix, &mut local_tm);
+        gmtime_r   (&unix, &mut gm_tm);
+    }
+
+    let local_secs = local_tm.tm_hour as i64 * 3600
+        + local_tm.tm_min as i64 * 60
+        + local_tm.tm_sec as i64;
+    let gm_secs = gm_tm.tm_hour as i64 * 3600
+        + gm_tm.tm_min    as i64 * 60
+        + gm_tm.tm_sec    as i64;
+
+    let mut diff = local_secs - gm_secs;
+    if diff >  14 * 3600 { diff -= 24 * 3600; }
+    if diff < -12 * 3600 { diff += 24 * 3600; }
+    diff
+}
+
+#[cfg(not(unix))]
+fn local_utc_offset_secs() -> i64 { 0 }
 
 // ── ViewApp ───────────────────────────────────────────────────────────────────
 
@@ -102,8 +162,10 @@ pub(crate) struct ViewApp {
     /// Wall-clock time when the current FT8/FT4 signal burst started (for timestamp capture).
     pub(super) ft_signal_onset: Option<std::time::SystemTime>,
     /// Cached FT8/FT4 sub-mode for use in draw functions (updated on mode cycle).
-    pub(super) ft_mode:     crate::source::ft8::Ft8Mode,
-    pub(super) ft_msg_type: crate::source::ft8::Ft8MsgType,
+    pub(super) ft_mode:       crate::source::ft8::Ft8Mode,
+    pub(super) ft_msg_type:   crate::source::ft8::Ft8MsgType,
+    /// Display timestamps in UTC (true) or local time (false).
+    pub(super) time_zone_utc: bool,
 }
 
 impl ViewApp {
@@ -190,7 +252,9 @@ impl ViewApp {
             ft_signal_onset:   None,
             ft_mode:           crate::source::ft8::Ft8Mode::Ft8,
             ft_msg_type:       crate::source::ft8::Ft8MsgType::Standard,
+            time_zone_utc:     true,
         };
+        app.time_zone_utc = cfg.time_zone_utc();
         app.sync_decode_config();
         app
     }
@@ -219,7 +283,7 @@ impl ViewApp {
             SourceMode::TestTone => self.settings.set_freq_hz(hz),
             SourceMode::AmDsb    => self.settings.set_am_carrier_hz(hz),
             SourceMode::Psk31    => self.settings.set_psk31_carrier_hz(hz),
-            SourceMode::Ft8      => {}  // Phase 3 will add ft8 carrier setting
+            SourceMode::Ft8      => self.settings.set_ft8_carrier_hz(hz),
         }
         self.sync_settings();
     }
@@ -274,6 +338,9 @@ impl ViewApp {
             }
             if result.psk31_msg_accepted {
                 self.apply_psk31_message();
+            }
+            if result.ft8_text_accepted {
+                self.apply_ft8_free_text();
             }
             self.sync_settings();
             // Let global keys (Q, M, N) work even while settings is open,
@@ -648,7 +715,7 @@ impl eframe::App for ViewApp {
                     if decoded {
                         self.ft_frame_count = self.ft_frame_count.saturating_add(1).min(999);
                         if let Some(onset) = self.ft_signal_onset.take() {
-                            self.ft_last_timestamp = format_utc_time(onset);
+                            self.ft_last_timestamp = format_time(onset, self.time_zone_utc);
                         }
                     } else {
                         self.ft_err_count = self.ft_err_count.saturating_add(1).min(999);

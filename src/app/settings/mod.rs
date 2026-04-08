@@ -6,12 +6,14 @@ mod display;
 mod tone;
 mod amdsb;
 mod psk31;
+mod ft8;
 
 use field::{Row, ToggleField, draw_num, draw_toggle};
 use display::DisplayRows;
 use tone::ToneRows;
 use amdsb::AmDsbRows;
 use psk31::Psk31Rows;
+use ft8::Ft8Rows;
 
 const OVERLAY_W: f32 = 560.0;
 const OVERLAY_H: f32 = 446.0;
@@ -37,19 +39,22 @@ enum RowTarget {
     Tone(usize),
     AmDsb(usize),
     Psk31(usize),
+    Ft8(usize),
 }
 
 // ── HandleKeysResult ──────────────────────────────────────────────────────
 
 /// Signals back to ViewApp after a key event in the settings popover.
 pub struct HandleKeysResult {
-    pub source_switched:    bool,
-    pub am_audio_changed:   bool,
-    pub wav_load_requested: bool,
+    pub source_switched:     bool,
+    pub am_audio_changed:    bool,
+    pub wav_load_requested:  bool,
     /// True when the user pressed Enter to commit a new PSK31 message.
-    pub psk31_msg_accepted: bool,
+    pub psk31_msg_accepted:  bool,
+    /// True when the user pressed Enter to commit a new FT8 free-text message.
+    pub ft8_text_accepted:   bool,
     /// True when a text field is actively consuming all keyboard input.
-    pub text_editing:       bool,
+    pub text_editing:        bool,
 }
 
 // ── SettingsState ──────────────────────────────────────────────────────────
@@ -66,6 +71,7 @@ pub struct SettingsState {
     tone: ToneRows,
     amdsb: AmDsbRows,
     psk31: Psk31Rows,
+    ft8: Ft8Rows,
 }
 
 impl SettingsState {
@@ -84,13 +90,14 @@ impl SettingsState {
             focused_row: None,
             source_selector: Row::Toggle(ToggleField {
                 label: "Source",
-                options: &["Test Tone", "AM DSB", "PSK31"],
+                options: &["Test Tone", "AM DSB", "PSK31", "FT8"],
                 index: 0, default: 0,
             }),
             display: DisplayRows::new(db_min, db_max),
             tone: ToneRows::new(freq_hz, noise_amp, amp_max, ramp_secs, pause_secs),
             amdsb: AmDsbRows::new(),
             psk31: Psk31Rows::new(),
+            ft8: Ft8Rows::new(),
         }
     }
 
@@ -106,6 +113,7 @@ impl SettingsState {
         s.display.patch_from_config(cfg);
         s.amdsb.patch_from_config(cfg);
         s.psk31.patch_from_config(cfg);
+        s.ft8.patch_from_config(cfg);
         s
     }
 
@@ -121,6 +129,10 @@ impl SettingsState {
 
     fn source_is_psk31(&self) -> bool {
         self.source_index() == 2
+    }
+
+    fn source_is_ft8(&self) -> bool {
+        self.source_index() == 3
     }
 
     pub fn source_mode_idx(&self) -> usize {
@@ -151,6 +163,8 @@ impl SettingsState {
                     v.extend(self.amdsb.visible_indices().into_iter().map(RowTarget::AmDsb));
                 } else if self.source_is_psk31() {
                     v.extend(self.psk31.visible_indices().into_iter().map(RowTarget::Psk31));
+                } else if self.source_is_ft8() {
+                    v.extend(self.ft8.visible_indices().into_iter().map(RowTarget::Ft8));
                 } else {
                     v.extend(self.tone.visible_indices().into_iter().map(RowTarget::Tone));
                 }
@@ -171,6 +185,7 @@ impl SettingsState {
             RowTarget::Tone(i)    => &self.tone.rows[i],
             RowTarget::AmDsb(i)   => &self.amdsb.rows[i],
             RowTarget::Psk31(i)   => &self.psk31.rows[i],
+            RowTarget::Ft8(i)     => &self.ft8.rows[i],
         }
     }
 
@@ -182,6 +197,7 @@ impl SettingsState {
             RowTarget::Tone(i)    => &mut self.tone.rows[i],
             RowTarget::AmDsb(i)   => &mut self.amdsb.rows[i],
             RowTarget::Psk31(i)   => &mut self.psk31.rows[i],
+            RowTarget::Ft8(i)     => &mut self.ft8.rows[i],
         }
     }
 
@@ -193,6 +209,7 @@ impl SettingsState {
             am_audio_changed:   false,
             wav_load_requested: false,
             psk31_msg_accepted: false,
+            ft8_text_accepted:  false,
             text_editing:       false,
         };
 
@@ -208,6 +225,9 @@ impl SettingsState {
             && self.amdsb.wav_row_is_active();
 
         let psk31_custom_focused = matches!(focused_target, Some(RowTarget::Psk31(i)) if i == Psk31Rows::CUSTOM_MSG_IDX);
+
+        let ft8_free_text_focused = matches!(focused_target, Some(RowTarget::Ft8(i)) if i == Ft8Rows::FREE_TEXT_IDX)
+            && self.ft8.msg_is_free_text();
 
         ctx.input(|i| {
             // WAV text field handling
@@ -244,6 +264,22 @@ impl SettingsState {
                 // Not consumed — fall through to navigation
             }
 
+            // FT8 free-text field handling
+            if ft8_free_text_focused {
+                let text_result = self.ft8.handle_text_keys(&i.events);
+                if text_result.accepted {
+                    result.ft8_text_accepted = true;
+                }
+                if text_result.defocus {
+                    self.focused_row = None;
+                }
+                if text_result.consumed {
+                    result.text_editing = true;
+                    return;
+                }
+                // Not consumed — fall through to navigation
+            }
+
             // If a text row is no longer focused (user navigated away),
             // discard any in-progress pending edit.
             if self.psk31.pending_msg.is_some() {
@@ -251,6 +287,9 @@ impl SettingsState {
             }
             if self.amdsb.pending_wav.is_some() {
                 self.amdsb.discard_pending();
+            }
+            if self.ft8.pending_text.is_some() {
+                self.ft8.discard_pending();
             }
 
             // S or Escape: close
@@ -487,6 +526,12 @@ impl SettingsState {
                 (RowTarget::AmDsb(idx), Row::Text(_)) if idx == AmDsbRows::WAV_FILE_IDX => {
                     self.amdsb.draw_wav_field(painter, val_x, y, ROW_H, rect.right(), &med, &small, val_color, focused);
                 }
+                (RowTarget::Ft8(idx), Row::Text(_)) if idx == Ft8Rows::FREE_TEXT_IDX => {
+                    self.ft8.draw_free_text(painter, val_x, y, ROW_H, rect.right(), &med, &small, val_color, focused);
+                }
+                (RowTarget::Ft8(idx), Row::Text(_)) => {
+                    self.ft8.draw_readonly_text(idx, painter, val_x, y, ROW_H, rect.right(), &med, &small, val_color, focused);
+                }
                 _ => {}
             }
 
@@ -509,6 +554,9 @@ impl SettingsState {
 
         let psk31_custom_focused = matches!(focused_target, Some(RowTarget::Psk31(i)) if i == Psk31Rows::CUSTOM_MSG_IDX);
 
+        let ft8_free_text_focused = matches!(focused_target, Some(RowTarget::Ft8(i)) if i == Ft8Rows::FREE_TEXT_IDX)
+            && self.ft8.msg_is_free_text();
+
         let hint = if wav_focused && self.amdsb.pending_wav.is_some() {
             "type path   ↵ load   Esc cancel"
         } else if wav_focused {
@@ -516,6 +564,10 @@ impl SettingsState {
         } else if psk31_custom_focused && self.psk31.pending_msg.is_some() {
             "type message   ↵ accept   Esc cancel"
         } else if psk31_custom_focused {
+            "↵ edit message   ↑↓ navigate"
+        } else if ft8_free_text_focused && self.ft8.pending_text.is_some() {
+            "type message   ↵ accept   Esc cancel"
+        } else if ft8_free_text_focused {
             "↵ edit message   ↑↓ navigate"
         } else if self.focused_row.is_some() {
             "↑↓ navigate   ◀▶ adjust   R reset field   Esc deselect"
