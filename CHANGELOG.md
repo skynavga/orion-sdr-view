@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.7] - 2026-04-07
+
+### Changed
+
+- Migrated `Psk31Stream`, spectral analysis functions
+  (`power_spectrum`, `spectrum_snr_db`, `spectrum_bw_hz`,
+  `best_sync`), and constants (`SIGNAL_THRESHOLD`, `PSK31_BW_HZ`)
+  to orion-sdr 0.0.28; local definitions replaced with re-exports
+- Bumped `orion-sdr` dependency 0.0.27 → 0.0.28
+
+### Fixed
+
+- Di bar now shows zeroed BW/SNR during signal gaps for all modes
+  (previously retained the last pre-gap values)
+- README: corrected orion-sdr version, added missing
+  `am_dsb.msg_repeat` config field, fixed `R` key description
+
 ## [0.0.6] - 2026-04-06
 
 ### Changed

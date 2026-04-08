@@ -5,7 +5,7 @@ use orion_sdr::Block;
 use orion_sdr::demodulate::psk31::{Bpsk31Demod, Bpsk31Decider};
 use orion_sdr::codec::varicode::VaricodeDecoder;
 use orion_sdr::sync::psk31_sync::psk31_sync;
-use orion_sdr::modulate::psk31::psk31_sps;
+use orion_sdr::modulate::psk31::{psk31_sps, PSK31_BAUD};
 
 use orion_sdr_view::decode::{
     DecodeMode, DecodeResult, DecodeTicker,
@@ -81,7 +81,7 @@ fn decode_bpsk31(
 
     let real: Vec<f32> = iq.iter().map(|c| c.re).collect();
 
-    let (found_hz, time_sym) = match best_sync(&results, carrier_hz) {
+    let (found_hz, time_sym) = match best_sync(&results, carrier_hz, PSK31_BAUD) {
         Some(r) => r,
         None => {
             let snr = spectrum_snr_db(&real, fs, carrier_hz);
@@ -167,9 +167,6 @@ fn run_streaming_decode(
     mode: Psk31Mode,
     msg: &str, repeat: usize, loops: usize, loop_gap: f32,
 ) -> String {
-    use orion_sdr::demodulate::psk31::{Bpsk31Demod, Bpsk31Decider, Qpsk31Demod};
-    use orion_sdr::codec::psk31_conv::{StreamingViterbi, DQPSK_EXP};
-    use orion_sdr::codec::varicode::VaricodeDecoder;
     use orion_sdr::util::rms;
 
     let sps = psk31_sps(FS);
@@ -222,7 +219,7 @@ fn run_streaming_decode(
             let base_hz = (carrier_hz - SYNC_SEARCH_HZ).max(0.0);
             let max_hz  = carrier_hz + SYNC_SEARCH_HZ;
             let results = psk31_sync(&iq_buf, FS, base_hz, max_hz, 4, margin, 256, 5);
-            if let Some((_found_hz, time_sym)) = best_sync(&results, carrier_hz) {
+            if let Some((_found_hz, time_sym)) = best_sync(&results, carrier_hz, PSK31_BAUD) {
                 let scan_end = ((time_sym + 2) * sps).min(iq_buf.len());
                 let onset = iq_buf[..scan_end]
                     .iter()
@@ -230,18 +227,16 @@ fn run_streaming_decode(
                     .unwrap_or(0);
                 let start = onset;
                 let mut s = match decode_mode {
-                    DecodeMode::Bpsk31 => Psk31Stream::Bpsk {
-                        demod:     Bpsk31Demod::new(FS, carrier_hz, 1.0),
-                        decider:   Bpsk31Decider::new(),
-                        vdec:      VaricodeDecoder::new(),
-                        fed_up_to: start,
-                    },
-                    _ => Psk31Stream::Qpsk {
-                        demod:     Qpsk31Demod::new(FS, carrier_hz, 1.0),
-                        viterbi:   StreamingViterbi::new(&DQPSK_EXP),
-                        vdec:      VaricodeDecoder::new(),
-                        fed_up_to: start,
-                    },
+                    DecodeMode::Bpsk31 => {
+                        let mut s = Psk31Stream::new_bpsk(FS, carrier_hz, 1.0);
+                        s.set_fed_up_to(start);
+                        s
+                    }
+                    _ => {
+                        let mut s = Psk31Stream::new_qpsk(FS, carrier_hz, 1.0);
+                        s.set_fed_up_to(start);
+                        s
+                    }
                 };
                 let text = s.feed(&iq_buf[start..]);
                 if !text.is_empty() { all_text.push_str(&text); }
