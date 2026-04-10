@@ -1,13 +1,13 @@
 use orion_sdr::modulate::{Bpsk31Mod, Qpsk31Mod};
 
-use super::SignalSource;
+use super::{SignalSource, MAX_SIG_SECS};
 
 // ── PSK31 constants ───────────────────────────────────────────────────────────
 
-pub const PSK31_DEFAULT_TEXT: &str = "CQ CQ CQ DE N0GNR";
+pub const PSK31_DEFAULT_CANNED_TEXT: &str = "CQ CQ CQ DE N0GNR";
 pub const PSK31_DEFAULT_CUSTOM_TEXT: &str = "Custom message";
 pub const PSK31_DEFAULT_REPEAT: usize = 3;
-pub const PSK31_DEFAULT_LOOP_GAP_SECS: f32 = 15.0;
+pub const PSK31_DEFAULT_GAP_SECS: f32 = 15.0;
 
 // ── Psk31Mode ─────────────────────────────────────────────────────────────────
 
@@ -23,7 +23,7 @@ pub enum Psk31Mode { Bpsk31, Qpsk31 }
 /// gap, then repeats indefinitely without reallocation.
 pub struct Psk31Source {
     pub carrier_hz:    f32,
-    pub loop_gap_secs: f32,
+    pub gap_secs:      f32,
     pub noise_amp:     f32,
     pub mode:          Psk31Mode,
     /// Text to transmit (ASCII). Repeated `msg_repeat` times per loop.
@@ -34,24 +34,24 @@ pub struct Psk31Source {
     samples:           Vec<f32>,
     pos:               usize,
     gap_remaining:     usize,
-    loop_gap_samples:  usize,
+    gap_samples:       usize,
     rng:               u64,
 }
 
 impl Psk31Source {
     pub fn new(
         carrier_hz: f32,
-        loop_gap_secs: f32,
+        gap_secs: f32,
         noise_amp: f32,
         mode: Psk31Mode,
         message: String,
         msg_repeat: usize,
         mod_rate: f32,
     ) -> Self {
-        let loop_gap_samples = (loop_gap_secs * mod_rate) as usize;
+        let gap_samples = (gap_secs * mod_rate) as usize;
         let mut src = Self {
             carrier_hz,
-            loop_gap_secs,
+            gap_secs,
             noise_amp,
             mode,
             message,
@@ -60,7 +60,7 @@ impl Psk31Source {
             samples: Vec::new(),
             pos: 0,
             gap_remaining: 0,
-            loop_gap_samples,
+            gap_samples,
             rng: 0x853c_49e6_748f_ea9b,
         };
         src.render();
@@ -74,8 +74,7 @@ impl Psk31Source {
     /// separated by a single space, all within one preamble/postamble envelope.
     pub fn render(&mut self) {
         // Build the repeated text: "msg msg msg" (space-separated).
-        let repeated: Vec<u8> = std::iter::repeat(self.message.as_bytes())
-            .take(self.msg_repeat)
+        let repeated: Vec<u8> = std::iter::repeat_n(self.message.as_bytes(), self.msg_repeat)
             .collect::<Vec<_>>()
             .join(b" ".as_ref());
 
@@ -95,9 +94,9 @@ impl Psk31Source {
         self.gap_remaining = 0;
     }
 
-    /// Recompute the loop gap sample count after `loop_gap_secs` changes.
-    pub fn update_loop_gap(&mut self) {
-        self.loop_gap_samples = (self.loop_gap_secs * self.mod_rate) as usize;
+    /// Recompute the gap sample count after `gap_secs` changes.
+    pub fn update_gap(&mut self) {
+        self.gap_samples = (self.gap_secs * self.mod_rate) as usize;
     }
 
     fn xorshift(&mut self) -> f32 {
@@ -116,6 +115,10 @@ impl SignalSource for Psk31Source {
     }
 
     fn next_samples(&mut self, n: usize) -> Vec<f32> {
+        let max_sig_samples = (MAX_SIG_SECS * self.mod_rate) as usize;
+        // Truncate the effective playback length so the signal burst never
+        // exceeds MAX_SIG_SECS (keeps the decode-bar timer within bounds).
+        let effective_len = self.samples.len().min(max_sig_samples);
         let mut out = Vec::with_capacity(n);
         let mut i = 0;
         while i < n {
@@ -134,8 +137,8 @@ impl SignalSource for Psk31Source {
                 if self.gap_remaining == 0 {
                     self.pos = 0;
                 }
-            } else if self.pos < self.samples.len() {
-                let available = (self.samples.len() - self.pos).min(n - i);
+            } else if self.pos < effective_len {
+                let available = (effective_len - self.pos).min(n - i);
                 for k in 0..available {
                     let noise = if self.noise_amp > 0.0 {
                         self.noise_amp * self.xorshift()
@@ -146,8 +149,8 @@ impl SignalSource for Psk31Source {
                 }
                 self.pos += available;
                 i += available;
-                if self.pos >= self.samples.len() {
-                    self.gap_remaining = self.loop_gap_samples;
+                if self.pos >= effective_len {
+                    self.gap_remaining = self.gap_samples;
                 }
             } else {
                 // samples is empty (should not happen after render())

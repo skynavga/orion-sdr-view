@@ -7,9 +7,9 @@ and waterfall from a configurable signal source.
 ## Features
 
 - **Three display panes** — instantaneous spectrum, persistence density map, and scrolling waterfall
-- **Multiple signal sources** — synthetic test tone (sine + AWGN), AM DSB from looped audio, and PSK31 (BPSK31/QPSK31)
+- **Multiple signal sources** — synthetic test tone (sine + AWGN), AM DSB from looped audio, PSK31 (BPSK31/QPSK31), and FT8/FT4
 - **Decode bar** — optional bottom bar (cycled by `D`) showing signal info
-  (Di: modulation, carrier, BW, SNR) or decoded text (Dt: smooth-scrolling PSK31 ticker)
+  (Di: modulation, carrier, BW, SNR) or decoded text (Dt: smooth-scrolling teletype ticker)
 - **Frequency pan and zoom** — keyboard-driven viewport with coarse/fine pan snap, coarse/fine zoom, and span steps
 - **Source lock** — lock source frequency/carrier to the display center marker; tracks pan, zoom, and span changes
 - **Frequency markers** — primary center marker plus two bracket markers (A/B) with label display
@@ -24,7 +24,7 @@ and waterfall from a configurable signal source.
 
 ## Screen Shots
 
-### AM-DSB Image Source with Markers
+### AM-DSB Image Source
 
 <a href="./docs/images/source-am-dsb.png">
   <img alt="AM-DSB Input Source" src="./docs/images/source-am-dsb.png" width="66%">
@@ -45,29 +45,39 @@ working directory or pass `--config <path>`:
 ```yaml
 view:
   display:
-    db_min: -100.0
-    db_max: -20.0
+    db_min:    -100.0
+    db_max:    -20.0
+    time_zone: utc      # "utc", "local", or "+HH:MM" / "-HH:MM"
   sources:
     test_tone:
       freq_hz:    12000.0
-      noise_amp:  0.05
       amp_max:    0.65
       ramp_secs:  3.0
-      pause_secs: 7.0
+      pause_secs: 7.0   # dwell at both amplitude extremes (not a gap)
+      noise_amp:  0.05
     am_dsb:
-      carrier_hz:    12000.0
-      mod_index:     1.0
-      loop_gap_secs: 7.0
-      noise_amp:     0.05
-      msg_repeat:    1
+      msg_repeat: 1
+      carrier_hz: 12000.0
+      mod_index:  1.0
+      gap_secs:   7.0
+      noise_amp:  0.05
     psk31:
-      mode:           BPSK31   # or QPSK31
-      carrier_hz:     12000.0
-      loop_gap_secs:  15.0
-      noise_amp:      0.05
-      message:        "CQ CQ CQ DE N0GNR"
-      custom_message: "Custom message"
-      msg_repeat:     3
+      mode:        BPSK31             # or QPSK31
+      canned_text: "CQ CQ CQ DE N0GNR"
+      custom_text: "Custom message"
+      msg_repeat:  3
+      carrier_hz:  12000.0
+      gap_secs:    15.0
+      noise_amp:   0.05
+    ft8:
+      mode:       FT8                    # or FT4
+      call_to:    CQ
+      call_de:    N0GNR
+      grid:       FN31
+      free_text:  "CQ DX"
+      carrier_hz: 12000.0
+      gap_secs:   15.0
+      noise_amp:  0.05
 ```
 
 All fields are optional; missing fields fall back to built-in defaults.

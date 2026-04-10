@@ -8,7 +8,7 @@ mod amdsb;
 mod psk31;
 
 pub use defaults::Defaults;
-pub use display::DisplayConfig;
+pub use display::{DisplayConfig, TzMode, format_offset_min};
 pub use ft8::Ft8Config;
 pub use tone::TestToneConfig;
 pub use amdsb::AmDsbConfig;

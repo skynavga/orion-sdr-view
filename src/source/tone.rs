@@ -23,7 +23,8 @@ enum CycleState {
 ///
 /// When `cycling` is true the tone amplitude follows a 4-phase sequence:
 /// ramp 0.0 → 0.65, pause, ramp 0.65 → 0.0, pause. Each ramp takes
-/// `ramp_secs` seconds; each pause lasts `pause_secs` seconds.
+/// `ramp_secs` seconds; each pause (at both extremes) lasts `pause_secs`
+/// seconds.
 pub struct TestSignalGen {
     phase: f32,
     pub freq_hz: f32,

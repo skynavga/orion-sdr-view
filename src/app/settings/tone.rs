@@ -33,7 +33,7 @@ impl ToneRows {
                 }),
                 Row::Num(NumField {
                     label: "Pause secs", value: pause_secs, default: 7.0,
-                    step: 0.5, min: 0.5, max: 60.0, unit: " s",
+                    step: 0.5, min: 0.5, max: 99.99, unit: " s",
                 }),
             ],
         }

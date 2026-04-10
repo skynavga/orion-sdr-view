@@ -22,13 +22,13 @@ impl RingBuffer {
     }
 
     /// Copy samples into `out` in oldest-to-newest order, filling at most `out.len()` samples.
-    pub fn fill_linear(&self, out: &mut Vec<f32>) {
+    pub fn fill_linear(&self, out: &mut [f32]) {
         let cap = self.buf.len();
         let n = out.len().min(cap);
         // `head` is the next write position, so `head` is the oldest sample.
         let start = (self.head + cap - n) % cap;
-        for i in 0..n {
-            out[i] = self.buf[(start + i) % cap];
+        for (i, slot) in out.iter_mut().take(n).enumerate() {
+            *slot = self.buf[(start + i) % cap];
         }
     }
 }

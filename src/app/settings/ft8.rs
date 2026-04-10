@@ -1,18 +1,17 @@
 use eframe::egui;
-use super::field::{Row, NumField, ToggleField, TextField};
+use super::field::{Row, NumField, RowDrawCtx, ToggleField, TextField};
 use crate::config::ViewConfig;
 
 // ── Row indices (local) ───────────────────────────────────────────────────
 const MODE:       usize = 0;
 const CARRIER:    usize = 1;
-const LOOP_GAP:   usize = 2;
+const GAP:        usize = 2;
 const NOISE:      usize = 3;
 const MSG_TYPE:   usize = 4;
 const CALL_TO:    usize = 5;
 const CALL_DE:    usize = 6;
 const GRID:       usize = 7;
 const FREE_TEXT:  usize = 8;
-const REPEAT:     usize = 9;
 
 pub(super) struct Ft8Rows {
     pub rows: Vec<Row>,
@@ -37,10 +36,10 @@ impl Ft8Rows {
                     step: 100.0, min: 100.0, max: 22000.0, unit: " Hz",
                 }),
                 Row::Num(NumField {
-                    label: "Loop gap",
-                    value:   crate::source::ft8::FT8_DEFAULT_LOOP_GAP_SECS,
-                    default: crate::source::ft8::FT8_DEFAULT_LOOP_GAP_SECS,
-                    step: 1.0, min: 15.0, max: 120.0, unit: " s",
+                    label: "Gap",
+                    value:   crate::source::ft8::FT8_DEFAULT_GAP_SECS,
+                    default: crate::source::ft8::FT8_DEFAULT_GAP_SECS,
+                    step: 1.0, min: 15.0, max: 99.99, unit: " s",
                 }),
                 Row::Num(NumField {
                     label: "Noise amp",
@@ -76,12 +75,6 @@ impl Ft8Rows {
                     default_value: crate::source::ft8::FT8_DEFAULT_FREE_TEXT.to_owned(),
                     status: None,
                 }),
-                Row::Num(NumField {
-                    label: "Repeat",
-                    value:   crate::source::ft8::FT8_DEFAULT_REPEAT as f32,
-                    default: crate::source::ft8::FT8_DEFAULT_REPEAT as f32,
-                    step: 1.0, min: 1.0, max: 20.0, unit: "×",
-                }),
             ],
             pending_text: None,
         }
@@ -89,9 +82,8 @@ impl Ft8Rows {
 
     pub fn patch_from_config(&mut self, cfg: &ViewConfig) {
         self.rows[CARRIER].patch_num(cfg.ft8_carrier_hz());
-        self.rows[LOOP_GAP].patch_num(cfg.ft8_loop_gap_secs());
+        self.rows[GAP].patch_num(cfg.ft8_gap_secs());
         self.rows[NOISE].patch_num(cfg.ft8_noise_amp());
-        self.rows[REPEAT].patch_num(cfg.ft8_msg_repeat() as f32);
 
         let mode_idx = match cfg.ft8_mode() { "FT4" => 1, _ => 0 };
         if let Row::Toggle(f) = &mut self.rows[MODE] {
@@ -128,7 +120,7 @@ impl Ft8Rows {
         } else {
             v.extend([CALL_TO, CALL_DE, GRID]);
         }
-        v.extend([REPEAT, CARRIER, LOOP_GAP, NOISE]);
+        v.extend([CARRIER, GAP, NOISE]);
         v
     }
 
@@ -143,7 +135,7 @@ impl Ft8Rows {
                     egui::Event::Text(s) => {
                         if let Some(pending) = &mut self.pending_text {
                             for c in s.chars() {
-                                if c >= ' ' && c <= '~' {
+                                if (' '..='~').contains(&c) {
                                     pending.push(c);
                                 }
                             }
@@ -201,12 +193,8 @@ impl Ft8Rows {
     /// Draw the free-text field (editable).
     pub fn draw_free_text(
         &self,
-        painter: &egui::Painter,
+        ctx: &RowDrawCtx,
         val_x: f32, y: f32, row_h: f32,
-        rect_right: f32,
-        med: &egui::FontId,
-        small: &egui::FontId,
-        val_color: egui::Color32,
         focused: bool,
     ) {
         if let Row::Text(f) = &self.rows[FREE_TEXT] {
@@ -222,21 +210,21 @@ impl Ft8Rows {
             } else {
                 raw_text
             };
-            let text_color = if focused || editing { egui::Color32::WHITE } else { val_color };
-            painter.text(
+            let text_color = if focused || editing { egui::Color32::WHITE } else { ctx.val_color };
+            ctx.painter.text(
                 egui::pos2(val_x, y + row_h / 2.0),
                 egui::Align2::LEFT_CENTER,
                 &display,
-                med.clone(),
+                ctx.med.clone(),
                 text_color,
             );
             if focused {
                 let hint = if editing { "\u{21b5} accept  Esc cancel" } else { "\u{21b5} edit" };
-                painter.text(
-                    egui::pos2(rect_right - 14.0, y + row_h / 2.0),
+                ctx.painter.text(
+                    egui::pos2(ctx.rect_right - 14.0, y + row_h / 2.0),
                     egui::Align2::RIGHT_CENTER,
                     hint,
-                    small.clone(),
+                    ctx.small.clone(),
                     egui::Color32::from_gray(140),
                 );
             }
@@ -247,28 +235,24 @@ impl Ft8Rows {
     pub fn draw_readonly_text(
         &self,
         row_idx: usize,
-        painter: &egui::Painter,
+        ctx: &RowDrawCtx,
         val_x: f32, y: f32, row_h: f32,
-        rect_right: f32,
-        med: &egui::FontId,
-        small: &egui::FontId,
-        val_color: egui::Color32,
         focused: bool,
     ) {
         if let Row::Text(f) = &self.rows[row_idx] {
-            painter.text(
+            ctx.painter.text(
                 egui::pos2(val_x, y + row_h / 2.0),
                 egui::Align2::LEFT_CENTER,
                 &f.value,
-                med.clone(),
-                if focused { egui::Color32::WHITE } else { val_color },
+                ctx.med.clone(),
+                if focused { egui::Color32::WHITE } else { ctx.val_color },
             );
             if focused {
-                painter.text(
-                    egui::pos2(rect_right - 14.0, y + row_h / 2.0),
+                ctx.painter.text(
+                    egui::pos2(ctx.rect_right - 14.0, y + row_h / 2.0),
                     egui::Align2::RIGHT_CENTER,
                     "(config)",
-                    small.clone(),
+                    ctx.small.clone(),
                     egui::Color32::from_gray(100),
                 );
             }
@@ -300,18 +284,16 @@ impl super::SettingsState {
             f.value = v.clamp(f.min, f.max);
         }
     }
-    pub fn ft8_loop_gap_secs(&self) -> f32 {
-        if let Row::Num(f) = &self.ft8.rows[LOOP_GAP] { f.value } else {
-            crate::source::ft8::FT8_DEFAULT_LOOP_GAP_SECS
+    pub fn ft8_gap_secs(&self) -> f32 {
+        if let Row::Num(f) = &self.ft8.rows[GAP] { f.value } else {
+            crate::source::ft8::FT8_DEFAULT_GAP_SECS
         }
     }
     pub fn ft8_noise_amp(&self) -> f32 {
         if let Row::Num(f) = &self.ft8.rows[NOISE] { f.value } else { 0.0 }
     }
     pub fn ft8_msg_repeat(&self) -> usize {
-        if let Row::Num(f) = &self.ft8.rows[REPEAT] { f.value as usize } else {
-            crate::source::ft8::FT8_DEFAULT_REPEAT
-        }
+        1
     }
     pub fn ft8_call_to(&self) -> &str {
         if let Row::Text(f) = &self.ft8.rows[CALL_TO] { &f.value } else {

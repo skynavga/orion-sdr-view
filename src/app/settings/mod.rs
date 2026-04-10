@@ -8,7 +8,7 @@ mod amdsb;
 mod psk31;
 mod ft8;
 
-use field::{Row, ToggleField, draw_num, draw_toggle};
+use field::{Row, RowDrawCtx, ToggleField, draw_num, draw_toggle};
 use display::DisplayRows;
 use tone::ToneRows;
 use amdsb::AmDsbRows;
@@ -229,6 +229,8 @@ impl SettingsState {
         let ft8_free_text_focused = matches!(focused_target, Some(RowTarget::Ft8(i)) if i == Ft8Rows::FREE_TEXT_IDX)
             && self.ft8.msg_is_free_text();
 
+        let tz_row_focused = matches!(focused_target, Some(RowTarget::Display(i)) if i == DisplayRows::TIME_ZONE_IDX);
+
         ctx.input(|i| {
             // WAV text field handling
             if wav_row_focused {
@@ -247,19 +249,19 @@ impl SettingsState {
             }
 
             // PSK31 custom message field handling
-            if psk31_custom_focused {
-                if let Some(RowTarget::Psk31(local_idx)) = focused_target {
-                    let msg_result = self.psk31.handle_msg_keys(&i.events, local_idx);
-                    if msg_result.msg_accepted {
-                        result.psk31_msg_accepted = true;
-                    }
-                    if msg_result.defocus {
-                        self.focused_row = None;
-                    }
-                    if msg_result.consumed {
-                        result.text_editing = true;
-                        return;
-                    }
+            if psk31_custom_focused
+                && let Some(RowTarget::Psk31(local_idx)) = focused_target
+            {
+                let msg_result = self.psk31.handle_msg_keys(&i.events, local_idx);
+                if msg_result.msg_accepted {
+                    result.psk31_msg_accepted = true;
+                }
+                if msg_result.defocus {
+                    self.focused_row = None;
+                }
+                if msg_result.consumed {
+                    result.text_editing = true;
+                    return;
                 }
                 // Not consumed — fall through to navigation
             }
@@ -280,6 +282,18 @@ impl SettingsState {
                 // Not consumed — fall through to navigation
             }
 
+            // Time zone row: intercept Enter to open/commit the explicit
+            // sub-edit.  ←/→ fall through to `nudge_*` which dispatches to
+            // the field-level logic (mode cycle vs. ±15 min nudge).
+            if tz_row_focused {
+                let tz_result = self.display.handle_tz_keys(&i.events);
+                if tz_result.consumed {
+                    result.text_editing = true;
+                    return;
+                }
+                // Not consumed — fall through to navigation
+            }
+
             // If a text row is no longer focused (user navigated away),
             // discard any in-progress pending edit.
             if self.psk31.pending_msg.is_some() {
@@ -290,6 +304,9 @@ impl SettingsState {
             }
             if self.ft8.pending_text.is_some() {
                 self.ft8.discard_pending();
+            }
+            if !tz_row_focused && self.display.tz_is_editing() {
+                self.display.discard_tz_pending();
             }
 
             // S or Escape: close
@@ -349,8 +366,10 @@ impl SettingsState {
                     }
                     // Clamp focused_row to new visible count after any toggle change
                     let new_n = self.n_visible_rows();
-                    if let Some(r) = self.focused_row {
-                        if r >= new_n { self.focused_row = Some(new_n.saturating_sub(1)); }
+                    if let Some(r) = self.focused_row
+                        && r >= new_n
+                    {
+                        self.focused_row = Some(new_n.saturating_sub(1));
                     }
                 } else {
                     self.active_tab = (self.active_tab + N_TABS - 1) % N_TABS;
@@ -372,8 +391,10 @@ impl SettingsState {
                     }
                     // Clamp focused_row to new visible count after any toggle change
                     let new_n = self.n_visible_rows();
-                    if let Some(r) = self.focused_row {
-                        if r >= new_n { self.focused_row = Some(new_n.saturating_sub(1)); }
+                    if let Some(r) = self.focused_row
+                        && r >= new_n
+                    {
+                        self.focused_row = Some(new_n.saturating_sub(1));
                     }
                 } else {
                     self.active_tab = (self.active_tab + 1) % N_TABS;
@@ -473,6 +494,14 @@ impl SettingsState {
         y += 8.0;
 
         // ── Fields ────────────────────────────────────────────────────────
+        let val_color = egui::Color32::from_rgb(100, 220, 180);
+        let draw_ctx = RowDrawCtx {
+            painter,
+            rect_right: rect.right(),
+            med:        &med,
+            small:      &small,
+            val_color,
+        };
         let vis_targets = self.active_rows();
         for (vis_row, &target) in vis_targets.iter().enumerate() {
             let focused = self.focused_row == Some(vis_row);
@@ -508,29 +537,31 @@ impl SettingsState {
             );
 
             // Value
-            let val_color = egui::Color32::from_rgb(100, 220, 180);
             let val_x = rect.left() + VAL_X;
             match (target, row) {
+                (RowTarget::Display(_), Row::TimeZone(f)) => {
+                    display::draw_time_zone(&draw_ctx, f, val_x, y, ROW_H, focused);
+                }
                 (_, Row::Num(f)) => {
-                    draw_num(painter, f, val_x, y, ROW_H, rect.right(), &med, &small, val_color, focused);
+                    draw_num(&draw_ctx, f, val_x, y, ROW_H, focused);
                 }
                 (_, Row::Toggle(f)) => {
-                    draw_toggle(painter, f, val_x, y, ROW_H, &med, val_color, focused);
+                    draw_toggle(&draw_ctx, f, val_x, y, ROW_H, focused);
                 }
                 (RowTarget::Psk31(idx), Row::Text(_)) if idx == Psk31Rows::MSG_IDX => {
-                    self.psk31.draw_canned_msg(painter, val_x, y, ROW_H, rect.right(), &med, &small, val_color, focused);
+                    self.psk31.draw_canned_msg(&draw_ctx, val_x, y, ROW_H, focused);
                 }
                 (RowTarget::Psk31(idx), Row::Text(_)) if idx == Psk31Rows::CUSTOM_MSG_IDX => {
-                    self.psk31.draw_custom_msg(painter, val_x, y, ROW_H, rect.right(), &med, &small, val_color, focused);
+                    self.psk31.draw_custom_msg(&draw_ctx, val_x, y, ROW_H, focused);
                 }
                 (RowTarget::AmDsb(idx), Row::Text(_)) if idx == AmDsbRows::WAV_FILE_IDX => {
-                    self.amdsb.draw_wav_field(painter, val_x, y, ROW_H, rect.right(), &med, &small, val_color, focused);
+                    self.amdsb.draw_wav_field(&draw_ctx, val_x, y, ROW_H, focused);
                 }
                 (RowTarget::Ft8(idx), Row::Text(_)) if idx == Ft8Rows::FREE_TEXT_IDX => {
-                    self.ft8.draw_free_text(painter, val_x, y, ROW_H, rect.right(), &med, &small, val_color, focused);
+                    self.ft8.draw_free_text(&draw_ctx, val_x, y, ROW_H, focused);
                 }
                 (RowTarget::Ft8(idx), Row::Text(_)) => {
-                    self.ft8.draw_readonly_text(idx, painter, val_x, y, ROW_H, rect.right(), &med, &small, val_color, focused);
+                    self.ft8.draw_readonly_text(idx, &draw_ctx, val_x, y, ROW_H, focused);
                 }
                 _ => {}
             }
@@ -557,6 +588,11 @@ impl SettingsState {
         let ft8_free_text_focused = matches!(focused_target, Some(RowTarget::Ft8(i)) if i == Ft8Rows::FREE_TEXT_IDX)
             && self.ft8.msg_is_free_text();
 
+        let tz_focused = matches!(focused_target, Some(RowTarget::Display(i)) if i == DisplayRows::TIME_ZONE_IDX);
+        let tz_editing = tz_focused && self.display.tz_is_editing();
+        let tz_explicit = tz_focused && matches!(&self.display.rows[DisplayRows::TIME_ZONE_IDX],
+            Row::TimeZone(f) if f.is_explicit());
+
         let hint = if wav_focused && self.amdsb.pending_wav.is_some() {
             "type path   ↵ load   Esc cancel"
         } else if wav_focused {
@@ -569,6 +605,10 @@ impl SettingsState {
             "type message   ↵ accept   Esc cancel"
         } else if ft8_free_text_focused {
             "↵ edit message   ↑↓ navigate"
+        } else if tz_editing {
+            "◀▶ ±15 min   ↵ accept   Esc cancel"
+        } else if tz_explicit {
+            "◀▶ cycle mode   ↵ edit offset   ↑↓ navigate"
         } else if self.focused_row.is_some() {
             "↑↓ navigate   ◀▶ adjust   R reset field   Esc deselect"
         } else {

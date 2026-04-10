@@ -24,7 +24,7 @@ impl ViewApp {
             audio_rate,
             self.settings.am_carrier_hz(),
             self.settings.am_mod_index(),
-            self.settings.am_loop_gap_secs(),
+            self.settings.am_gap_secs(),
             self.settings.am_noise_amp(),
             self.settings.am_msg_repeat(),
             SAMPLE_RATE,
@@ -39,7 +39,7 @@ impl ViewApp {
         };
         Psk31Source::new(
             self.settings.psk31_carrier_hz(),
-            self.settings.psk31_loop_gap_secs(),
+            self.settings.psk31_gap_secs(),
             self.settings.psk31_noise_amp(),
             mode,
             self.settings.psk31_message().to_owned(),
@@ -61,7 +61,7 @@ impl ViewApp {
         };
         Ft8Source::new(
             self.settings.ft8_carrier_hz(),
-            self.settings.ft8_loop_gap_secs(),
+            self.settings.ft8_gap_secs(),
             self.settings.ft8_noise_amp(),
             mode,
             msg_type,
@@ -125,10 +125,10 @@ impl ViewApp {
         }
         match crate::source::amdsb::load_wav_file(std::path::Path::new(&path_str)) {
             Ok((audio, rate)) => {
-                if self.source_mode == SourceMode::AmDsb {
-                    if let Some(am) = self.source.as_any_mut().downcast_mut::<AmDsbSource>() {
-                        am.set_audio(audio, rate);
-                    }
+                if self.source_mode == SourceMode::AmDsb
+                    && let Some(am) = self.source.as_any_mut().downcast_mut::<AmDsbSource>()
+                {
+                    am.set_audio(audio, rate);
                 }
                 self.settings.set_wav_status(true);
                 self.reset_playback();
@@ -145,10 +145,10 @@ impl ViewApp {
 
     /// Clear the AM DSB audio buffer to produce carrier-only output.
     fn clear_am_audio(&mut self) {
-        if self.source_mode == SourceMode::AmDsb {
-            if let Some(am) = self.source.as_any_mut().downcast_mut::<AmDsbSource>() {
-                am.set_audio(Vec::new(), SAMPLE_RATE);
-            }
+        if self.source_mode == SourceMode::AmDsb
+            && let Some(am) = self.source.as_any_mut().downcast_mut::<AmDsbSource>()
+        {
+            am.set_audio(Vec::new(), SAMPLE_RATE);
         }
         self.reset_playback();
     }
@@ -159,6 +159,7 @@ impl ViewApp {
         self.db_max = self.settings.db_max();
         self.waterfall.db_min = self.settings.db_min();
         self.waterfall.db_max = self.settings.db_max();
+        self.time_zone_offset_min = self.settings.time_zone_offset_min();
         self.signal_gen.freq_hz = self.settings.freq_hz();
         self.signal_gen.noise_amp = self.settings.noise_amp();
         self.signal_gen.amp_max = self.settings.amp_max();
@@ -183,10 +184,10 @@ impl ViewApp {
             if carrier_changed || index_changed {
                 am.rebuild_mod();
             }
-            let gap_changed = (am.loop_gap_secs - self.settings.am_loop_gap_secs()).abs() > 0.01;
+            let gap_changed = (am.gap_secs - self.settings.am_gap_secs()).abs() > 0.01;
             if gap_changed {
-                am.loop_gap_secs = self.settings.am_loop_gap_secs();
-                am.update_loop_gap();
+                am.gap_secs = self.settings.am_gap_secs();
+                am.update_gap();
             }
             am.noise_amp = self.settings.am_noise_amp();
             am.msg_repeat = self.settings.am_msg_repeat().max(1);
@@ -203,13 +204,13 @@ impl ViewApp {
             let repeat_changed  = psk31.msg_repeat != new_repeat;
             psk31.carrier_hz    = self.settings.psk31_carrier_hz();
             psk31.noise_amp     = self.settings.psk31_noise_amp();
-            psk31.loop_gap_secs = self.settings.psk31_loop_gap_secs();
+            psk31.gap_secs      = self.settings.psk31_gap_secs();
             psk31.mode          = new_mode;
             psk31.msg_repeat    = new_repeat.max(1);
             // message is NOT synced here — it is applied only when the user
             // explicitly accepts the text edit via Enter (see apply_psk31_message).
             if carrier_changed || mode_changed || repeat_changed { psk31.render(); }
-            psk31.update_loop_gap();
+            psk31.update_gap();
         }
 
         if let Some(ft8) = self.source.as_any_mut().downcast_mut::<Ft8Source>() {
@@ -229,7 +230,7 @@ impl ViewApp {
             let repeat_changed   = ft8.msg_repeat != new_repeat;
             ft8.carrier_hz    = self.settings.ft8_carrier_hz();
             ft8.noise_amp     = self.settings.ft8_noise_amp();
-            ft8.loop_gap_secs = self.settings.ft8_loop_gap_secs();
+            ft8.gap_secs      = self.settings.ft8_gap_secs();
             ft8.ft8_mode      = new_mode;
             ft8.msg_type      = new_msg_type;
             ft8.msg_repeat    = new_repeat.max(1);
@@ -237,7 +238,7 @@ impl ViewApp {
             if carrier_changed || mode_changed || msg_type_changed || repeat_changed {
                 ft8.render();
             }
-            ft8.update_loop_gap();
+            ft8.update_gap();
             self.ft_mode     = ft8.ft8_mode;
             self.ft_msg_type = ft8.msg_type;
         }

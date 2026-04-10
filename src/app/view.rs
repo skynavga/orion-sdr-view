@@ -21,77 +21,22 @@ use super::{
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/// Format a `SystemTime` as `HH:MM:SS`.
-///
-/// When `utc` is true the time is expressed in UTC.  When false it is adjusted
-/// to local civil time using the system's UTC offset at the moment of the call.
-fn format_time(t: std::time::SystemTime, utc: bool) -> String {
-    let unix_secs = t
+/// Format a `SystemTime` as `HH:MM:SS.mmm`, offset from UTC by `offset_min`
+/// minutes (positive = east of UTC, negative = west, 0 = UTC).
+fn format_time(t: std::time::SystemTime, offset_min: i32) -> String {
+    let dur = t
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
+        .unwrap_or_default();
+    let unix_secs = dur.as_secs() as i64;
+    let millis    = dur.subsec_millis();
 
-    let secs = if utc {
-        unix_secs
-    } else {
-        // Compute the local UTC offset by comparing local and UTC broken-down
-        // times using only the std library (no chrono dependency).
-        let offset = local_utc_offset_secs();
-        unix_secs + offset
-    };
+    let secs = unix_secs + offset_min as i64 * 60;
 
     let s = secs.rem_euclid(60);
     let m = (secs / 60).rem_euclid(60);
     let h = (secs / 3600).rem_euclid(24);
-    format!("{h:02}:{m:02}:{s:02}")
+    format!("{h:02}:{m:02}:{s:02}.{millis:03}")
 }
-
-/// Return the local UTC offset in seconds using POSIX `localtime_r` / `gmtime_r`.
-/// Returns 0 on non-Unix platforms.
-#[cfg(unix)]
-fn local_utc_offset_secs() -> i64 {
-    // Raw C bindings — avoids a libc crate dependency.
-    // tm struct layout is identical on macOS and Linux (9 × i32).
-    #[repr(C)]
-    struct Tm {
-        tm_sec:   i32, tm_min:  i32, tm_hour: i32,
-        tm_mday:  i32, tm_mon:  i32, tm_year: i32,
-        tm_wday:  i32, tm_yday: i32, tm_isdst: i32,
-        // macOS has two extra fields; pad generously.
-        _pad: [i32; 8],
-    }
-    unsafe extern "C" {
-        fn localtime_r(timep: *const i64, result: *mut Tm) -> *mut Tm;
-        fn gmtime_r   (timep: *const i64, result: *mut Tm) -> *mut Tm;
-    }
-
-    let unix = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-
-    let mut local_tm: Tm = unsafe { std::mem::zeroed() };
-    let mut gm_tm:    Tm = unsafe { std::mem::zeroed() };
-    unsafe {
-        localtime_r(&unix, &mut local_tm);
-        gmtime_r   (&unix, &mut gm_tm);
-    }
-
-    let local_secs = local_tm.tm_hour as i64 * 3600
-        + local_tm.tm_min as i64 * 60
-        + local_tm.tm_sec as i64;
-    let gm_secs = gm_tm.tm_hour as i64 * 3600
-        + gm_tm.tm_min    as i64 * 60
-        + gm_tm.tm_sec    as i64;
-
-    let mut diff = local_secs - gm_secs;
-    if diff >  14 * 3600 { diff -= 24 * 3600; }
-    if diff < -12 * 3600 { diff += 24 * 3600; }
-    diff
-}
-
-#[cfg(not(unix))]
-fn local_utc_offset_secs() -> i64 { 0 }
 
 // ── ViewApp ───────────────────────────────────────────────────────────────────
 
@@ -164,8 +109,8 @@ pub(crate) struct ViewApp {
     /// Cached FT8/FT4 sub-mode for use in draw functions (updated on mode cycle).
     pub(super) ft_mode:       crate::source::ft8::Ft8Mode,
     pub(super) ft_msg_type:   crate::source::ft8::Ft8MsgType,
-    /// Display timestamps in UTC (true) or local time (false).
-    pub(super) time_zone_utc: bool,
+    /// Display timestamps offset from UTC by this many minutes (0 = UTC).
+    pub(super) time_zone_offset_min: i32,
 }
 
 impl ViewApp {
@@ -252,9 +197,9 @@ impl ViewApp {
             ft_signal_onset:   None,
             ft_mode:           crate::source::ft8::Ft8Mode::Ft8,
             ft_msg_type:       crate::source::ft8::Ft8MsgType::Standard,
-            time_zone_utc:     true,
+            time_zone_offset_min: 0,
         };
-        app.time_zone_utc = cfg.time_zone_utc();
+        app.time_zone_offset_min = cfg.time_zone_offset_min();
         app.sync_decode_config();
         app
     }
@@ -331,11 +276,10 @@ impl ViewApp {
             if result.am_audio_changed {
                 self.reload_builtin_audio();
             }
-            if result.wav_load_requested {
-                if self.try_load_wav() {
+            if result.wav_load_requested
+                && self.try_load_wav() {
                     self.settings.defocus();
                 }
-            }
             if result.psk31_msg_accepted {
                 self.apply_psk31_message();
             }
@@ -548,9 +492,8 @@ impl ViewApp {
                 }
             }
             for e in &i.events {
-                if let egui::Event::Text(s) = e {
-                    if s == "R" || s == "r" { freq_reset = true; }
-                }
+                if let egui::Event::Text(s) = e
+                    && (s == "R" || s == "r") { freq_reset = true; }
             }
         });
 
@@ -609,12 +552,11 @@ impl ViewApp {
             };
         }
         // Ctrl+arrow: move the active marker
-        if marker_delta != 0.0 {
-            if let Some(idx) = self.active_marker {
+        if marker_delta != 0.0
+            && let Some(idx) = self.active_marker {
                 let nyquist = self.freq_view.nyquist;
                 self.markers[idx].hz = (self.markers[idx].hz + marker_delta).clamp(0.0, nyquist);
             }
-        }
 
         if db_shift != 0.0 {
             self.db_min += db_shift;
@@ -715,13 +657,31 @@ impl eframe::App for ViewApp {
                     if decoded {
                         self.ft_frame_count = self.ft_frame_count.saturating_add(1).min(999);
                         if let Some(onset) = self.ft_signal_onset.take() {
-                            self.ft_last_timestamp = format_time(onset, self.time_zone_utc);
+                            self.ft_last_timestamp = format_time(onset, self.time_zone_offset_min);
                         }
                     } else {
                         self.ft_err_count = self.ft_err_count.saturating_add(1).min(999);
                     }
                 }
                 self.decode_ticker.push_result(DecodeResult::Gap { decoded });
+            } else if is_ft8_mode {
+                // For FT8/FT4: wrap the decoded frame text as
+                // "|| HH:MM:SS.fff | <text> ||" so the leading/trailing "||"
+                // clearly demarcate the frame boundaries in the Dt ticker.
+                // The onset timestamp is still in ft_signal_onset at Text time
+                // (it's taken when the Gap{decoded:true} arrives just after).
+                let result = if let DecodeResult::Text(ref s) = result {
+                    let ts = if let Some(onset) = self.ft_signal_onset {
+                        format_time(onset, self.time_zone_offset_min)
+                    } else {
+                        self.ft_last_timestamp.clone()
+                    };
+                    let ts_str = if ts.is_empty() { "--:--:--.---".to_owned() } else { ts };
+                    DecodeResult::Text(format!("|| {ts_str} | {s} ||"))
+                } else {
+                    result
+                };
+                self.decode_ticker.push_result(result);
             } else {
                 self.decode_ticker.push_result(result);
             }

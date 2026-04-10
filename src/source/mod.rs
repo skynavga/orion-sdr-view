@@ -3,6 +3,11 @@ pub mod ft8;
 pub mod psk31;
 pub mod tone;
 
+/// Maximum continuous signal duration in a single loop cycle.
+/// Sources clamp the signal burst to this value so the decode-bar timer
+/// ("sig NN.NN") never overflows its fixed-width display.
+pub const MAX_SIG_SECS: f32 = 99.99;
+
 #[allow(unused_imports)]
 pub use amdsb::{AmDsbSource, BuiltinAudio, load_builtin};
 #[allow(unused_imports)]

@@ -113,6 +113,12 @@ pub struct DecodeTicker {
     pub in_gap: bool,
 }
 
+impl Default for DecodeTicker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DecodeTicker {
     pub fn new() -> Self {
         Self {
@@ -170,6 +176,7 @@ impl DecodeTicker {
             DecodeResult::Gap { .. } => {
                 self.last_result  = DecodeResult::NoSignal;
                 self.hold_elapsed = 0.0;
+                self.last_info    = None;
                 self.in_gap       = true;
             }
         }
@@ -275,6 +282,10 @@ impl DecodeWorker {
         let mut psk31_stream: Option<Psk31Stream> = None;
         // FT8/FT4 stream decoder (created on first FT8/FT4 signal, replaced on mode change).
         let mut ft_decoder: Option<Ft8StreamDecoder> = None;
+        // True if at least one CRC-passing frame was decoded during the current signal burst.
+        let mut ft_decoded_this_burst = false;
+        // Running phase for FT8/FT4 downshift mixer (persists across sample blocks).
+        let mut ft_shift_phase: f32 = 0.0;
         // Sample counter for Info throttling (~250 ms between updates, all modes).
         let mut info_counter: usize = 0;
         const INFO_INTERVAL: usize = 48_000; // 1 s at 48 kHz
@@ -297,14 +308,16 @@ impl DecodeWorker {
             if samples.is_empty() {
                 iq_buf.clear();
                 spec_buf.clear();
-                smoothed_bw_hz  = 0.0;
-                smoothed_snr_db = 0.0;
-                was_signal      = false;
-                info_counter    = 0;
-                psk31_stream    = None;
-                ft_decoder      = None;
-                last_mode       = mode;
-                last_carrier    = carrier_hz;
+                smoothed_bw_hz       = 0.0;
+                smoothed_snr_db      = 0.0;
+                was_signal           = false;
+                info_counter         = 0;
+                psk31_stream         = None;
+                ft_decoder           = None;
+                ft_decoded_this_burst = false;
+                ft_shift_phase       = 0.0;
+                last_mode            = mode;
+                last_carrier         = carrier_hz;
                 continue;
             }
 
@@ -312,14 +325,16 @@ impl DecodeWorker {
             if mode != last_mode || (carrier_hz - last_carrier).abs() > 0.5 {
                 iq_buf.clear();
                 spec_buf.clear();
-                smoothed_bw_hz  = 0.0;
-                smoothed_snr_db = 0.0;
-                was_signal      = false;
-                info_counter    = 0;
-                psk31_stream    = None;
-                ft_decoder      = None;
-                last_mode       = mode;
-                last_carrier    = carrier_hz;
+                smoothed_bw_hz       = 0.0;
+                smoothed_snr_db      = 0.0;
+                was_signal           = false;
+                info_counter         = 0;
+                psk31_stream         = None;
+                ft_decoder           = None;
+                ft_decoded_this_burst = false;
+                ft_shift_phase       = 0.0;
+                last_mode            = mode;
+                last_carrier         = carrier_hz;
             }
 
             let is_signal = rms(&samples) >= SIGNAL_THRESHOLD;
@@ -371,7 +386,7 @@ impl DecodeWorker {
                             let max_hz  = carrier_hz + SYNC_SEARCH_HZ;
                             let results = psk31_sync(&iq_buf, fs, base_hz, max_hz, 4, margin, 256, 5);
                             if let Some((_found_hz, time_sym)) = best_sync(&results, carrier_hz, PSK31_BAUD) {
-                                let scan_end = ((time_sym + 2) as usize * sps).min(iq_buf.len());
+                                let scan_end = ((time_sym + 2) * sps).min(iq_buf.len());
                                 let onset = iq_buf[..scan_end]
                                     .iter()
                                     .position(|c| c.re * c.re + c.im * c.im > 0.01)
@@ -516,14 +531,23 @@ impl DecodeWorker {
                     let label  = if is_ft8 { "FT8" } else { "FT4" };
                     let bw_hz  = if is_ft8 { FT8_BW_HZ } else { FT4_BW_HZ };
                     let native_fs = fs / FT8_UPSAMPLE as f32; // 12 kHz
+                    // The source modulates at FT8_MOD_BASE_HZ then shifts up to
+                    // carrier_hz.  We reverse that shift before decimating so the
+                    // decoder sees the signal at FT8_MOD_BASE_HZ.
+                    let native_carrier = crate::source::ft8::FT8_MOD_BASE_HZ;
 
                     if !is_signal {
                         if gap_edge {
                             if let Some(ref mut dec) = ft_decoder {
-                                // Flush whatever accumulated before the gap edge.
-                                let results = dec.flush();
-                                let decoded = !results.is_empty();
-                                for r in results {
+                                // Only flush if we haven't already decoded this burst
+                                // mid-signal (to avoid re-decoding the same frame).
+                                let flush_results = if !ft_decoded_this_burst {
+                                    dec.flush()
+                                } else {
+                                    Vec::new()
+                                };
+                                let decoded = ft_decoded_this_burst || !flush_results.is_empty();
+                                for r in flush_results {
                                     let text = format_ft8_message(&r.message, label);
                                     let _ = self.tx.try_send(DecodeResult::Text(text));
                                 }
@@ -537,14 +561,15 @@ impl DecodeWorker {
                                 let _ = self.tx.try_send(DecodeResult::Gap { decoded });
                                 dec.clear();
                             }
-                            smoothed_snr_db = 0.0;
-                            info_counter    = 0;
+                            ft_decoded_this_burst = false;
+                            smoothed_snr_db       = 0.0;
+                            info_counter          = 0;
                         }
                     } else {
                         // Create decoder on first signal after a gap or mode switch.
                         if ft_decoder.is_none() {
-                            let base_hz = (carrier_hz - FT8_SEARCH_HZ).max(0.0);
-                            let max_hz  = carrier_hz + FT8_SEARCH_HZ;
+                            let base_hz = (native_carrier - FT8_SEARCH_HZ).max(0.0);
+                            let max_hz  = native_carrier + FT8_SEARCH_HZ;
                             ft_decoder = Some(if is_ft8 {
                                 Ft8StreamDecoder::new_ft8(native_fs, base_hz, max_hz, 8)
                             } else {
@@ -552,20 +577,42 @@ impl DecodeWorker {
                             });
                         }
 
-                        // Downsample 4:1 from 48 kHz → 12 kHz and feed the decoder.
-                        let downsampled: Vec<C32> = samples
-                            .chunks(FT8_UPSAMPLE)
-                            .map(|c| C32::new(c[0], 0.0))
-                            .collect();
+                        // Frequency-shift down from carrier_hz to FT8_MOD_BASE_HZ
+                        // via complex mixer, then decimate 4:1 from 48 kHz → 12 kHz.
+                        // Multiply real samples by exp(-j*2π*shift*t) to produce
+                        // complex IQ centred at FT8_MOD_BASE_HZ.
+                        //
+                        // Phase is accumulated incrementally sample-by-sample
+                        // and wrapped to [0, 2π) to keep the argument to cos/sin
+                        // small — avoids f32 range-reduction errors over long
+                        // bursts that would otherwise show as drifting sidebands.
+                        let shift_hz = carrier_hz - crate::source::ft8::FT8_MOD_BASE_HZ;
+                        let phase_inc = 2.0 * std::f32::consts::PI * shift_hz / fs;
+                        let two_pi = 2.0 * std::f32::consts::PI;
+                        let mut downsampled: Vec<C32> = Vec::with_capacity(
+                            samples.len() / FT8_UPSAMPLE + 1,
+                        );
+                        for (i, s) in samples.iter().enumerate() {
+                            if i % FT8_UPSAMPLE == 0 {
+                                let (sin_p, cos_p) = ft_shift_phase.sin_cos();
+                                downsampled.push(C32::new(s * cos_p, -s * sin_p));
+                            }
+                            ft_shift_phase += phase_inc;
+                            if ft_shift_phase >= two_pi { ft_shift_phase -= two_pi; }
+                            else if ft_shift_phase < 0.0 { ft_shift_phase += two_pi; }
+                        }
 
                         if let Some(ref mut dec) = ft_decoder {
-                            // feed() returns results only when frame_len is reached;
-                            // in practice this shouldn't happen mid-signal for a
-                            // well-timed source, but handle it gracefully.
                             let results = dec.feed(&downsampled);
-                            for r in results {
-                                let text = format_ft8_message(&r.message, label);
-                                let _ = self.tx.try_send(DecodeResult::Text(text));
+                            if !results.is_empty() {
+                                // Frame decoded mid-signal: record success and clear
+                                // so flush() at the gap edge doesn't re-decode.
+                                ft_decoded_this_burst = true;
+                                dec.clear();
+                                for r in results {
+                                    let text = format_ft8_message(&r.message, label);
+                                    let _ = self.tx.try_send(DecodeResult::Text(text));
+                                }
                             }
                         }
 
@@ -577,7 +624,7 @@ impl DecodeWorker {
                                 // Use the decoder's buffer for SNR estimation.
                                 let real: Vec<f32> = dec.view_buf()
                                     .iter().map(|c| c.re).collect();
-                                let raw_snr = spectrum_snr_db(&real, native_fs, carrier_hz);
+                                let raw_snr = spectrum_snr_db(&real, native_fs, native_carrier);
                                 smoothed_snr_db = if smoothed_snr_db == 0.0 {
                                     raw_snr
                                 } else {

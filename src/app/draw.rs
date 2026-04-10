@@ -140,7 +140,7 @@ impl ViewApp {
                 .sum();
 
             let mut y = avail.top();
-            for i in 0..3 {
+            for (i, &bg) in PANE_BG.iter().enumerate() {
                 if !self.pane_visible[i] {
                     continue;
                 }
@@ -150,7 +150,7 @@ impl ViewApp {
                     egui::vec2(avail.width(), h),
                 );
                 let painter = ui.painter_at(rect);
-                painter.rect_filled(rect, 0.0, PANE_BG[i]);
+                painter.rect_filled(rect, 0.0, bg);
                 match i {
                     0 => self.draw_spectrum(&painter, rect),
                     1 => self.draw_persistence_pane(&painter, rect),
@@ -195,14 +195,9 @@ impl ViewApp {
         let timer_w = painter.layout_no_wrap(timer_label.clone(), font.clone(), TEXT_COL).size().x;
         let em_w    = painter.layout_no_wrap("M".to_owned(),       font.clone(), TEXT_COL).size().x;
 
-        // For FT8/FT4 sources, prepend "frm xxx err yyy HH:MM:SS" to the right margin.
+        // For FT8/FT4 sources, show "frm xxx err yyy" to the left of the loop timer.
         let ft_label: Option<String> = if self.source_mode == SourceMode::Ft8 {
-            let ts = if self.ft_last_timestamp.is_empty() {
-                "--:--:--".to_owned()
-            } else {
-                self.ft_last_timestamp.clone()
-            };
-            Some(format!("frm {:03} err {:03} {}  ", self.ft_frame_count, self.ft_err_count, ts))
+            Some(format!("frm {:03} err {:03} ", self.ft_frame_count, self.ft_err_count))
         } else {
             None
         };
@@ -210,7 +205,7 @@ impl ViewApp {
             painter.layout_no_wrap(s.clone(), font.clone(), TEXT_COL).size().x
         });
 
-        // Right-aligned loop timer: "sig  12.34s loop 007" / "gap   2.00s loop 007"
+        // Right-aligned loop timer: "sig 12.34s loop 007" / "gap 02.00s loop 007"
         let timer_x = rect.right() - 6.0;
         let timer_left = timer_x - timer_w - ft_label_w;
         // Right boundary for the scrolling text region: one 'M'-width gap before the timer block.
@@ -375,7 +370,7 @@ impl ViewApp {
 
         // ── Spectrum line (visible bins only) ─────────────────────────────
         let mut points: Vec<egui::Pos2> = Vec::new();
-        for b in 0..n {
+        for (b, &db) in bins.iter().enumerate().take(n) {
             let hz = bin_hz(b);
             if hz < lo || hz > hi {
                 if !points.is_empty() {
@@ -386,7 +381,7 @@ impl ViewApp {
                 }
                 continue;
             }
-            points.push(egui::pos2(x_for_hz(hz), y_for_db(bins[b])));
+            points.push(egui::pos2(x_for_hz(hz), y_for_db(db)));
         }
         if !points.is_empty() {
             painter.line(points, egui::Stroke::new(1.5, egui::Color32::from_rgb(0, 220, 180)));
