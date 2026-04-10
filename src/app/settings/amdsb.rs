@@ -1,12 +1,12 @@
 use eframe::egui;
-use super::field::{Row, NumField, ToggleField, TextField};
+use super::field::{Row, NumField, RowDrawCtx, ToggleField, TextField};
 use crate::config::ViewConfig;
 
 // ── Row indices (local) ───────────────────────────────────────────────────
 const AUDIO:    usize = 0;
 const CARRIER:  usize = 1;
 const MOD_IDX:  usize = 2;
-const LOOP_GAP: usize = 3;
+const GAP:      usize = 3;
 const NOISE:    usize = 4;
 const WAV_FILE: usize = 5;
 const REPEAT:   usize = 6;
@@ -36,8 +36,8 @@ impl AmDsbRows {
                     step: 0.1, min: 0.1, max: 2.0, unit: "",
                 }),
                 Row::Num(NumField {
-                    label: "Loop gap", value: 7.0, default: 7.0,
-                    step: 0.5, min: 0.0, max: 30.0, unit: " s",
+                    label: "Gap", value: 7.0, default: 7.0,
+                    step: 0.5, min: 0.0, max: 99.99, unit: " s",
                 }),
                 Row::Num(NumField {
                     label: "Noise amp", value: 0.05, default: 0.05,
@@ -61,14 +61,14 @@ impl AmDsbRows {
     pub fn patch_from_config(&mut self, cfg: &ViewConfig) {
         self.rows[CARRIER].patch_num(cfg.carrier_hz());
         self.rows[MOD_IDX].patch_num(cfg.mod_index());
-        self.rows[LOOP_GAP].patch_num(cfg.loop_gap_secs());
+        self.rows[GAP].patch_num(cfg.am_gap_secs());
         self.rows[NOISE].patch_num(cfg.am_noise_amp());
         self.rows[REPEAT].patch_num(cfg.am_msg_repeat() as f32);
     }
 
     /// Visible rows in the order they appear in the settings overlay.
     pub fn visible_indices(&self) -> Vec<usize> {
-        vec![AUDIO, WAV_FILE, REPEAT, CARRIER, MOD_IDX, LOOP_GAP, NOISE]
+        vec![AUDIO, WAV_FILE, REPEAT, CARRIER, MOD_IDX, GAP, NOISE]
     }
 
     pub fn audio_is_custom(&self) -> bool {
@@ -100,7 +100,7 @@ impl AmDsbRows {
                     egui::Event::Text(s) => {
                         if let Some(pending) = &mut self.pending_wav {
                             for c in s.chars() {
-                                if c >= ' ' && c <= '~' {
+                                if (' '..='~').contains(&c) {
                                     pending.push(c);
                                 }
                             }
@@ -158,12 +158,8 @@ impl AmDsbRows {
     /// Draw the WAV file text field value.
     pub fn draw_wav_field(
         &self,
-        painter: &egui::Painter,
+        ctx: &RowDrawCtx,
         val_x: f32, y: f32, row_h: f32,
-        rect_right: f32,
-        med: &egui::FontId,
-        small: &egui::FontId,
-        val_color: egui::Color32,
         focused: bool,
     ) {
         if let Row::Text(f) = &self.rows[WAV_FILE] {
@@ -213,22 +209,22 @@ impl AmDsbRows {
             } else if focused || editing {
                 egui::Color32::WHITE
             } else {
-                val_color
+                ctx.val_color
             };
-            painter.text(
+            ctx.painter.text(
                 egui::pos2(val_x, y + row_h / 2.0),
                 egui::Align2::LEFT_CENTER,
                 full,
-                med.clone(),
+                ctx.med.clone(),
                 text_color,
             );
             if focused {
                 let hint = if editing { "\u{21b5} load  Esc cancel" } else { "\u{21b5} edit" };
-                painter.text(
-                    egui::pos2(rect_right - 14.0, y + row_h / 2.0),
+                ctx.painter.text(
+                    egui::pos2(ctx.rect_right - 14.0, y + row_h / 2.0),
                     egui::Align2::RIGHT_CENTER,
                     hint,
-                    small.clone(),
+                    ctx.small.clone(),
                     egui::Color32::from_gray(140),
                 );
             }
@@ -273,8 +269,8 @@ impl super::SettingsState {
     pub fn am_mod_index(&self) -> f32 {
         if let Row::Num(f) = &self.amdsb.rows[MOD_IDX] { f.value } else { 1.0 }
     }
-    pub fn am_loop_gap_secs(&self) -> f32 {
-        if let Row::Num(f) = &self.amdsb.rows[LOOP_GAP] { f.value } else { 2.0 }
+    pub fn am_gap_secs(&self) -> f32 {
+        if let Row::Num(f) = &self.amdsb.rows[GAP] { f.value } else { 2.0 }
     }
     pub fn am_noise_amp(&self) -> f32 {
         if let Row::Num(f) = &self.amdsb.rows[NOISE] { f.value } else { 0.05 }

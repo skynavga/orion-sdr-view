@@ -3,6 +3,7 @@ use eframe::egui;
 use crate::decode::DecodeResult;
 use super::{PANE_BG, DecodeBarMode, SourceMode};
 use super::view::ViewApp;
+use crate::source::ft8::{Ft8Mode, Ft8MsgType};
 
 impl ViewApp {
     pub(super) fn draw_hud(&self, ctx: &egui::Context) {
@@ -77,6 +78,11 @@ impl ViewApp {
                     };
                     format!("  mode {mode_ch}  msg {msg_ch}")
                 }
+                SourceMode::Ft8 => {
+                    let mode_ch = match self.ft_mode { Ft8Mode::Ft8 => "8", Ft8Mode::Ft4 => "4" };
+                    let msg_ch  = match self.ft_msg_type { Ft8MsgType::Standard => "s", Ft8MsgType::FreeText => "f" };
+                    format!("  mode {mode_ch}  msg {msg_ch}")
+                }
                 _ => String::new(),
             };
             let status = format!(
@@ -134,7 +140,7 @@ impl ViewApp {
                 .sum();
 
             let mut y = avail.top();
-            for i in 0..3 {
+            for (i, &bg) in PANE_BG.iter().enumerate() {
                 if !self.pane_visible[i] {
                     continue;
                 }
@@ -144,7 +150,7 @@ impl ViewApp {
                     egui::vec2(avail.width(), h),
                 );
                 let painter = ui.painter_at(rect);
-                painter.rect_filled(rect, 0.0, PANE_BG[i]);
+                painter.rect_filled(rect, 0.0, bg);
                 match i {
                     0 => self.draw_spectrum(&painter, rect),
                     1 => self.draw_persistence_pane(&painter, rect),
@@ -188,10 +194,21 @@ impl ViewApp {
         let timer_label = self.loop_timer.label();
         let timer_w = painter.layout_no_wrap(timer_label.clone(), font.clone(), TEXT_COL).size().x;
         let em_w    = painter.layout_no_wrap("M".to_owned(),       font.clone(), TEXT_COL).size().x;
-        // Right-aligned loop timer: "sig  12.34s loop 007" / "gap   2.00s loop 007"
+
+        // For FT8/FT4 sources, show "frm xxx err yyy" to the left of the loop timer.
+        let ft_label: Option<String> = if self.source_mode == SourceMode::Ft8 {
+            Some(format!("frm {:03} err {:03} ", self.ft_frame_count, self.ft_err_count))
+        } else {
+            None
+        };
+        let ft_label_w = ft_label.as_ref().map_or(0.0, |s| {
+            painter.layout_no_wrap(s.clone(), font.clone(), TEXT_COL).size().x
+        });
+
+        // Right-aligned loop timer: "sig 12.34s loop 007" / "gap 02.00s loop 007"
         let timer_x = rect.right() - 6.0;
-        let timer_left = timer_x - timer_w;
-        // Right boundary for the scrolling text region: one 'M'-width gap before the timer.
+        let timer_left = timer_x - timer_w - ft_label_w;
+        // Right boundary for the scrolling text region: one 'M'-width gap before the timer block.
         let scroll_right = timer_left - em_w;
 
         // Build the static (non-scrolling) text for Di mode and fallback states.
@@ -255,6 +272,16 @@ impl ViewApp {
             );
         }
 
+        // Paint FT counter prefix (if any) then the loop timer.
+        if let Some(ref ft_str) = ft_label {
+            painter.text(
+                egui::pos2(timer_left, text_y),
+                egui::Align2::LEFT_CENTER,
+                ft_str,
+                font.clone(),
+                TEXT_COL,
+            );
+        }
         painter.text(
             egui::pos2(timer_x, text_y),
             egui::Align2::RIGHT_CENTER,
@@ -343,7 +370,7 @@ impl ViewApp {
 
         // ── Spectrum line (visible bins only) ─────────────────────────────
         let mut points: Vec<egui::Pos2> = Vec::new();
-        for b in 0..n {
+        for (b, &db) in bins.iter().enumerate().take(n) {
             let hz = bin_hz(b);
             if hz < lo || hz > hi {
                 if !points.is_empty() {
@@ -354,7 +381,7 @@ impl ViewApp {
                 }
                 continue;
             }
-            points.push(egui::pos2(x_for_hz(hz), y_for_db(bins[b])));
+            points.push(egui::pos2(x_for_hz(hz), y_for_db(db)));
         }
         if !points.is_empty() {
             painter.line(points, egui::Stroke::new(1.5, egui::Color32::from_rgb(0, 220, 180)));

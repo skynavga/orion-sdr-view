@@ -56,10 +56,12 @@ impl LoopTimer {
         }
     }
 
-    /// Formatted string: "sig  12.34s loop 007" or "gap   2.00s loop 007".
+    /// Formatted string: "sig 12.34s loop 007" or "gap 02.00s loop 007".
+    /// Phase seconds are zero-padded and clamped to 99.99 to keep the width stable.
     pub(super) fn label(&self) -> String {
         let kind = if self.in_signal { "sig" } else { "gap" };
-        format!("{kind} {:6.2}s loop {:03}", self.phase_secs, self.loop_count)
+        let secs = self.phase_secs.min(99.99);
+        format!("{kind} {secs:05.2}s loop {:03}", self.loop_count)
     }
 }
 
@@ -96,16 +98,18 @@ pub(super) enum SourceMode {
     TestTone,
     AmDsb,
     Psk31,
+    Ft8,
 }
 
 impl SourceMode {
-    pub(super) const ALL: &'static [SourceMode] = &[SourceMode::TestTone, SourceMode::AmDsb, SourceMode::Psk31];
+    pub(super) const ALL: &'static [SourceMode] = &[SourceMode::TestTone, SourceMode::AmDsb, SourceMode::Psk31, SourceMode::Ft8];
 
     pub(super) fn label(self) -> &'static str {
         match self {
             SourceMode::TestTone => "Test Tone",
             SourceMode::AmDsb => "AM DSB",
             SourceMode::Psk31 => "PSK31",
+            SourceMode::Ft8 => "FT8",
         }
     }
 

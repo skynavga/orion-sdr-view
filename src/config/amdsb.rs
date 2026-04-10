@@ -3,11 +3,11 @@ use super::Defaults;
 
 #[derive(Debug, Deserialize)]
 pub struct AmDsbConfig {
-    pub carrier_hz:    Option<f32>,
-    pub mod_index:     Option<f32>,
-    pub loop_gap_secs: Option<f32>,
-    pub noise_amp:     Option<f32>,
-    pub msg_repeat:    Option<u32>,
+    pub carrier_hz: Option<f32>,
+    pub mod_index:  Option<f32>,
+    pub gap_secs:   Option<f32>,
+    pub noise_amp:  Option<f32>,
+    pub msg_repeat: Option<u32>,
 }
 
 impl super::ViewConfig {
@@ -23,11 +23,11 @@ impl super::ViewConfig {
             .and_then(|a| a.mod_index)
             .unwrap_or(Defaults::MOD_INDEX)
     }
-    pub fn loop_gap_secs(&self) -> f32 {
+    pub fn am_gap_secs(&self) -> f32 {
         self.sources.as_ref()
             .and_then(|s| s.am_dsb.as_ref())
-            .and_then(|a| a.loop_gap_secs)
-            .unwrap_or(Defaults::LOOP_GAP_SECS)
+            .and_then(|a| a.gap_secs)
+            .unwrap_or(Defaults::AM_GAP_SECS)
     }
     pub fn am_noise_amp(&self) -> f32 {
         self.sources.as_ref()

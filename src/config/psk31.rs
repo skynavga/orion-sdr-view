@@ -3,13 +3,13 @@ use super::Defaults;
 
 #[derive(Debug, Deserialize)]
 pub struct Psk31Config {
-    pub mode:           Option<String>,
-    pub carrier_hz:     Option<f32>,
-    pub loop_gap_secs:  Option<f32>,
-    pub noise_amp:      Option<f32>,
-    pub message:        Option<String>,
-    pub custom_message: Option<String>,
-    pub msg_repeat:     Option<u32>,
+    pub mode:        Option<String>,
+    pub carrier_hz:  Option<f32>,
+    pub gap_secs:    Option<f32>,
+    pub noise_amp:   Option<f32>,
+    pub canned_text: Option<String>,
+    pub custom_text: Option<String>,
+    pub msg_repeat:  Option<u32>,
 }
 
 impl super::ViewConfig {
@@ -25,11 +25,11 @@ impl super::ViewConfig {
             .and_then(|p| p.carrier_hz)
             .unwrap_or(Defaults::CARRIER_HZ)
     }
-    pub fn psk31_loop_gap_secs(&self) -> f32 {
+    pub fn psk31_gap_secs(&self) -> f32 {
         self.sources.as_ref()
             .and_then(|s| s.psk31.as_ref())
-            .and_then(|p| p.loop_gap_secs)
-            .unwrap_or(crate::source::psk31::PSK31_DEFAULT_LOOP_GAP_SECS)
+            .and_then(|p| p.gap_secs)
+            .unwrap_or(crate::source::psk31::PSK31_DEFAULT_GAP_SECS)
     }
     pub fn psk31_noise_amp(&self) -> f32 {
         self.sources.as_ref()
@@ -37,16 +37,16 @@ impl super::ViewConfig {
             .and_then(|p| p.noise_amp)
             .unwrap_or(Defaults::AM_NOISE_AMP)
     }
-    pub fn psk31_message(&self) -> &str {
+    pub fn psk31_canned_text(&self) -> &str {
         self.sources.as_ref()
             .and_then(|s| s.psk31.as_ref())
-            .and_then(|p| p.message.as_deref())
-            .unwrap_or("CQ CQ CQ DE N0GNR")
+            .and_then(|p| p.canned_text.as_deref())
+            .unwrap_or(crate::source::psk31::PSK31_DEFAULT_CANNED_TEXT)
     }
-    pub fn psk31_custom_message(&self) -> &str {
+    pub fn psk31_custom_text(&self) -> &str {
         self.sources.as_ref()
             .and_then(|s| s.psk31.as_ref())
-            .and_then(|p| p.custom_message.as_deref())
+            .and_then(|p| p.custom_text.as_deref())
             .unwrap_or(crate::source::psk31::PSK31_DEFAULT_CUSTOM_TEXT)
     }
     pub fn psk31_msg_repeat(&self) -> usize {

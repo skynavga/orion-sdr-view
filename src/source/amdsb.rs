@@ -4,7 +4,7 @@ use std::path::Path;
 use orion_sdr::core::AudioToIqChain;
 use orion_sdr::modulate::AmDsbMod;
 
-use super::SignalSource;
+use super::{SignalSource, MAX_SIG_SECS};
 
 // ── BuiltinAudio ─────────────────────────────────────────────────────────────
 
@@ -111,11 +111,13 @@ pub struct AmDsbSource {
     audio_pos: f32,
     /// How many times the audio buffer has played in the current loop cycle.
     play_count: usize,
+    /// Output-rate signal samples emitted in the current PTT burst.
+    sig_samples: usize,
     /// How many output-rate samples remain in the current PTT gap.
     gap_remaining: usize,
-    /// Gap length in output-rate samples (recomputed when loop_gap_secs changes).
-    loop_gap_samples: usize,
-    pub loop_gap_secs: f32,
+    /// Gap length in output-rate samples (recomputed when gap_secs changes).
+    gap_samples: usize,
+    pub gap_secs: f32,
     /// Number of times to play the audio buffer per loop cycle before the gap.
     pub msg_repeat: usize,
 
@@ -133,26 +135,28 @@ pub struct AmDsbSource {
 }
 
 impl AmDsbSource {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         audio: Vec<f32>,
         audio_rate: f32,
         carrier_hz: f32,
         mod_index: f32,
-        loop_gap_secs: f32,
+        gap_secs: f32,
         noise_amp: f32,
         msg_repeat: usize,
         mod_rate: f32,
     ) -> Self {
-        let loop_gap_samples = (loop_gap_secs * mod_rate) as usize;
+        let gap_samples = (gap_secs * mod_rate) as usize;
         let block = AmDsbMod::new(mod_rate, carrier_hz, 1.0, mod_index);
         Self {
             audio: normalize_audio(audio),
             audio_rate,
             audio_pos: 0.0,
             play_count: 0,
+            sig_samples: 0,
             gap_remaining: 0,
-            loop_gap_samples,
-            loop_gap_secs,
+            gap_samples,
+            gap_secs,
             msg_repeat: msg_repeat.max(1),
             chain: AudioToIqChain::new(block),
             mod_rate,
@@ -169,6 +173,7 @@ impl AmDsbSource {
         self.audio_rate = audio_rate;
         self.audio_pos = 0.0;
         self.play_count = 0;
+        self.sig_samples = 0;
         self.gap_remaining = 0;
     }
 
@@ -185,9 +190,9 @@ impl AmDsbSource {
         self.chain = AudioToIqChain::new(block);
     }
 
-    /// Update loop gap length after loop_gap_secs changes.
-    pub fn update_loop_gap(&mut self) {
-        self.loop_gap_samples = (self.loop_gap_secs * self.mod_rate) as usize;
+    /// Update gap length after gap_secs changes.
+    pub fn update_gap(&mut self) {
+        self.gap_samples = (self.gap_secs * self.mod_rate) as usize;
     }
 
     /// Interpolate one audio sample at the current fractional position,
@@ -220,10 +225,14 @@ impl SignalSource for AmDsbSource {
     fn restart(&mut self) {
         self.audio_pos = 0.0;
         self.play_count = 0;
+        self.sig_samples = 0;
         self.gap_remaining = 0;
     }
 
     fn next_samples(&mut self, n: usize) -> Vec<f32> {
+        // Cap total signal samples per burst so the decode-bar timer cannot
+        // overflow the fixed-width "sig NN.NN" display.
+        let max_sig_samples = (MAX_SIG_SECS * self.mod_rate) as usize;
         let mut out = Vec::with_capacity(n);
         let mut audio_chunk: Vec<f32> = Vec::with_capacity(n);
         let mut i = 0;
@@ -242,6 +251,10 @@ impl SignalSource for AmDsbSource {
                 }
                 self.gap_remaining -= gap_now;
                 i += gap_now;
+                if self.gap_remaining == 0 {
+                    // Gap done — ready for next burst.
+                    self.sig_samples = 0;
+                }
             } else {
                 // PTT keyed — accumulate audio samples until gap or end of n
                 audio_chunk.clear();
@@ -249,12 +262,19 @@ impl SignalSource for AmDsbSource {
                     let (s, wrapped) = self.read_audio_sample();
                     audio_chunk.push(s);
                     i += 1;
+                    self.sig_samples += 1;
                     if wrapped {
                         self.play_count += 1;
                         if self.play_count >= self.msg_repeat {
                             self.play_count = 0;
-                            self.gap_remaining = self.loop_gap_samples;
+                            self.gap_remaining = self.gap_samples;
                         }
+                    }
+                    if self.sig_samples >= max_sig_samples && self.gap_remaining == 0 {
+                        // Hit signal-duration cap — truncate burst and enter gap.
+                        self.play_count = 0;
+                        self.audio_pos = 0.0;
+                        self.gap_remaining = self.gap_samples;
                     }
                 }
                 // Modulate the keyed chunk; use real part to preserve carrier position

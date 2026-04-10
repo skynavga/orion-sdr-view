@@ -1,9 +1,11 @@
-use super::field::{Row, NumField};
-use crate::config::ViewConfig;
+use eframe::egui;
+use super::field::{Row, NumField, RowDrawCtx, TimeZoneField};
+use crate::config::{TzMode, ViewConfig, format_offset_min};
 
 // ── Row indices (local) ───────────────────────────────────────────────────
-const DB_MIN: usize = 0;
-const DB_MAX: usize = 1;
+const DB_MIN:    usize = 0;
+const DB_MAX:    usize = 1;
+const TIME_ZONE: usize = 2;
 
 pub(super) struct DisplayRows {
     pub rows: Vec<Row>,
@@ -21,6 +23,14 @@ impl DisplayRows {
                     label: "dB max", value: db_max, default: -20.0,
                     step: 1.0, min: -159.0, max: 0.0, unit: " dB",
                 }),
+                Row::TimeZone(TimeZoneField {
+                    label: "Time zone",
+                    mode: TzMode::Utc,
+                    explicit_min: 0,
+                    pending_explicit: None,
+                    configured_mode: TzMode::Utc,
+                    configured_explicit_min: 0,
+                }),
             ],
         }
     }
@@ -28,10 +38,175 @@ impl DisplayRows {
     pub fn patch_from_config(&mut self, cfg: &ViewConfig) {
         self.rows[DB_MIN].patch_num(cfg.db_min());
         self.rows[DB_MAX].patch_num(cfg.db_max());
+
+        let mode = cfg.time_zone_mode();
+        if let Row::TimeZone(f) = &mut self.rows[TIME_ZONE] {
+            f.mode = mode;
+            f.configured_mode = mode;
+            if let TzMode::Explicit(m) = mode {
+                f.explicit_min            = m;
+                f.configured_explicit_min = m;
+            }
+        }
     }
 
     pub fn visible_indices(&self) -> Vec<usize> {
         (0..self.rows.len()).collect()
+    }
+
+    pub(super) const TIME_ZONE_IDX: usize = TIME_ZONE;
+}
+
+// ── Custom TZ row drawer ──────────────────────────────────────────────────
+
+/// Draw the Time zone row value.  Renders one of:
+/// - `utc`
+/// - `local (±HH:MM)` — parenthesized system offset, refreshed each draw
+/// - `±HH:MM` — explicit, with a block-cursor suffix while in sub-edit
+pub(super) fn draw_time_zone(
+    ctx: &RowDrawCtx,
+    f: &TimeZoneField,
+    x: f32, y: f32, row_h: f32,
+    focused: bool,
+) {
+    let editing = f.is_editing();
+    let val_str = match f.mode {
+        TzMode::Utc   => "utc".to_owned(),
+        TzMode::Local => {
+            let live = crate::utils::time::local_utc_offset_min();
+            format!("local ({})", format_offset_min_signed(live))
+        }
+        TzMode::Explicit(_) => {
+            let shown = f.pending_explicit.unwrap_or(f.explicit_min);
+            if editing {
+                format!("{}\u{258b}", format_offset_min_signed(shown)) // ▋ cursor
+            } else {
+                format_offset_min_signed(shown)
+            }
+        }
+    };
+
+    let text_color = if focused || editing {
+        egui::Color32::WHITE
+    } else {
+        ctx.val_color
+    };
+    ctx.painter.text(
+        egui::pos2(x, y + row_h / 2.0),
+        egui::Align2::LEFT_CENTER,
+        val_str,
+        ctx.med.clone(),
+        text_color,
+    );
+
+    if focused {
+        let hint = if editing {
+            "◀ ▶ ±15m  \u{21b5} accept  Esc cancel"
+        } else if f.is_explicit() {
+            "◀ ▶ mode  \u{21b5} edit"
+        } else {
+            "◀ ▶ mode"
+        };
+        ctx.painter.text(
+            egui::pos2(ctx.rect_right - 14.0, y + row_h / 2.0),
+            egui::Align2::RIGHT_CENTER,
+            hint,
+            ctx.small.clone(),
+            egui::Color32::from_gray(140),
+        );
+    }
+}
+
+/// Explicit offsets are always shown with an explicit sign — even `+00:00`
+/// for clarity — so the sub-edit cursor has something to attach to.
+fn format_offset_min_signed(min: i32) -> String {
+    if min == 0 {
+        return "+00:00".to_owned();
+    }
+    format_offset_min(min)
+}
+
+// ── TZ row key handler (Enter sub-edit) ───────────────────────────────────
+
+pub(super) struct TzKeysResult {
+    /// True when user pressed Enter to commit a sub-edit.
+    #[allow(dead_code)]
+    pub accepted: bool,
+    /// True if the key event was consumed (don't fall through to navigation).
+    pub consumed: bool,
+}
+
+impl DisplayRows {
+    /// Handle keyboard events when the Time zone row is focused.
+    ///
+    /// Behavior:
+    /// - If not editing: Enter (only in Explicit mode) opens a sub-edit seeded
+    ///   from the current system offset.  Falls through otherwise.
+    /// - If editing: Enter commits, Escape cancels, other events are consumed
+    ///   (so ←/→ reach the field via `nudge_*` in the caller).
+    pub fn handle_tz_keys(&mut self, events: &[egui::Event]) -> TzKeysResult {
+        let mut result = TzKeysResult { accepted: false, consumed: false };
+
+        let f = match &mut self.rows[TIME_ZONE] {
+            Row::TimeZone(f) => f,
+            _ => return result,
+        };
+
+        if f.pending_explicit.is_some() {
+            result.consumed = true;
+            for e in events {
+                match e {
+                    egui::Event::Key { key: egui::Key::Enter, pressed: true, .. } => {
+                        if let Some(pending) = f.pending_explicit.take() {
+                            f.explicit_min = pending;
+                            f.mode = TzMode::Explicit(pending);
+                            result.accepted = true;
+                        }
+                    }
+                    egui::Event::Key { key: egui::Key::Escape, pressed: true, .. } => {
+                        f.pending_explicit = None;
+                    }
+                    egui::Event::Key { key: egui::Key::ArrowRight, pressed: true, .. } => {
+                        if let Some(pending) = &mut f.pending_explicit {
+                            *pending = (*pending + super::field::TZ_EXPLICIT_STEP)
+                                .clamp(super::field::TZ_EXPLICIT_MIN, super::field::TZ_EXPLICIT_MAX);
+                        }
+                    }
+                    egui::Event::Key { key: egui::Key::ArrowLeft, pressed: true, .. } => {
+                        if let Some(pending) = &mut f.pending_explicit {
+                            *pending = (*pending - super::field::TZ_EXPLICIT_STEP)
+                                .clamp(super::field::TZ_EXPLICIT_MIN, super::field::TZ_EXPLICIT_MAX);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            return result;
+        }
+
+        // Not editing — Enter in Explicit mode opens a sub-edit seeded from
+        // the current system offset.
+        let enter_pressed = events.iter().any(|e| {
+            matches!(e, egui::Event::Key { key: egui::Key::Enter, pressed: true, .. })
+        });
+        if enter_pressed && f.is_explicit() {
+            let seed = crate::utils::time::local_utc_offset_min();
+            f.pending_explicit = Some(seed);
+            result.consumed = true;
+        }
+
+        result
+    }
+
+    /// Discard any in-progress tz sub-edit.
+    pub fn discard_tz_pending(&mut self) {
+        if let Row::TimeZone(f) = &mut self.rows[TIME_ZONE] {
+            f.pending_explicit = None;
+        }
+    }
+
+    pub fn tz_is_editing(&self) -> bool {
+        matches!(&self.rows[TIME_ZONE], Row::TimeZone(f) if f.pending_explicit.is_some())
     }
 }
 
@@ -49,5 +224,14 @@ impl super::SettingsState {
     }
     pub fn set_db_max(&mut self, v: f32) {
         if let Row::Num(f) = &mut self.display.rows[DB_MAX] { f.value = v.clamp(f.min, f.max); }
+    }
+    /// Effective UTC offset in minutes for the Time zone row, resolving
+    /// `local` against the current system offset.
+    pub fn time_zone_offset_min(&self) -> i32 {
+        if let Row::TimeZone(f) = &self.display.rows[TIME_ZONE] {
+            f.effective_min(crate::utils::time::local_utc_offset_min())
+        } else {
+            0
+        }
     }
 }

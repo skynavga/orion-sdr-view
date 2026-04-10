@@ -4,6 +4,40 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.8] - 2026-04-10
+
+### Added
+
+- FT8/FT4 signal source (`Ft8Source`) rendering a configurable
+  standard or free-text message at a chosen carrier frequency, with
+  per-cycle gap, noise, and repeat controls
+- FT8/FT4 decode worker integration using `Ft8StreamDecoder` from
+  orion-sdr 0.0.29, including a dedicated settings popover and
+  YAML config section (`[ft8]`) for mode / message type /
+  callsigns / grid / free text / carrier / gap / repeat
+- Three-mode `time_zone` display setting cycling `utc` → `local` →
+  explicit `±HH:MM`, with an Enter sub-edit for the explicit value
+  (±15 min nudges, Esc cancels). YAML accepts `utc`, `local`, or
+  `±HH:MM`
+- FT8 Dt ticker wraps each decoded frame as
+  `"|| HH:MM:SS.fff | … ||"` so frame boundaries are visually
+  unambiguous in the scrolling decode bar
+- New integration test suites: `tests/ft8.rs`, `tests/psk31.rs`,
+  `tests/amdsb.rs`, `tests/bandwidth.rs`, and a shared ticker
+  simulation harness in `tests/common/ticker.rs`
+
+### Changed
+
+- Bumped `orion-sdr` dependency 0.0.28 → 0.0.29 (registry)
+- FT8/FT4 source renders at a 12 kHz default carrier by shifting
+  the native 1500 Hz baseband up; the decode worker reverses the
+  shift before decimating, fixing decode of off-baseband carriers
+- Refactored settings row drawing around a shared `RowDrawCtx`
+  struct and cleaned up all clippy warnings across lib, bin, and
+  tests
+- Split the former monolithic `tests/decode.rs` into per-source
+  files sharing the common ticker harness
+
 ## [0.0.7] - 2026-04-07
 
 ### Changed

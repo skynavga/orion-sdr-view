@@ -1,6 +1,6 @@
 [package]
 name = "orion-sdr-view"
-version = "0.0.7"
+version = "0.0.8"
 edition = "2024"
 description = "Keyboard-driven SDR spectrum viewer: live spectrum, persistence, and waterfall display."
 license = "MIT OR Apache-2.0"
@@ -35,7 +35,7 @@ eframe = { version = "0.33", default-features = false, features = [
 egui = "0.33"
 num-complex = "0.4"
 rustfft = "6"
-orion-sdr = "0.0.28"
+orion-sdr = "0.0.29"
 hound = "3"
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }

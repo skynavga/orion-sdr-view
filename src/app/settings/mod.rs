@@ -6,12 +6,14 @@ mod display;
 mod tone;
 mod amdsb;
 mod psk31;
+mod ft8;
 
-use field::{Row, ToggleField, draw_num, draw_toggle};
+use field::{Row, RowDrawCtx, ToggleField, draw_num, draw_toggle};
 use display::DisplayRows;
 use tone::ToneRows;
 use amdsb::AmDsbRows;
 use psk31::Psk31Rows;
+use ft8::Ft8Rows;
 
 const OVERLAY_W: f32 = 560.0;
 const OVERLAY_H: f32 = 446.0;
@@ -37,19 +39,22 @@ enum RowTarget {
     Tone(usize),
     AmDsb(usize),
     Psk31(usize),
+    Ft8(usize),
 }
 
 // ── HandleKeysResult ──────────────────────────────────────────────────────
 
 /// Signals back to ViewApp after a key event in the settings popover.
 pub struct HandleKeysResult {
-    pub source_switched:    bool,
-    pub am_audio_changed:   bool,
-    pub wav_load_requested: bool,
+    pub source_switched:     bool,
+    pub am_audio_changed:    bool,
+    pub wav_load_requested:  bool,
     /// True when the user pressed Enter to commit a new PSK31 message.
-    pub psk31_msg_accepted: bool,
+    pub psk31_msg_accepted:  bool,
+    /// True when the user pressed Enter to commit a new FT8 free-text message.
+    pub ft8_text_accepted:   bool,
     /// True when a text field is actively consuming all keyboard input.
-    pub text_editing:       bool,
+    pub text_editing:        bool,
 }
 
 // ── SettingsState ──────────────────────────────────────────────────────────
@@ -66,6 +71,7 @@ pub struct SettingsState {
     tone: ToneRows,
     amdsb: AmDsbRows,
     psk31: Psk31Rows,
+    ft8: Ft8Rows,
 }
 
 impl SettingsState {
@@ -84,13 +90,14 @@ impl SettingsState {
             focused_row: None,
             source_selector: Row::Toggle(ToggleField {
                 label: "Source",
-                options: &["Test Tone", "AM DSB", "PSK31"],
+                options: &["Test Tone", "AM DSB", "PSK31", "FT8"],
                 index: 0, default: 0,
             }),
             display: DisplayRows::new(db_min, db_max),
             tone: ToneRows::new(freq_hz, noise_amp, amp_max, ramp_secs, pause_secs),
             amdsb: AmDsbRows::new(),
             psk31: Psk31Rows::new(),
+            ft8: Ft8Rows::new(),
         }
     }
 
@@ -106,6 +113,7 @@ impl SettingsState {
         s.display.patch_from_config(cfg);
         s.amdsb.patch_from_config(cfg);
         s.psk31.patch_from_config(cfg);
+        s.ft8.patch_from_config(cfg);
         s
     }
 
@@ -121,6 +129,10 @@ impl SettingsState {
 
     fn source_is_psk31(&self) -> bool {
         self.source_index() == 2
+    }
+
+    fn source_is_ft8(&self) -> bool {
+        self.source_index() == 3
     }
 
     pub fn source_mode_idx(&self) -> usize {
@@ -151,6 +163,8 @@ impl SettingsState {
                     v.extend(self.amdsb.visible_indices().into_iter().map(RowTarget::AmDsb));
                 } else if self.source_is_psk31() {
                     v.extend(self.psk31.visible_indices().into_iter().map(RowTarget::Psk31));
+                } else if self.source_is_ft8() {
+                    v.extend(self.ft8.visible_indices().into_iter().map(RowTarget::Ft8));
                 } else {
                     v.extend(self.tone.visible_indices().into_iter().map(RowTarget::Tone));
                 }
@@ -171,6 +185,7 @@ impl SettingsState {
             RowTarget::Tone(i)    => &self.tone.rows[i],
             RowTarget::AmDsb(i)   => &self.amdsb.rows[i],
             RowTarget::Psk31(i)   => &self.psk31.rows[i],
+            RowTarget::Ft8(i)     => &self.ft8.rows[i],
         }
     }
 
@@ -182,6 +197,7 @@ impl SettingsState {
             RowTarget::Tone(i)    => &mut self.tone.rows[i],
             RowTarget::AmDsb(i)   => &mut self.amdsb.rows[i],
             RowTarget::Psk31(i)   => &mut self.psk31.rows[i],
+            RowTarget::Ft8(i)     => &mut self.ft8.rows[i],
         }
     }
 
@@ -193,6 +209,7 @@ impl SettingsState {
             am_audio_changed:   false,
             wav_load_requested: false,
             psk31_msg_accepted: false,
+            ft8_text_accepted:  false,
             text_editing:       false,
         };
 
@@ -208,6 +225,11 @@ impl SettingsState {
             && self.amdsb.wav_row_is_active();
 
         let psk31_custom_focused = matches!(focused_target, Some(RowTarget::Psk31(i)) if i == Psk31Rows::CUSTOM_MSG_IDX);
+
+        let ft8_free_text_focused = matches!(focused_target, Some(RowTarget::Ft8(i)) if i == Ft8Rows::FREE_TEXT_IDX)
+            && self.ft8.msg_is_free_text();
+
+        let tz_row_focused = matches!(focused_target, Some(RowTarget::Display(i)) if i == DisplayRows::TIME_ZONE_IDX);
 
         ctx.input(|i| {
             // WAV text field handling
@@ -227,19 +249,47 @@ impl SettingsState {
             }
 
             // PSK31 custom message field handling
-            if psk31_custom_focused {
-                if let Some(RowTarget::Psk31(local_idx)) = focused_target {
-                    let msg_result = self.psk31.handle_msg_keys(&i.events, local_idx);
-                    if msg_result.msg_accepted {
-                        result.psk31_msg_accepted = true;
-                    }
-                    if msg_result.defocus {
-                        self.focused_row = None;
-                    }
-                    if msg_result.consumed {
-                        result.text_editing = true;
-                        return;
-                    }
+            if psk31_custom_focused
+                && let Some(RowTarget::Psk31(local_idx)) = focused_target
+            {
+                let msg_result = self.psk31.handle_msg_keys(&i.events, local_idx);
+                if msg_result.msg_accepted {
+                    result.psk31_msg_accepted = true;
+                }
+                if msg_result.defocus {
+                    self.focused_row = None;
+                }
+                if msg_result.consumed {
+                    result.text_editing = true;
+                    return;
+                }
+                // Not consumed — fall through to navigation
+            }
+
+            // FT8 free-text field handling
+            if ft8_free_text_focused {
+                let text_result = self.ft8.handle_text_keys(&i.events);
+                if text_result.accepted {
+                    result.ft8_text_accepted = true;
+                }
+                if text_result.defocus {
+                    self.focused_row = None;
+                }
+                if text_result.consumed {
+                    result.text_editing = true;
+                    return;
+                }
+                // Not consumed — fall through to navigation
+            }
+
+            // Time zone row: intercept Enter to open/commit the explicit
+            // sub-edit.  ←/→ fall through to `nudge_*` which dispatches to
+            // the field-level logic (mode cycle vs. ±15 min nudge).
+            if tz_row_focused {
+                let tz_result = self.display.handle_tz_keys(&i.events);
+                if tz_result.consumed {
+                    result.text_editing = true;
+                    return;
                 }
                 // Not consumed — fall through to navigation
             }
@@ -251,6 +301,12 @@ impl SettingsState {
             }
             if self.amdsb.pending_wav.is_some() {
                 self.amdsb.discard_pending();
+            }
+            if self.ft8.pending_text.is_some() {
+                self.ft8.discard_pending();
+            }
+            if !tz_row_focused && self.display.tz_is_editing() {
+                self.display.discard_tz_pending();
             }
 
             // S or Escape: close
@@ -310,8 +366,10 @@ impl SettingsState {
                     }
                     // Clamp focused_row to new visible count after any toggle change
                     let new_n = self.n_visible_rows();
-                    if let Some(r) = self.focused_row {
-                        if r >= new_n { self.focused_row = Some(new_n.saturating_sub(1)); }
+                    if let Some(r) = self.focused_row
+                        && r >= new_n
+                    {
+                        self.focused_row = Some(new_n.saturating_sub(1));
                     }
                 } else {
                     self.active_tab = (self.active_tab + N_TABS - 1) % N_TABS;
@@ -333,8 +391,10 @@ impl SettingsState {
                     }
                     // Clamp focused_row to new visible count after any toggle change
                     let new_n = self.n_visible_rows();
-                    if let Some(r) = self.focused_row {
-                        if r >= new_n { self.focused_row = Some(new_n.saturating_sub(1)); }
+                    if let Some(r) = self.focused_row
+                        && r >= new_n
+                    {
+                        self.focused_row = Some(new_n.saturating_sub(1));
                     }
                 } else {
                     self.active_tab = (self.active_tab + 1) % N_TABS;
@@ -434,6 +494,14 @@ impl SettingsState {
         y += 8.0;
 
         // ── Fields ────────────────────────────────────────────────────────
+        let val_color = egui::Color32::from_rgb(100, 220, 180);
+        let draw_ctx = RowDrawCtx {
+            painter,
+            rect_right: rect.right(),
+            med:        &med,
+            small:      &small,
+            val_color,
+        };
         let vis_targets = self.active_rows();
         for (vis_row, &target) in vis_targets.iter().enumerate() {
             let focused = self.focused_row == Some(vis_row);
@@ -469,23 +537,31 @@ impl SettingsState {
             );
 
             // Value
-            let val_color = egui::Color32::from_rgb(100, 220, 180);
             let val_x = rect.left() + VAL_X;
             match (target, row) {
+                (RowTarget::Display(_), Row::TimeZone(f)) => {
+                    display::draw_time_zone(&draw_ctx, f, val_x, y, ROW_H, focused);
+                }
                 (_, Row::Num(f)) => {
-                    draw_num(painter, f, val_x, y, ROW_H, rect.right(), &med, &small, val_color, focused);
+                    draw_num(&draw_ctx, f, val_x, y, ROW_H, focused);
                 }
                 (_, Row::Toggle(f)) => {
-                    draw_toggle(painter, f, val_x, y, ROW_H, &med, val_color, focused);
+                    draw_toggle(&draw_ctx, f, val_x, y, ROW_H, focused);
                 }
                 (RowTarget::Psk31(idx), Row::Text(_)) if idx == Psk31Rows::MSG_IDX => {
-                    self.psk31.draw_canned_msg(painter, val_x, y, ROW_H, rect.right(), &med, &small, val_color, focused);
+                    self.psk31.draw_canned_msg(&draw_ctx, val_x, y, ROW_H, focused);
                 }
                 (RowTarget::Psk31(idx), Row::Text(_)) if idx == Psk31Rows::CUSTOM_MSG_IDX => {
-                    self.psk31.draw_custom_msg(painter, val_x, y, ROW_H, rect.right(), &med, &small, val_color, focused);
+                    self.psk31.draw_custom_msg(&draw_ctx, val_x, y, ROW_H, focused);
                 }
                 (RowTarget::AmDsb(idx), Row::Text(_)) if idx == AmDsbRows::WAV_FILE_IDX => {
-                    self.amdsb.draw_wav_field(painter, val_x, y, ROW_H, rect.right(), &med, &small, val_color, focused);
+                    self.amdsb.draw_wav_field(&draw_ctx, val_x, y, ROW_H, focused);
+                }
+                (RowTarget::Ft8(idx), Row::Text(_)) if idx == Ft8Rows::FREE_TEXT_IDX => {
+                    self.ft8.draw_free_text(&draw_ctx, val_x, y, ROW_H, focused);
+                }
+                (RowTarget::Ft8(idx), Row::Text(_)) => {
+                    self.ft8.draw_readonly_text(idx, &draw_ctx, val_x, y, ROW_H, focused);
                 }
                 _ => {}
             }
@@ -509,6 +585,14 @@ impl SettingsState {
 
         let psk31_custom_focused = matches!(focused_target, Some(RowTarget::Psk31(i)) if i == Psk31Rows::CUSTOM_MSG_IDX);
 
+        let ft8_free_text_focused = matches!(focused_target, Some(RowTarget::Ft8(i)) if i == Ft8Rows::FREE_TEXT_IDX)
+            && self.ft8.msg_is_free_text();
+
+        let tz_focused = matches!(focused_target, Some(RowTarget::Display(i)) if i == DisplayRows::TIME_ZONE_IDX);
+        let tz_editing = tz_focused && self.display.tz_is_editing();
+        let tz_explicit = tz_focused && matches!(&self.display.rows[DisplayRows::TIME_ZONE_IDX],
+            Row::TimeZone(f) if f.is_explicit());
+
         let hint = if wav_focused && self.amdsb.pending_wav.is_some() {
             "type path   ↵ load   Esc cancel"
         } else if wav_focused {
@@ -517,6 +601,14 @@ impl SettingsState {
             "type message   ↵ accept   Esc cancel"
         } else if psk31_custom_focused {
             "↵ edit message   ↑↓ navigate"
+        } else if ft8_free_text_focused && self.ft8.pending_text.is_some() {
+            "type message   ↵ accept   Esc cancel"
+        } else if ft8_free_text_focused {
+            "↵ edit message   ↑↓ navigate"
+        } else if tz_editing {
+            "◀▶ ±15 min   ↵ accept   Esc cancel"
+        } else if tz_explicit {
+            "◀▶ cycle mode   ↵ edit offset   ↑↓ navigate"
         } else if self.focused_row.is_some() {
             "↑↓ navigate   ◀▶ adjust   R reset field   Esc deselect"
         } else {

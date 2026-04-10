@@ -19,6 +19,25 @@ use super::{
     LoopTimer, DecodeBarMode, SourceMode,
 };
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Format a `SystemTime` as `HH:MM:SS.mmm`, offset from UTC by `offset_min`
+/// minutes (positive = east of UTC, negative = west, 0 = UTC).
+fn format_time(t: std::time::SystemTime, offset_min: i32) -> String {
+    let dur = t
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let unix_secs = dur.as_secs() as i64;
+    let millis    = dur.subsec_millis();
+
+    let secs = unix_secs + offset_min as i64 * 60;
+
+    let s = secs.rem_euclid(60);
+    let m = (secs / 60).rem_euclid(60);
+    let h = (secs / 3600).rem_euclid(24);
+    format!("{h:02}:{m:02}:{s:02}.{millis:03}")
+}
+
 // ── ViewApp ───────────────────────────────────────────────────────────────────
 
 pub(crate) struct ViewApp {
@@ -79,6 +98,19 @@ pub(crate) struct ViewApp {
     pub(super) last_block_was_signal: bool,
     /// Wall-clock time of the previous frame, for real-time dt calculation.
     pub(super) last_frame_time: std::time::Instant,
+
+    // FT8/FT4 frame counters (reset on source switch, mode change, or R key).
+    pub(super) ft_frame_count: u32,
+    pub(super) ft_err_count:   u32,
+    /// Timestamp string (HH:MM:SS UTC) of the most recently decoded frame's signal onset.
+    pub(super) ft_last_timestamp: String,
+    /// Wall-clock time when the current FT8/FT4 signal burst started (for timestamp capture).
+    pub(super) ft_signal_onset: Option<std::time::SystemTime>,
+    /// Cached FT8/FT4 sub-mode for use in draw functions (updated on mode cycle).
+    pub(super) ft_mode:       crate::source::ft8::Ft8Mode,
+    pub(super) ft_msg_type:   crate::source::ft8::Ft8MsgType,
+    /// Display timestamps offset from UTC by this many minutes (0 = UTC).
+    pub(super) time_zone_offset_min: i32,
 }
 
 impl ViewApp {
@@ -158,7 +190,16 @@ impl ViewApp {
             decode_ticker: DecodeTicker::new(),
             last_block_was_signal: false,
             last_frame_time: std::time::Instant::now(),
+
+            ft_frame_count:    0,
+            ft_err_count:      0,
+            ft_last_timestamp: String::new(),
+            ft_signal_onset:   None,
+            ft_mode:           crate::source::ft8::Ft8Mode::Ft8,
+            ft_msg_type:       crate::source::ft8::Ft8MsgType::Standard,
+            time_zone_offset_min: 0,
         };
+        app.time_zone_offset_min = cfg.time_zone_offset_min();
         app.sync_decode_config();
         app
     }
@@ -170,6 +211,10 @@ impl ViewApp {
         self.loop_timer.reset();
         self.decode_ticker.reset();
         self.last_block_was_signal = false;
+        self.ft_frame_count    = 0;
+        self.ft_err_count      = 0;
+        self.ft_last_timestamp = String::new();
+        self.ft_signal_onset   = None;
         while self.decode_rx.try_recv().is_ok() {}
         let _ = self.decode_tx.try_send(Vec::new());
     }
@@ -183,6 +228,7 @@ impl ViewApp {
             SourceMode::TestTone => self.settings.set_freq_hz(hz),
             SourceMode::AmDsb    => self.settings.set_am_carrier_hz(hz),
             SourceMode::Psk31    => self.settings.set_psk31_carrier_hz(hz),
+            SourceMode::Ft8      => self.settings.set_ft8_carrier_hz(hz),
         }
         self.sync_settings();
     }
@@ -200,12 +246,18 @@ impl ViewApp {
             }
             SourceMode::AmDsb  => Box::new(self.make_am_source()),
             SourceMode::Psk31  => Box::new(self.make_psk31_source()),
+            SourceMode::Ft8    => {
+                self.ft_mode     = crate::source::ft8::Ft8Mode::Ft8;
+                self.ft_msg_type = crate::source::ft8::Ft8MsgType::Standard;
+                Box::new(self.make_ft8_source())
+            }
         };
         self.settings.set_source_mode(mode as usize);
         self.sync_decode_config();
         self.reset_playback();
-        // Text mode is only valid for PSK31; clamp if we switched away.
-        if mode != SourceMode::Psk31 && self.decode_bar == DecodeBarMode::Text {
+        // Text mode is only valid for PSK31/FT8; clamp if we switched away.
+        let has_text = matches!(mode, SourceMode::Psk31 | SourceMode::Ft8);
+        if !has_text && self.decode_bar == DecodeBarMode::Text {
             self.decode_bar = DecodeBarMode::Info;
         }
     }
@@ -224,13 +276,15 @@ impl ViewApp {
             if result.am_audio_changed {
                 self.reload_builtin_audio();
             }
-            if result.wav_load_requested {
-                if self.try_load_wav() {
+            if result.wav_load_requested
+                && self.try_load_wav() {
                     self.settings.defocus();
                 }
-            }
             if result.psk31_msg_accepted {
                 self.apply_psk31_message();
+            }
+            if result.ft8_text_accepted {
+                self.apply_ft8_free_text();
             }
             self.sync_settings();
             // Let global keys (Q, M, N) work even while settings is open,
@@ -254,10 +308,16 @@ impl ViewApp {
                     self.lock_source_to_center();
                 }
                 if cycle_mode {
-                    if self.source_mode == SourceMode::Psk31 {
-                        self.settings.cycle_psk31_mode();
-                        self.sync_settings();
-                        self.reset_playback();
+                    match self.source_mode {
+                        SourceMode::Psk31 => {
+                            self.settings.cycle_psk31_mode();
+                            self.sync_settings();
+                            self.reset_playback();
+                        }
+                        SourceMode::Ft8 => {
+                            self.cycle_ft8_mode();
+                        }
+                        _ => {}
                     }
                 }
                 if cycle_audio {
@@ -269,6 +329,9 @@ impl ViewApp {
                         SourceMode::Psk31 => {
                             self.settings.cycle_psk31_msg_mode();
                             self.apply_psk31_message();
+                        }
+                        SourceMode::Ft8 => {
+                            self.cycle_ft8_msg_type();
                         }
                         _ => {}
                     }
@@ -319,7 +382,7 @@ impl ViewApp {
                 self.reset_playback();
             }
             if i.key_pressed(egui::Key::D) {
-                let has_text = self.source_mode == SourceMode::Psk31;
+                let has_text = matches!(self.source_mode, SourceMode::Psk31 | SourceMode::Ft8);
                 self.decode_bar = self.decode_bar.next(has_text);
             }
             if i.key_pressed(egui::Key::E) { self.envelope_visible ^= true; }
@@ -429,9 +492,8 @@ impl ViewApp {
                 }
             }
             for e in &i.events {
-                if let egui::Event::Text(s) = e {
-                    if s == "R" || s == "r" { freq_reset = true; }
-                }
+                if let egui::Event::Text(s) = e
+                    && (s == "R" || s == "r") { freq_reset = true; }
             }
         });
 
@@ -490,12 +552,11 @@ impl ViewApp {
             };
         }
         // Ctrl+arrow: move the active marker
-        if marker_delta != 0.0 {
-            if let Some(idx) = self.active_marker {
+        if marker_delta != 0.0
+            && let Some(idx) = self.active_marker {
                 let nyquist = self.freq_view.nyquist;
                 self.markers[idx].hz = (self.markers[idx].hz + marker_delta).clamp(0.0, nyquist);
             }
-        }
 
         if db_shift != 0.0 {
             self.db_min += db_shift;
@@ -517,6 +578,9 @@ impl ViewApp {
                     self.sync_settings();
                     self.reset_playback();
                 }
+                SourceMode::Ft8 => {
+                    self.cycle_ft8_mode();
+                }
                 _ => {}
             }
         }
@@ -529,6 +593,9 @@ impl ViewApp {
                 SourceMode::Psk31 => {
                     self.settings.cycle_psk31_msg_mode();
                     self.apply_psk31_message();
+                }
+                SourceMode::Ft8 => {
+                    self.cycle_ft8_msg_type();
                 }
                 _ => {}
             }
@@ -568,12 +635,56 @@ impl eframe::App for ViewApp {
         self.loop_timer.tick(block_rms, dt);
 
         let block_is_signal = block_rms >= SIGNAL_THRESHOLD;
+
+        // Track FT8/FT4 signal onset for timestamp capture.
+        let is_ft8_mode = self.source_mode == SourceMode::Ft8;
+        if is_ft8_mode {
+            let was_signal = self.last_block_was_signal;
+            if block_is_signal && !was_signal {
+                // Rising edge: capture onset time for timestamp.
+                self.ft_signal_onset = Some(std::time::SystemTime::now());
+            }
+        }
+
         self.last_block_was_signal = block_is_signal;
 
         // Drain decode results first so Info/Text from the decode thread are
         // processed before any gap state change.
         while let Ok(result) = self.decode_rx.try_recv() {
-            self.decode_ticker.push_result(result);
+            if let DecodeResult::Gap { decoded } = result {
+                // For FT8/FT4: update frm/err counters; capture timestamp on success.
+                if is_ft8_mode {
+                    if decoded {
+                        self.ft_frame_count = self.ft_frame_count.saturating_add(1).min(999);
+                        if let Some(onset) = self.ft_signal_onset.take() {
+                            self.ft_last_timestamp = format_time(onset, self.time_zone_offset_min);
+                        }
+                    } else {
+                        self.ft_err_count = self.ft_err_count.saturating_add(1).min(999);
+                    }
+                }
+                self.decode_ticker.push_result(DecodeResult::Gap { decoded });
+            } else if is_ft8_mode {
+                // For FT8/FT4: wrap the decoded frame text as
+                // "|| HH:MM:SS.fff | <text> ||" so the leading/trailing "||"
+                // clearly demarcate the frame boundaries in the Dt ticker.
+                // The onset timestamp is still in ft_signal_onset at Text time
+                // (it's taken when the Gap{decoded:true} arrives just after).
+                let result = if let DecodeResult::Text(ref s) = result {
+                    let ts = if let Some(onset) = self.ft_signal_onset {
+                        format_time(onset, self.time_zone_offset_min)
+                    } else {
+                        self.ft_last_timestamp.clone()
+                    };
+                    let ts_str = if ts.is_empty() { "--:--:--.---".to_owned() } else { ts };
+                    DecodeResult::Text(format!("|| {ts_str} | {s} ||"))
+                } else {
+                    result
+                };
+                self.decode_ticker.push_result(result);
+            } else {
+                self.decode_ticker.push_result(result);
+            }
         }
 
         if !block_is_signal && self.decode_bar.is_visible() {
@@ -583,7 +694,7 @@ impl eframe::App for ViewApp {
             // source; it keeps last_result=NoSignal throughout the gap.
             // Gap also sets in_gap=true in the ticker, which drives SPACE
             // injection during tick() at the nominal character scroll rate.
-            self.decode_ticker.push_result(DecodeResult::Gap);
+            self.decode_ticker.push_result(DecodeResult::Gap { decoded: false });
         }
         self.decode_ticker.tick(dt);
 

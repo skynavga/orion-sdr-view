@@ -54,11 +54,11 @@ impl WaterfallDisplay {
         self.pixels.copy_within(0..filled * self.freq_bins, self.freq_bins);
 
         // Write new row at the top.
-        for i in 0..n {
-            self.pixels[i] = db_to_color(spectrum_db[i], self.db_min, self.db_max);
+        for (slot, &db) in self.pixels.iter_mut().zip(spectrum_db.iter()).take(n) {
+            *slot = db_to_color(db, self.db_min, self.db_max);
         }
-        for i in n..self.freq_bins {
-            self.pixels[i] = egui::Color32::BLACK;
+        for slot in &mut self.pixels[n..self.freq_bins] {
+            *slot = egui::Color32::BLACK;
         }
 
         self.current_rows = (self.current_rows + 1).min(self.max_rows);

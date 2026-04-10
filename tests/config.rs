@@ -3,7 +3,7 @@
 use std::io::Write;
 use tempfile::NamedTempFile;
 
-use orion_sdr_view::config::{ViewConfig, Defaults};
+use orion_sdr_view::config::{ViewConfig, Defaults, TzMode};
 
 fn defaults_all_match(cfg: &ViewConfig) {
     assert_eq!(cfg.db_min(),        Defaults::DB_MIN,        "db_min");
@@ -15,13 +15,13 @@ fn defaults_all_match(cfg: &ViewConfig) {
     assert_eq!(cfg.pause_secs(),    Defaults::PAUSE_SECS,    "pause_secs");
     assert_eq!(cfg.carrier_hz(),    Defaults::CARRIER_HZ,    "carrier_hz");
     assert_eq!(cfg.mod_index(),     Defaults::MOD_INDEX,     "mod_index");
-    assert_eq!(cfg.loop_gap_secs(), Defaults::LOOP_GAP_SECS, "loop_gap_secs");
+    assert_eq!(cfg.am_gap_secs(),   Defaults::AM_GAP_SECS,   "am_gap_secs");
     assert_eq!(cfg.am_noise_amp(),  Defaults::AM_NOISE_AMP,  "am_noise_amp");
     assert_eq!(cfg.am_msg_repeat(), 1,                       "am_msg_repeat");
     assert_eq!(cfg.psk31_mode(),    "BPSK31",                "psk31_mode");
     assert_eq!(cfg.psk31_carrier_hz(), Defaults::CARRIER_HZ, "psk31_carrier_hz");
     assert_eq!(cfg.psk31_noise_amp(),  Defaults::AM_NOISE_AMP, "psk31_noise_amp");
-    assert_eq!(cfg.psk31_message(), "CQ CQ CQ DE N0GNR",    "psk31_message");
+    assert_eq!(cfg.psk31_canned_text(), "CQ CQ CQ DE N0GNR", "psk31_canned_text");
     assert_eq!(cfg.psk31_msg_repeat(), orion_sdr_view::source::psk31::PSK31_DEFAULT_REPEAT, "psk31_msg_repeat");
 }
 
@@ -42,10 +42,10 @@ view:
       ramp_secs:  2.0
       pause_secs: 5.0
     am_dsb:
-      carrier_hz:    15000.0
-      mod_index:     0.5
-      loop_gap_secs: 3.0
-      noise_amp:     0.02
+      carrier_hz: 15000.0
+      mod_index:  0.5
+      gap_secs:   3.0
+      noise_amp:  0.02
 "#;
     let mut f = NamedTempFile::new().unwrap();
     f.write_all(yaml.as_bytes()).unwrap();
@@ -60,7 +60,7 @@ view:
     assert_eq!(cfg.pause_secs(),      5.0);
     assert_eq!(cfg.carrier_hz(),  15000.0);
     assert_eq!(cfg.mod_index(),       0.5);
-    assert_eq!(cfg.loop_gap_secs(),   3.0);
+    assert_eq!(cfg.am_gap_secs(),     3.0);
     assert_eq!(cfg.am_noise_amp(),   0.02);
 }
 
@@ -148,10 +148,10 @@ view:
     psk31:
       mode: QPSK31
       carrier_hz: 1500.0
-      loop_gap_secs: 5.0
+      gap_secs: 5.0
       noise_amp: 0.10
-      message: "TEST MSG"
-      custom_message: "CUSTOM MSG"
+      canned_text: "TEST MSG"
+      custom_text: "CUSTOM MSG"
       msg_repeat: 7
 "#;
     let mut f = NamedTempFile::new().unwrap();
@@ -160,10 +160,10 @@ view:
     let cfg = ViewConfig::load(Some(f.path().to_path_buf()));
     assert_eq!(cfg.psk31_mode(), "QPSK31");
     assert_eq!(cfg.psk31_carrier_hz(), 1500.0);
-    assert_eq!(cfg.psk31_loop_gap_secs(), 5.0);
+    assert_eq!(cfg.psk31_gap_secs(), 5.0);
     assert_eq!(cfg.psk31_noise_amp(), 0.10);
-    assert_eq!(cfg.psk31_message(), "TEST MSG");
-    assert_eq!(cfg.psk31_custom_message(), "CUSTOM MSG");
+    assert_eq!(cfg.psk31_canned_text(), "TEST MSG");
+    assert_eq!(cfg.psk31_custom_text(), "CUSTOM MSG");
     assert_eq!(cfg.psk31_msg_repeat(), 7);
 }
 
@@ -184,7 +184,7 @@ view:
     assert_eq!(cfg.psk31_mode(), "QPSK31");
     // Everything else falls back to defaults
     assert_eq!(cfg.psk31_carrier_hz(), Defaults::CARRIER_HZ);
-    assert_eq!(cfg.psk31_message(), "CQ CQ CQ DE N0GNR");
+    assert_eq!(cfg.psk31_canned_text(), "CQ CQ CQ DE N0GNR");
     assert_eq!(cfg.psk31_msg_repeat(), orion_sdr_view::source::psk31::PSK31_DEFAULT_REPEAT);
 }
 
@@ -240,6 +240,79 @@ library:
     assert_eq!(cfg.db_max(), Defaults::DB_MAX);
 }
 
+// ── FT8 config: full YAML with all FT8 fields ────────────────────────────────
+
+#[test]
+fn ft8_config_full() {
+    let yaml = r#"
+view:
+  sources:
+    ft8:
+      mode: FT4
+      carrier_hz: 1200.0
+      gap_secs: 30.0
+      noise_amp: 0.03
+      call_to: W1AW
+      call_de: K0KE
+      grid: DN70
+      free_text: 73 DE K0KE
+"#;
+    let mut f = NamedTempFile::new().unwrap();
+    f.write_all(yaml.as_bytes()).unwrap();
+
+    let cfg = ViewConfig::load(Some(f.path().to_path_buf()));
+    assert_eq!(cfg.ft8_mode(), "FT4");
+    assert_eq!(cfg.ft8_carrier_hz(), 1200.0);
+    assert_eq!(cfg.ft8_gap_secs(), 30.0);
+    assert_eq!(cfg.ft8_noise_amp(), 0.03);
+    assert_eq!(cfg.ft8_call_to(), "W1AW");
+    assert_eq!(cfg.ft8_call_de(), "K0KE");
+    assert_eq!(cfg.ft8_grid(), "DN70");
+    assert_eq!(cfg.ft8_free_text(), "73 DE K0KE");
+}
+
+// ── FT8 config: partial YAML → defaults for missing fields ───────────────────
+
+#[test]
+fn ft8_config_partial() {
+    let yaml = r#"
+view:
+  sources:
+    ft8:
+      carrier_hz: 900.0
+"#;
+    let mut f = NamedTempFile::new().unwrap();
+    f.write_all(yaml.as_bytes()).unwrap();
+
+    let cfg = ViewConfig::load(Some(f.path().to_path_buf()));
+    assert_eq!(cfg.ft8_carrier_hz(), 900.0);
+    // Everything else falls back to defaults.
+    assert_eq!(cfg.ft8_mode(), "FT8");
+    assert_eq!(cfg.ft8_gap_secs(), orion_sdr_view::source::ft8::FT8_DEFAULT_GAP_SECS);
+    assert_eq!(cfg.ft8_noise_amp(), Defaults::AM_NOISE_AMP);
+    assert_eq!(cfg.ft8_call_to(), orion_sdr_view::source::ft8::FT8_DEFAULT_CALL_TO);
+    assert_eq!(cfg.ft8_call_de(), orion_sdr_view::source::ft8::FT8_DEFAULT_CALL_DE);
+    assert_eq!(cfg.ft8_grid(), orion_sdr_view::source::ft8::FT8_DEFAULT_GRID);
+    assert_eq!(cfg.ft8_free_text(), orion_sdr_view::source::ft8::FT8_DEFAULT_FREE_TEXT);
+}
+
+// ── FT8 config: no ft8 section → all defaults ────────────────────────────────
+
+#[test]
+fn ft8_config_defaults_when_absent() {
+    let yaml = "view:\n  display:\n    db_min: -80.0\n";
+    let mut f = NamedTempFile::new().unwrap();
+    f.write_all(yaml.as_bytes()).unwrap();
+
+    let cfg = ViewConfig::load(Some(f.path().to_path_buf()));
+    assert_eq!(cfg.ft8_mode(), "FT8");
+    assert_eq!(cfg.ft8_carrier_hz(), orion_sdr_view::source::ft8::FT8_DEFAULT_CARRIER_HZ);
+    assert_eq!(cfg.ft8_gap_secs(), orion_sdr_view::source::ft8::FT8_DEFAULT_GAP_SECS);
+    assert_eq!(cfg.ft8_call_to(), orion_sdr_view::source::ft8::FT8_DEFAULT_CALL_TO);
+    assert_eq!(cfg.ft8_call_de(), orion_sdr_view::source::ft8::FT8_DEFAULT_CALL_DE);
+    assert_eq!(cfg.ft8_grid(), orion_sdr_view::source::ft8::FT8_DEFAULT_GRID);
+}
+
 // ── Scenario 9: YAML with missing `view:` key → all defaults ─────────────────
 
 #[test]
@@ -250,4 +323,88 @@ fn missing_view_key_uses_defaults() {
 
     let cfg = ViewConfig::load(Some(f.path().to_path_buf()));
     defaults_all_match(&cfg);
+}
+
+// ── time_zone parsing ────────────────────────────────────────────────────────
+
+fn tz_cfg(yaml_value: &str) -> ViewConfig {
+    let yaml = format!("view:\n  display:\n    time_zone: {yaml_value}\n");
+    let mut f = NamedTempFile::new().unwrap();
+    f.write_all(yaml.as_bytes()).unwrap();
+    ViewConfig::load(Some(f.path().to_path_buf()))
+}
+
+#[test]
+fn time_zone_missing_is_utc() {
+    let yaml = "view:\n  display:\n    db_min: -90.0\n";
+    let mut f = NamedTempFile::new().unwrap();
+    f.write_all(yaml.as_bytes()).unwrap();
+    let cfg = ViewConfig::load(Some(f.path().to_path_buf()));
+    assert_eq!(cfg.time_zone_offset_min(), 0);
+}
+
+#[test]
+fn time_zone_utc_keyword() {
+    assert_eq!(tz_cfg("utc").time_zone_offset_min(), 0);
+    assert_eq!(tz_cfg("UTC").time_zone_offset_min(), 0);
+}
+
+#[test]
+fn time_zone_explicit_positive() {
+    assert_eq!(tz_cfg("\"+00:00\"").time_zone_offset_min(),    0);
+    assert_eq!(tz_cfg("\"+05:30\"").time_zone_offset_min(),  330);
+    assert_eq!(tz_cfg("\"+14:00\"").time_zone_offset_min(),  840);
+    assert_eq!(tz_cfg("\"+12:45\"").time_zone_offset_min(),  765);
+}
+
+#[test]
+fn time_zone_explicit_negative() {
+    assert_eq!(tz_cfg("\"-00:00\"").time_zone_offset_min(),    0);
+    assert_eq!(tz_cfg("\"-08:00\"").time_zone_offset_min(), -480);
+    assert_eq!(tz_cfg("\"-12:00\"").time_zone_offset_min(), -720);
+    assert_eq!(tz_cfg("\"-03:30\"").time_zone_offset_min(), -210);
+}
+
+#[test]
+fn time_zone_out_of_range_falls_back_to_utc() {
+    // Outside -12..+14 range, parser returns None and we fall back to UTC.
+    assert_eq!(tz_cfg("\"+15:00\"").time_zone_offset_min(), 0);
+    assert_eq!(tz_cfg("\"-13:00\"").time_zone_offset_min(), 0);
+    assert_eq!(tz_cfg("\"+05:99\"").time_zone_offset_min(), 0);
+    assert_eq!(tz_cfg("garbage").time_zone_offset_min(), 0);
+}
+
+#[test]
+fn time_zone_local_is_in_display_range() {
+    // "local" resolves at query time — we can't pin the value, but it must be
+    // inside the supported display range.
+    let v = tz_cfg("local").time_zone_offset_min();
+    assert!(
+        (-12 * 60..=14 * 60).contains(&v),
+        "local offset {v} min outside display range"
+    );
+}
+
+#[test]
+fn time_zone_mode_parses_all_variants() {
+    // Missing field → Utc.
+    let yaml = "view:\n  display:\n    db_min: -90.0\n";
+    let mut f = NamedTempFile::new().unwrap();
+    f.write_all(yaml.as_bytes()).unwrap();
+    let cfg = ViewConfig::load(Some(f.path().to_path_buf()));
+    assert_eq!(cfg.time_zone_mode(), TzMode::Utc);
+
+    // Literal keywords.
+    assert_eq!(tz_cfg("utc").time_zone_mode(),   TzMode::Utc);
+    assert_eq!(tz_cfg("UTC").time_zone_mode(),   TzMode::Utc);
+    assert_eq!(tz_cfg("local").time_zone_mode(), TzMode::Local);
+
+    // Explicit offsets.
+    assert_eq!(tz_cfg("\"+05:30\"").time_zone_mode(), TzMode::Explicit( 330));
+    assert_eq!(tz_cfg("\"-08:00\"").time_zone_mode(), TzMode::Explicit(-480));
+    assert_eq!(tz_cfg("\"+14:00\"").time_zone_mode(), TzMode::Explicit( 840));
+
+    // Garbage falls back to Utc.
+    assert_eq!(tz_cfg("garbage").time_zone_mode(), TzMode::Utc);
+    assert_eq!(tz_cfg("\"+15:00\"").time_zone_mode(), TzMode::Utc);
 }

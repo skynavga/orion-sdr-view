@@ -58,8 +58,8 @@ impl PersistenceMap {
     pub fn accumulate(&mut self, spectrum_db: &[f32], db_min: f32, db_max: f32) {
         let db_range = db_max - db_min;
         let n = spectrum_db.len().min(self.freq_bins);
-        for fb in 0..n {
-            let t = (spectrum_db[fb] - db_min) / db_range;
+        for (fb, &db) in spectrum_db.iter().enumerate().take(n) {
+            let t = (db - db_min) / db_range;
             let pb = ((t * (self.power_bins - 1) as f32).round() as usize)
                 .clamp(0, self.power_bins - 1);
             let idx = pb * self.freq_bins + fb;
@@ -223,8 +223,8 @@ impl PersistenceRenderer {
 
         // Walk columns, emitting line segments between consecutive non-empty columns.
         let mut prev: Option<egui::Pos2> = None;
-        for fb in 0..n {
-            let pt = peaks[fb].map(|pb| egui::pos2(x_for_fb(fb), y_for_pb(pb)));
+        for (fb, peak) in peaks.iter().enumerate().take(n) {
+            let pt = peak.map(|pb| egui::pos2(x_for_fb(fb), y_for_pb(pb)));
             match (prev, pt) {
                 (Some(a), Some(b)) => {
                     painter.line_segment([a, b], stroke);
