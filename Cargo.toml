@@ -35,7 +35,7 @@ eframe = { version = "0.33", default-features = false, features = [
 egui = "0.33"
 num-complex = "0.4"
 rustfft = "6"
-orion-sdr = { path = "../orion-sdr" }
+orion-sdr = "0.0.29"
 hound = "3"
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
