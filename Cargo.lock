@@ -1664,9 +1664,9 @@ dependencies = [
 
 [[package]]
 name = "orion-sdr"
-version = "0.0.29"
+version = "0.0.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0a9656113410648b46c7027fcfb46fc7dec4f3b5d10e9914ca087e1133ec4e11"
+checksum = "edcd985902ca14718f6d9b6dfbbb13b453322684f7ec3594a100b251dbb4ab58"
 dependencies = [
  "num-complex",
  "realfft",
@@ -1676,7 +1676,7 @@ dependencies = [
 
 [[package]]
 name = "orion-sdr-view"
-version = "0.0.8"
+version = "0.0.9"
 dependencies = [
  "clap",
  "eframe",
