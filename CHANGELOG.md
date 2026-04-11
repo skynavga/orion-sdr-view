@@ -9,6 +9,34 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.10] - 2026-04-10
+
+### Added
+
+- Horizontal spectrogram as an alternate presentation for pane 3;
+  `W` cycles between the vertical waterfall and the horizontal
+  spectrogram. Frequency is on the y-axis over ±`spec_freq_delta_hz`
+  centered on the primary marker, time is on the x-axis with "now"
+  at the left flowing right across `spec_time_range_secs`
+- New `src/app/spectrogram.rs` module hosting `SpectrogramDisplay`,
+  a column-major ring texture with time-dilation column commits
+- Config fields `view.display.spec_freq_delta_hz` (default 2000 Hz)
+  and `spec_time_range_secs` (default 10 s), exposed as Display-tab
+  settings rows alongside dB min/max, plus new config tests
+- Version shown right-aligned on the "Keyboard Shortcuts" title row
+  of the help overlay; centered two-line copyright footer at the
+  bottom of the overlay
+- Project-wide copyright/SPDX headers on all tracked `.rs` files and
+  HTML-comment header on `README.md`/`CHANGELOG.md`; convention
+  documented in `CLAUDE.md`
+
+### Changed
+
+- Help overlay grew to 660×600 to fit the new `W` shortcut row and
+  the copyright footer
+- `reset_playback` clears spectrogram history alongside other
+  playback state so switching source doesn't mix old/new windows
+
 ## [0.0.9] - 2026-04-10
 
 ### Changed

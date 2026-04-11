@@ -2,7 +2,7 @@
 
 ## Project
 
-`orion-sdr-view` is a keyboard-driven SDR spectrum visualization tool in Rust (crate name `orion-sdr-view`, bin name `orion-sdr-view`, v0.0.9), edition 2024, built on egui/eframe. Displays live spectrum, persistence density, and a cycle-able waterfall pane (vertical waterfall or horizontal spectrogram, toggled with `W`) from a configurable signal source.
+`orion-sdr-view` is a keyboard-driven SDR spectrum visualization tool in Rust (crate name `orion-sdr-view`, bin name `orion-sdr-view`, v0.0.10), edition 2024, built on egui/eframe. Displays live spectrum, persistence density, and a cycle-able waterfall pane (vertical waterfall or horizontal spectrogram, toggled with `W`) from a configurable signal source.
 
 ## Conventions
 
