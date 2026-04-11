@@ -1,3 +1,6 @@
+// Copyright (c) 2026 G & R Associates LLC
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 use std::io::Cursor;
 use std::path::Path;
 

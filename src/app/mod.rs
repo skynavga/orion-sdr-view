@@ -1,3 +1,6 @@
+// Copyright (c) 2026 G & R Associates LLC
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 mod view;
 mod sources;
 mod draw;
@@ -5,6 +8,7 @@ mod draw;
 pub(super) mod freqview;
 pub(super) mod persistence;
 pub(super) mod settings;
+pub(super) mod spectrogram;
 pub(super) mod spectrum;
 pub(super) mod waterfall;
 
@@ -89,6 +93,27 @@ impl DecodeBarMode {
         }
     }
     pub(super) fn is_visible(self) -> bool { self != Self::Off }
+}
+
+// ── Waterfall mode (pane 3) ───────────────────────────────────────────────────
+
+/// Pane 3 layout: traditional vertical waterfall (time flows down, full
+/// spectrum across the top) or horizontal spectrogram (frequency on the
+/// y-axis around the primary marker, time on the x-axis with "now" at
+/// the left).  Cycled by the `W` key.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum WaterfallMode {
+    Vertical,
+    Horizontal,
+}
+
+impl WaterfallMode {
+    pub(super) fn next(self) -> Self {
+        match self {
+            Self::Vertical   => Self::Horizontal,
+            Self::Horizontal => Self::Vertical,
+        }
+    }
 }
 
 // ── Source mode ───────────────────────────────────────────────────────────────

@@ -1,3 +1,8 @@
+<!--
+  Copyright (c) 2026 G & R Associates LLC
+  SPDX-License-Identifier: MIT OR Apache-2.0
+-->
+
 # orion-sdr-view
 
 A keyboard-driven SDR spectrum visualization tool built on [egui](https://github.com/emilk/egui) /
@@ -6,7 +11,7 @@ and waterfall from a configurable signal source.
 
 ## Features
 
-- **Three display panes** — instantaneous spectrum, persistence density map, and scrolling waterfall
+- **Three display panes** — instantaneous spectrum, persistence density map, and a cycle-able waterfall pane (`W`) that toggles between a vertical waterfall and a horizontal spectrogram centered on the primary marker (±freq delta, configurable time range)
 - **Multiple signal sources** — synthetic test tone (sine + AWGN), AM DSB from looped audio, PSK31 (BPSK31/QPSK31), and FT8/FT4
 - **Decode bar** — optional bottom bar (cycled by `D`) showing signal info
   (Di: modulation, carrier, BW, SNR) or decoded text (Dt: smooth-scrolling teletype ticker)
@@ -20,7 +25,7 @@ and waterfall from a configurable signal source.
 
 - Rust (edition 2024)
 - macOS or Linux (uses OpenGL via `eframe` glow backend)
-- [orion-sdr](https://crates.io/crates/orion-sdr) 0.0.28 (pulled automatically from crates.io)
+- [orion-sdr](https://crates.io/crates/orion-sdr) 0.0.30 (pulled automatically from crates.io)
 
 ## Screen Shots
 
@@ -45,9 +50,11 @@ working directory or pass `--config <path>`:
 ```yaml
 view:
   display:
-    db_min:    -100.0
-    db_max:    -20.0
-    time_zone: utc      # "utc", "local", or "+HH:MM" / "-HH:MM"
+    db_min:               -100.0
+    db_max:               -20.0
+    time_zone:            utc     # "utc", "local", or "+HH:MM" / "-HH:MM"
+    spec_freq_delta_hz:   2000.0  # horizontal spectrogram ±freq window
+    spec_time_range_secs: 10.0    # horizontal spectrogram time span
   sources:
     test_tone:
       freq_hz:    12000.0
@@ -93,6 +100,7 @@ All fields are optional; missing fields fall back to built-in defaults.
 | `E` | Toggle persistence envelope overlay |
 | `L` | Lock source freq/carrier to display center (tracks pan/zoom/span) |
 | `P` | Toggle peak hold line |
+| `W` | Cycle pane 3 between vertical waterfall and horizontal spectrogram |
 | `R` | Reset source, timers, decode state, and frequency view |
 | `S` | Open/close settings popover |
 | `H` or `?` | Toggle help overlay |

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 G & R Associates LLC
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 use eframe::egui;
 use crate::config::ViewConfig;
 
@@ -78,6 +81,8 @@ impl SettingsState {
     pub fn new(
         db_min: f32,
         db_max: f32,
+        spec_freq_delta_hz: f32,
+        spec_time_range_secs: f32,
         freq_hz: f32,
         noise_amp: f32,
         amp_max: f32,
@@ -93,7 +98,7 @@ impl SettingsState {
                 options: &["Test Tone", "AM DSB", "PSK31", "FT8"],
                 index: 0, default: 0,
             }),
-            display: DisplayRows::new(db_min, db_max),
+            display: DisplayRows::new(db_min, db_max, spec_freq_delta_hz, spec_time_range_secs),
             tone: ToneRows::new(freq_hz, noise_amp, amp_max, ramp_secs, pause_secs),
             amdsb: AmDsbRows::new(),
             psk31: Psk31Rows::new(),
@@ -107,6 +112,7 @@ impl SettingsState {
     pub fn from_config(cfg: &ViewConfig) -> Self {
         let mut s = Self::new(
             cfg.db_min(), cfg.db_max(),
+            cfg.spec_freq_delta_hz(), cfg.spec_time_range_secs(),
             cfg.freq_hz(), cfg.noise_amp(), cfg.amp_max(),
             cfg.ramp_secs(), cfg.pause_secs(),
         );

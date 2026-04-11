@@ -1,3 +1,6 @@
+// Copyright (c) 2026 G & R Associates LLC
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 // Phase 8 migration candidate: tone generation, morse encoding, and WAV
 // writing utilities.  orion-sdr may already provide some of these; merge
 // or replace as appropriate when migrating.

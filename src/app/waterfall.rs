@@ -1,3 +1,6 @@
+// Copyright (c) 2026 G & R Associates LLC
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 use eframe::egui;
 
 /// Maps a dB value to a waterfall color (thermal palette).

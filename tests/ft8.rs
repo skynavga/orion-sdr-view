@@ -1,3 +1,6 @@
+// Copyright (c) 2026 G & R Associates LLC
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Integration tests for FT8/FT4 source generation and decode.
 
 use num_complex::Complex32 as C32;

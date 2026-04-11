@@ -1,3 +1,6 @@
+// Copyright (c) 2026 G & R Associates LLC
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 use serde::Deserialize;
 use super::Defaults;
 
@@ -6,6 +9,12 @@ pub struct DisplayConfig {
     pub db_min:    Option<f32>,
     pub db_max:    Option<f32>,
     pub time_zone: Option<String>,
+    /// Half-width (± Hz) of the frequency window shown by the horizontal
+    /// spectrogram pane, centered on the primary marker frequency.
+    pub spec_freq_delta_hz: Option<f32>,
+    /// Time range (seconds) covered by the full width of the horizontal
+    /// spectrogram pane.
+    pub spec_time_range_secs: Option<f32>,
 }
 
 /// Parsed time-zone mode for the display settings row.
@@ -25,6 +34,12 @@ impl super::ViewConfig {
     }
     pub fn db_max(&self) -> f32 {
         self.display.as_ref().and_then(|d| d.db_max).unwrap_or(Defaults::DB_MAX)
+    }
+    pub fn spec_freq_delta_hz(&self) -> f32 {
+        self.display.as_ref().and_then(|d| d.spec_freq_delta_hz).unwrap_or(Defaults::SPEC_FREQ_DELTA_HZ)
+    }
+    pub fn spec_time_range_secs(&self) -> f32 {
+        self.display.as_ref().and_then(|d| d.spec_time_range_secs).unwrap_or(Defaults::SPEC_TIME_RANGE_SECS)
     }
 
     /// Returns the parsed `time_zone` mode from the YAML config.

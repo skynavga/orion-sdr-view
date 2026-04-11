@@ -1,3 +1,6 @@
+// Copyright (c) 2026 G & R Associates LLC
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Shared harness for Dt-mode ticker simulation tests.
 //!
 //! Drives a [`SignalSource`] through block-level gap detection and feeds

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 G & R Associates LLC
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! System time-zone helpers.
 //!
 //! These live in `utils` so both the config loader (which may need to resolve
