@@ -1,3 +1,6 @@
+// Copyright (c) 2026 G & R Associates LLC
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 /// Frequency viewport: defines which portion of [0, nyquist] is displayed.
 ///
 /// `center_hz` is the displayed center frequency (also the primary marker position).

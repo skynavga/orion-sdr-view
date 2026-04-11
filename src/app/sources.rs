@@ -1,3 +1,6 @@
+// Copyright (c) 2026 G & R Associates LLC
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 use crate::decode::{DecodeMode};
 use crate::source::tone::TestToneSource;
 use crate::source::amdsb::{AmDsbSource, BuiltinAudio, load_builtin};

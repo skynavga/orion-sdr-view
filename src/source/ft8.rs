@@ -1,3 +1,6 @@
+// Copyright (c) 2026 G & R Associates LLC
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 use num_complex::Complex32 as C32;
 use orion_sdr::modulate::{Ft8Mod, Ft4Mod};
 use orion_sdr::codec::{Ft8Codec, Ft4Codec};

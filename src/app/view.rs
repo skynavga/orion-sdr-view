@@ -1,3 +1,6 @@
+// Copyright (c) 2026 G & R Associates LLC
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 use std::sync::{Arc, Mutex};
 use std::sync::mpsc;
 
@@ -11,12 +14,13 @@ use super::settings::SettingsState;
 use crate::source::tone::TestSignalGen;
 use crate::source::SignalSource;
 use crate::source::tone::TestToneSource;
+use super::spectrogram::SpectrogramDisplay;
 use super::spectrum::{RingBuffer, SpectrumProcessor};
 use super::waterfall::WaterfallDisplay;
 
 use super::{
     FFT_SIZE, SAMPLE_RATE, SAMPLES_PER_FRAME, DECODE_BAR_H,
-    LoopTimer, DecodeBarMode, SourceMode,
+    LoopTimer, DecodeBarMode, SourceMode, WaterfallMode,
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -68,8 +72,10 @@ pub(crate) struct ViewApp {
     pub(super) persistence: PersistenceRenderer,
     pub(super) envelope_visible: bool,
 
-    // Pane 3: waterfall
+    // Pane 3: waterfall — two presentations, cycled by `W`.
     pub(super) waterfall: WaterfallDisplay,
+    pub(super) spectrogram: SpectrogramDisplay,
+    pub(super) waterfall_mode: WaterfallMode,
 
     // Frequency viewport (pan + zoom) — shared across all panes
     pub(super) freq_view: FreqView,
@@ -168,6 +174,12 @@ impl ViewApp {
             envelope_visible: true,
 
             waterfall: WaterfallDisplay::new(FFT_SIZE / 2 + 1, 512, db_min, db_max),
+            spectrogram: {
+                let mut s = SpectrogramDisplay::new(256, 512, db_min, db_max);
+                s.set_time_range(cfg.spec_time_range_secs());
+                s
+            },
+            waterfall_mode: WaterfallMode::Vertical,
 
             freq_view: FreqView::new(SAMPLE_RATE / 2.0),
             markers: [
@@ -211,6 +223,7 @@ impl ViewApp {
         self.loop_timer.reset();
         self.decode_ticker.reset();
         self.last_block_was_signal = false;
+        self.spectrogram.clear();
         self.ft_frame_count    = 0;
         self.ft_err_count      = 0;
         self.ft_last_timestamp = String::new();
@@ -391,6 +404,9 @@ impl ViewApp {
             if i.key_pressed(egui::Key::N) { cycle_audio = true; }
             if i.key_pressed(egui::Key::P) { self.peak_hold_visible ^= true; }
             if i.key_pressed(egui::Key::S) { self.settings.visible ^= true; }
+            if i.key_pressed(egui::Key::W) {
+                self.waterfall_mode = self.waterfall_mode.next();
+            }
             if i.key_pressed(egui::Key::H) { self.show_help ^= true; }
             for e in &i.events {
                 if let egui::Event::Text(s) = e {
@@ -708,6 +724,27 @@ impl eframe::App for ViewApp {
         self.persistence.update_texture(ctx);
         self.waterfall.push_row(&self.spectrum.fft_out_db);
         self.waterfall.update_texture(ctx);
+
+        // Spectrogram: keep db/time-range/color ramp in sync with the
+        // user's current display choices, then push one FFT slice.  A
+        // column is committed internally only once enough wall-clock
+        // time has elapsed (secs_per_col), which drives the
+        // time-dilation factor.
+        self.spectrogram.db_min = self.db_min;
+        self.spectrogram.db_max = self.db_max;
+        self.spectrogram.set_time_range(self.settings.spec_time_range_secs());
+        let spec_center = self.markers[0].hz;
+        let spec_delta  = self.settings.spec_freq_delta_hz();
+        self.spectrogram.push_spectrum(
+            &self.spectrum.fft_out_db,
+            dt,
+            spec_center,
+            spec_delta,
+            self.freq_view.nyquist,
+        );
+        if self.waterfall_mode == WaterfallMode::Horizontal {
+            self.spectrogram.update_texture(ctx);
+        }
 
         self.handle_keys(ctx);
         self.draw_hud(ctx);

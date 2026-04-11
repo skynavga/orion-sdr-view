@@ -1,3 +1,6 @@
+// Copyright (c) 2026 G & R Associates LLC
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Bandwidth-measurement tests against AM DSB-modulated signals.
 //!
 //! Not specific to a single source: these exercise `spectrum_bw_hz` on

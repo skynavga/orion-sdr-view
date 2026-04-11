@@ -1,7 +1,10 @@
+// Copyright (c) 2026 G & R Associates LLC
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 use eframe::egui;
 
 use crate::decode::DecodeResult;
-use super::{PANE_BG, DecodeBarMode, SourceMode};
+use super::{PANE_BG, DecodeBarMode, SourceMode, WaterfallMode};
 use super::view::ViewApp;
 use crate::source::ft8::{Ft8Mode, Ft8MsgType};
 
@@ -541,8 +544,16 @@ impl ViewApp {
         self.draw_freq_markers(painter, rect, &label_font);
     }
 
-    /// Draw waterfall pane with freq zoom UV and markers.
+    /// Draw pane 3: either the vertical waterfall or the horizontal
+    /// spectrogram, depending on `waterfall_mode` (cycled by `W`).
     pub(super) fn draw_waterfall_pane(&self, painter: &egui::Painter, rect: egui::Rect) {
+        match self.waterfall_mode {
+            WaterfallMode::Vertical   => self.draw_vertical_waterfall(painter, rect),
+            WaterfallMode::Horizontal => self.draw_horizontal_spectrogram(painter, rect),
+        }
+    }
+
+    fn draw_vertical_waterfall(&self, painter: &egui::Painter, rect: egui::Rect) {
         let lo_uv = self.freq_view.lo() / self.freq_view.nyquist;
         let hi_uv = self.freq_view.hi() / self.freq_view.nyquist;
 
@@ -561,11 +572,161 @@ impl ViewApp {
         self.draw_freq_markers(painter, rect, &label_font);
     }
 
+    /// Horizontal spectrogram: frequency on the y-axis, ±spec_freq_delta
+    /// centered on the primary marker, with high frequencies at the top
+    /// and low at the bottom.  Time on the x-axis, newest at the left
+    /// (x=0) and oldest at the right.  The full width spans
+    /// `spec_time_range_secs` seconds.
+    fn draw_horizontal_spectrogram(&self, painter: &egui::Painter, rect: egui::Rect) {
+        // Paint the texture.  The SpectrogramDisplay stores row 0 = hi freq,
+        // col 0 = newest, so a straight full-UV draw already matches our
+        // desired screen orientation.
+        if let Some(tex) = self.spectrogram.texture_handle() {
+            let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+            painter.image(tex.id(), rect, uv, egui::Color32::WHITE);
+        }
+
+        let label_font = egui::FontId::new(10.0, egui::FontFamily::Monospace);
+        let grid_stroke = egui::Stroke::new(0.5, egui::Color32::from_gray(45));
+
+        // ── Frequency window ─────────────────────────────────────────────
+        let center_hz = self.markers[0].hz;
+        let delta_hz  = self.settings.spec_freq_delta_hz();
+        let nyquist   = self.freq_view.nyquist;
+        let f_lo = (center_hz - delta_hz).max(0.0);
+        let f_hi = (center_hz + delta_hz).min(nyquist);
+        let f_span = (f_hi - f_lo).max(1.0);
+
+        let y_for_hz = |hz: f32| -> f32 {
+            // hi → top, lo → bottom
+            rect.top() + (f_hi - hz) / f_span * rect.height()
+        };
+
+        // ── Horizontal frequency grid + labels ──────────────────────────
+        // Three labels inside the pane at center±delta/2 and center.  The
+        // pane itself still spans the full ±delta window vertically; we
+        // just place the gridlines/labels away from the top and bottom
+        // edges so they don't collide with pane borders or the time-axis
+        // "now/-Ns" row.
+        let fmt_hz = |hz: f32| -> String {
+            if hz >= 1000.0 { format!("{:.2}k", hz / 1000.0) }
+            else            { format!("{:.0}", hz) }
+        };
+        let label_col = egui::Color32::from_gray(130);
+        let hi_half = center_hz + delta_hz * 0.5;
+        let lo_half = center_hz - delta_hz * 0.5;
+        for hz in [hi_half, center_hz, lo_half] {
+            painter.hline(rect.x_range(), y_for_hz(hz), grid_stroke);
+            painter.text(
+                egui::pos2(rect.left() + 4.0, y_for_hz(hz) - 2.0),
+                egui::Align2::LEFT_BOTTOM,
+                fmt_hz(hz),
+                label_font.clone(),
+                label_col,
+            );
+        }
+
+        // ── Time window ──────────────────────────────────────────────────
+        let t_range = self.settings.spec_time_range_secs();
+        let x_for_t = |t: f32| -> f32 {
+            // t=0 (now) → left, t=t_range → right
+            rect.left() + (t / t_range) * rect.width()
+        };
+        // Vertical time grid: nice step 1/2/5/10 s.
+        let raw_tstep = t_range / 5.0;
+        let tmag = 10f32.powf(raw_tstep.log10().floor());
+        let tnorm = raw_tstep / tmag;
+        let tnice = if tnorm < 1.5 { 1.0 }
+                    else if tnorm < 3.5 { 2.0 }
+                    else if tnorm < 7.5 { 5.0 }
+                    else { 10.0 };
+        let grid_t = (tnice * tmag).max(0.1);
+        let mut t = 0.0_f32;
+        while t <= t_range + 0.001 {
+            let x = x_for_t(t);
+            painter.vline(x, rect.y_range(), grid_stroke);
+            let label = if t < 1.0 && t > 0.0 {
+                format!("-{:.1}s", t)
+            } else {
+                format!("-{:.0}s", t)
+            };
+            let label_str = if t == 0.0 { "now".to_owned() } else { label };
+            // Keep "now" pinned inside the pane; other labels to the right of the line.
+            let (lx, align) = if t == 0.0 {
+                (x + 3.0, egui::Align2::LEFT_BOTTOM)
+            } else {
+                (x + 3.0, egui::Align2::LEFT_BOTTOM)
+            };
+            painter.text(
+                egui::pos2(lx, rect.bottom() - 2.0),
+                align,
+                label_str,
+                label_font.clone(),
+                egui::Color32::from_gray(130),
+            );
+            t += grid_t;
+        }
+
+        // ── Marker lines ─────────────────────────────────────────────────
+        // Primary marker is always at the vertical center of the window
+        // (since the window is centered on it).  Draw it as a dashed
+        // horizontal line across the full pane for visual anchoring.
+        {
+            let m = &self.markers[0];
+            if m.enabled {
+                let y = y_for_hz(m.hz);
+                dashed_hline(painter, rect.left(), rect.right(), y, m.color(), 1.0);
+                let label = if m.hz >= 1000.0 {
+                    format!("{} {:.2}k", m.label(), m.hz / 1000.0)
+                } else {
+                    format!("{} {:.0}", m.label(), m.hz)
+                };
+                painter.text(
+                    egui::pos2(rect.right() - 4.0, y - 2.0),
+                    egui::Align2::RIGHT_BOTTOM,
+                    label,
+                    label_font.clone(),
+                    m.color(),
+                );
+            }
+        }
+
+        // Bracket markers: only draw if their frequency falls inside the
+        // ±delta window.
+        for (idx, m) in self.markers[1..].iter().enumerate() {
+            let idx = idx + 1;
+            if !m.enabled { continue; }
+            if m.hz < f_lo || m.hz > f_hi { continue; }
+            let y = y_for_hz(m.hz);
+            let is_active = self.active_marker == Some(idx);
+            let color = if is_active { egui::Color32::WHITE } else { m.color() };
+            let lw = if is_active { 1.5 } else { 1.0 };
+            dashed_hline(painter, rect.left(), rect.right(), y, color, lw);
+            let hz_label = if m.hz >= 1000.0 {
+                format!("{} {:.2}k", m.label(), m.hz / 1000.0)
+            } else {
+                format!("{} {:.0}", m.label(), m.hz)
+            };
+            let display = if is_active { format!("[{}]", hz_label) } else { hz_label };
+            painter.text(
+                egui::pos2(rect.right() - 4.0, y - 2.0),
+                egui::Align2::RIGHT_BOTTOM,
+                display,
+                label_font.clone(),
+                color,
+            );
+        }
+    }
+
     pub(super) fn draw_help_overlay(&self, ui: &mut egui::Ui) {
         let screen = ui.ctx().content_rect();
+        // Width must fit the longest description ("cycle pane 3: waterfall
+        // (vertical) / spectrogram (horizontal)") starting after the key
+        // column; height must fit the 24 entries + 4 section headers +
+        // title + the two-line copyright footer at the bottom.
         let overlay_rect = egui::Rect::from_center_size(
             screen.center(),
-            egui::vec2(580.0, 470.0),
+            egui::vec2(660.0, 600.0),
         );
         let painter = ui.painter();
         painter.rect_filled(
@@ -590,6 +751,7 @@ impl ViewApp {
             ("C / E / P\tcycle amplitude  |  envelope  |  peak hold", 2),
             ("L\tlock source freq/carrier to display center", 2),
             ("D\tcycle decode bar: off → info → text → off", 2),
+            ("W\tcycle pane 3: waterfall (vertical) / spectrogram (horizontal)", 2),
             ("Frequency Pan / Zoom", 1),
             ("← / →\tpan left / right", 2),
             ("Shift+← / →\tfine pan, snap 100 Hz", 2),
@@ -631,9 +793,65 @@ impl ViewApp {
                 painter.text(egui::pos2(desc_x, y), egui::Align2::LEFT_TOP, desc, font,         color);
             } else {
                 let x = overlay_rect.left() + 20.0;
-                painter.text(egui::pos2(x, y), egui::Align2::LEFT_TOP, *text, font, color);
+                painter.text(egui::pos2(x, y), egui::Align2::LEFT_TOP, *text, font.clone(), color);
+                // Right-aligned version on the title row, with the same
+                // 20 px margin used for the title on the left.
+                if *kind == 0 {
+                    painter.text(
+                        egui::pos2(overlay_rect.right() - 20.0, y),
+                        egui::Align2::RIGHT_TOP,
+                        concat!("Version ", env!("CARGO_PKG_VERSION")),
+                        font,
+                        color,
+                    );
+                }
             }
             y += dy;
         }
+
+        // ── Copyright footer (centered, 20 px bottom margin) ─────────────
+        let foot_font = egui::FontId::new(11.0, egui::FontFamily::Monospace);
+        let foot_color = egui::Color32::from_gray(140);
+        let cx = overlay_rect.center().x;
+        let line2_y = overlay_rect.bottom() - 20.0;
+        let line1_y = line2_y - 14.0;
+        painter.text(
+            egui::pos2(cx, line1_y),
+            egui::Align2::CENTER_BOTTOM,
+            "Copyright (c) 2026 G & R Associates LLC",
+            foot_font.clone(),
+            foot_color,
+        );
+        painter.text(
+            egui::pos2(cx, line2_y),
+            egui::Align2::CENTER_BOTTOM,
+            "SPDX-License-Identifier: MIT OR Apache-2.0",
+            foot_font,
+            foot_color,
+        );
+    }
+}
+
+/// Draw a dashed horizontal line at `y` from `x0` to `x1`.  Matches the
+/// dash geometry used for vertical frequency markers in the other panes.
+fn dashed_hline(
+    painter: &egui::Painter,
+    x0: f32, x1: f32, y: f32,
+    color: egui::Color32,
+    width: f32,
+) {
+    const DASH: f32 = 8.0;
+    const GAP:  f32 = 5.0;
+    let stroke = egui::Stroke::new(width, color);
+    let mut x = x0;
+    let mut paint = true;
+    while x < x1 {
+        let seg = if paint { DASH } else { GAP };
+        let xe = (x + seg).min(x1);
+        if paint {
+            painter.line_segment([egui::pos2(x, y), egui::pos2(xe, y)], stroke);
+        }
+        x = xe;
+        paint = !paint;
     }
 }

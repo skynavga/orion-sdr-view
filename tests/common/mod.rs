@@ -1,3 +1,6 @@
+// Copyright (c) 2026 G & R Associates LLC
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Shared test support modules.
 //!
 //! Each top-level file under `tests/` is compiled as its own crate, so code

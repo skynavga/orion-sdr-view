@@ -1,3 +1,6 @@
+// Copyright (c) 2026 G & R Associates LLC
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Background decode thread and associated types.
 //!
 //! The decode thread receives raw f32 sample blocks from the main thread via a

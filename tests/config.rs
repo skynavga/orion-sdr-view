@@ -1,3 +1,6 @@
+// Copyright (c) 2026 G & R Associates LLC
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Exercises the three-tier config loading logic without launching the GUI.
 
 use std::io::Write;
@@ -6,8 +9,10 @@ use tempfile::NamedTempFile;
 use orion_sdr_view::config::{ViewConfig, Defaults, TzMode};
 
 fn defaults_all_match(cfg: &ViewConfig) {
-    assert_eq!(cfg.db_min(),        Defaults::DB_MIN,        "db_min");
-    assert_eq!(cfg.db_max(),        Defaults::DB_MAX,        "db_max");
+    assert_eq!(cfg.db_min(),              Defaults::DB_MIN,              "db_min");
+    assert_eq!(cfg.db_max(),              Defaults::DB_MAX,              "db_max");
+    assert_eq!(cfg.spec_freq_delta_hz(),  Defaults::SPEC_FREQ_DELTA_HZ,  "spec_freq_delta_hz");
+    assert_eq!(cfg.spec_time_range_secs(),Defaults::SPEC_TIME_RANGE_SECS,"spec_time_range_secs");
     assert_eq!(cfg.freq_hz(),       Defaults::FREQ_HZ,       "freq_hz");
     assert_eq!(cfg.noise_amp(),     Defaults::NOISE_AMP,     "noise_amp");
     assert_eq!(cfg.amp_max(),       Defaults::AMP_MAX,       "amp_max");
@@ -62,6 +67,34 @@ view:
     assert_eq!(cfg.mod_index(),       0.5);
     assert_eq!(cfg.am_gap_secs(),     3.0);
     assert_eq!(cfg.am_noise_amp(),   0.02);
+}
+
+// ── Spectrogram display fields: explicit override + partial defaults ─────────
+
+#[test]
+fn spectrogram_display_full() {
+    let yaml = r#"
+view:
+  display:
+    spec_freq_delta_hz:   1500.0
+    spec_time_range_secs: 15.0
+"#;
+    let mut f = NamedTempFile::new().unwrap();
+    f.write_all(yaml.as_bytes()).unwrap();
+
+    let cfg = ViewConfig::load(Some(f.path().to_path_buf()));
+    assert_eq!(cfg.spec_freq_delta_hz(),   1500.0);
+    assert_eq!(cfg.spec_time_range_secs(), 15.0);
+}
+
+#[test]
+fn spectrogram_display_defaults_when_absent() {
+    let yaml = "view:\n  display:\n    db_min: -80.0\n";
+    let mut f = NamedTempFile::new().unwrap();
+    f.write_all(yaml.as_bytes()).unwrap();
+    let cfg = ViewConfig::load(Some(f.path().to_path_buf()));
+    assert_eq!(cfg.spec_freq_delta_hz(),   Defaults::SPEC_FREQ_DELTA_HZ);
+    assert_eq!(cfg.spec_time_range_secs(), Defaults::SPEC_TIME_RANGE_SECS);
 }
 
 // ── Scenario 3: explicit --config with partial YAML → overrides + defaults ────

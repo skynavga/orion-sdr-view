@@ -1,18 +1,28 @@
+// Copyright (c) 2026 G & R Associates LLC
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 use eframe::egui;
 use super::field::{Row, NumField, RowDrawCtx, TimeZoneField};
 use crate::config::{TzMode, ViewConfig, format_offset_min};
 
 // ── Row indices (local) ───────────────────────────────────────────────────
-const DB_MIN:    usize = 0;
-const DB_MAX:    usize = 1;
-const TIME_ZONE: usize = 2;
+const DB_MIN:         usize = 0;
+const DB_MAX:         usize = 1;
+const SPEC_FREQ_DELTA: usize = 2;
+const SPEC_TIME_RANGE: usize = 3;
+const TIME_ZONE:      usize = 4;
 
 pub(super) struct DisplayRows {
     pub rows: Vec<Row>,
 }
 
 impl DisplayRows {
-    pub fn new(db_min: f32, db_max: f32) -> Self {
+    pub fn new(
+        db_min: f32,
+        db_max: f32,
+        spec_freq_delta_hz: f32,
+        spec_time_range_secs: f32,
+    ) -> Self {
         Self {
             rows: vec![
                 Row::Num(NumField {
@@ -22,6 +32,16 @@ impl DisplayRows {
                 Row::Num(NumField {
                     label: "dB max", value: db_max, default: -20.0,
                     step: 1.0, min: -159.0, max: 0.0, unit: " dB",
+                }),
+                Row::Num(NumField {
+                    label: "Spec span", value: spec_freq_delta_hz,
+                    default: crate::config::Defaults::SPEC_FREQ_DELTA_HZ,
+                    step: 100.0, min: 100.0, max: 24_000.0, unit: " Hz",
+                }),
+                Row::Num(NumField {
+                    label: "Spec time", value: spec_time_range_secs,
+                    default: crate::config::Defaults::SPEC_TIME_RANGE_SECS,
+                    step: 1.0, min: 1.0, max: 120.0, unit: " s",
                 }),
                 Row::TimeZone(TimeZoneField {
                     label: "Time zone",
@@ -38,6 +58,8 @@ impl DisplayRows {
     pub fn patch_from_config(&mut self, cfg: &ViewConfig) {
         self.rows[DB_MIN].patch_num(cfg.db_min());
         self.rows[DB_MAX].patch_num(cfg.db_max());
+        self.rows[SPEC_FREQ_DELTA].patch_num(cfg.spec_freq_delta_hz());
+        self.rows[SPEC_TIME_RANGE].patch_num(cfg.spec_time_range_secs());
 
         let mode = cfg.time_zone_mode();
         if let Row::TimeZone(f) = &mut self.rows[TIME_ZONE] {
@@ -224,6 +246,12 @@ impl super::SettingsState {
     }
     pub fn set_db_max(&mut self, v: f32) {
         if let Row::Num(f) = &mut self.display.rows[DB_MAX] { f.value = v.clamp(f.min, f.max); }
+    }
+    pub fn spec_freq_delta_hz(&self) -> f32 {
+        if let Row::Num(f) = &self.display.rows[SPEC_FREQ_DELTA] { f.value } else { 2_000.0 }
+    }
+    pub fn spec_time_range_secs(&self) -> f32 {
+        if let Row::Num(f) = &self.display.rows[SPEC_TIME_RANGE] { f.value } else { 10.0 }
     }
     /// Effective UTC offset in minutes for the Time zone row, resolving
     /// `local` against the current system offset.
