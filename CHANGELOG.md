@@ -9,6 +9,29 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.11] - 2026-04-13
+
+### Added
+
+- GitHub Actions CI workflow with check/fmt/clippy and test jobs
+  (stable + beta matrix)
+- `.cargo/config.toml` with macOS `target-cpu=native` build flags
+
+### Changed
+
+- Bumped `orion-sdr` dependency 0.0.30 → 0.0.32
+- Made `eframe`/`egui` optional behind a default `gui` feature so
+  the library and tests build on headless CI without windowing
+  system dependencies; binary requires `gui` via `required-features`
+- Removed unused `bw-sim` feature
+- Applied `cargo fmt` across the codebase
+
+### Fixed
+
+- Clippy: dead `if`/`else` with identical branches in `draw.rs`,
+  `too_many_arguments` in `settings/mod.rs`,
+  `manual_is_multiple_of` in `tests/ft8.rs`
+
 ## [0.0.10] - 2026-04-10
 
 ### Added

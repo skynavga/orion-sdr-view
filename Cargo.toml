@@ -1,6 +1,6 @@
 [package]
 name = "orion-sdr-view"
-version = "0.0.10"
+version = "0.0.11"
 edition = "2024"
 description = "Keyboard-driven SDR spectrum viewer: live spectrum, persistence, and waterfall display."
 license = "MIT OR Apache-2.0"
