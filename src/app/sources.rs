@@ -394,6 +394,14 @@ impl ViewApp {
         if let Ok(mut cfg) = self.decode_config.lock() {
             cfg.mode = mode;
             cfg.carrier_hz = carrier_hz;
+            if mode == DecodeMode::Cw {
+                cfg.cw_message = self.settings.cw_message().to_owned();
+                cfg.cw_wpm = self.settings.cw_wpm();
+                cfg.cw_dash_weight = self.settings.cw_dash_weight();
+                cfg.cw_char_space = self.settings.cw_char_space();
+                cfg.cw_word_space = self.settings.cw_word_space();
+                cfg.cw_msg_repeat = self.settings.cw_msg_repeat();
+            }
         }
     }
 }

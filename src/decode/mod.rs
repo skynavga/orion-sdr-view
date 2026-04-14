@@ -52,6 +52,13 @@ pub struct DecodeConfig {
     pub mode: DecodeMode,
     pub carrier_hz: f32,
     pub fs: f32,
+    // CW-specific fields for character-timed text decode.
+    pub cw_message: String,
+    pub cw_wpm: f32,
+    pub cw_dash_weight: f32,
+    pub cw_char_space: f32,
+    pub cw_word_space: f32,
+    pub cw_msg_repeat: usize,
 }
 
 impl DecodeConfig {
@@ -60,6 +67,12 @@ impl DecodeConfig {
             mode: DecodeMode::Off,
             carrier_hz: 0.0,
             fs,
+            cw_message: String::new(),
+            cw_wpm: 0.0,
+            cw_dash_weight: 3.0,
+            cw_char_space: 3.0,
+            cw_word_space: 7.0,
+            cw_msg_repeat: 1,
         }
     }
 }
@@ -299,6 +312,17 @@ impl DecodeWorker {
         const INFO_INTERVAL: usize = 48_000; // 1 s at 48 kHz
         // EMA-smoothed SNR for Di display (α = 0.2, shared across modes).
         let mut smoothed_snr_db = 0.0_f32;
+        // CW character-timed text decode state.
+        let mut cw_char_schedule: Vec<(char, usize)> = Vec::new();
+        let mut cw_accum_samples: usize = 0;
+        let mut cw_next_char_idx: usize = 0;
+        // Snapshot of CW config fields (refreshed each sample block).
+        let mut cw_message = String::new();
+        let mut cw_wpm = 0.0_f32;
+        let mut cw_dash_weight = 3.0_f32;
+        let mut cw_char_space = 3.0_f32;
+        let mut cw_word_space = 7.0_f32;
+        let mut cw_msg_repeat: usize = 1;
 
         loop {
             let samples = match self.rx.recv_timeout(std::time::Duration::from_millis(100)) {
@@ -309,6 +333,14 @@ impl DecodeWorker {
 
             let (mode, carrier_hz, fs) = {
                 let cfg = self.config.lock().unwrap();
+                if cfg.mode == DecodeMode::Cw {
+                    cw_message.clone_from(&cfg.cw_message);
+                    cw_wpm = cfg.cw_wpm;
+                    cw_dash_weight = cfg.cw_dash_weight;
+                    cw_char_space = cfg.cw_char_space;
+                    cw_word_space = cfg.cw_word_space;
+                    cw_msg_repeat = cfg.cw_msg_repeat;
+                }
                 (cfg.mode, cfg.carrier_hz, cfg.fs)
             };
 
@@ -324,6 +356,9 @@ impl DecodeWorker {
                 ft_decoder = None;
                 ft_decoded_this_burst = false;
                 ft_shift_phase = 0.0;
+                cw_char_schedule.clear();
+                cw_accum_samples = 0;
+                cw_next_char_idx = 0;
                 last_mode = mode;
                 last_carrier = carrier_hz;
                 continue;
@@ -341,6 +376,9 @@ impl DecodeWorker {
                 ft_decoder = None;
                 ft_decoded_this_burst = false;
                 ft_shift_phase = 0.0;
+                cw_char_schedule.clear();
+                cw_accum_samples = 0;
+                cw_next_char_idx = 0;
                 last_mode = mode;
                 last_carrier = carrier_hz;
             }
@@ -478,18 +516,96 @@ impl DecodeWorker {
                     }
                 }
 
-                DecodeMode::Cw | DecodeMode::AmDsb | DecodeMode::TestTone => {
+                DecodeMode::Cw => {
                     if !is_signal {
                         if gap_edge {
                             spec_buf.clear();
                             info_counter = 0;
                             smoothed_snr_db = 0.0;
                             smoothed_bw_hz = 0.0;
-                            // Send zeroed Info so the Di bar clears immediately.
-                            let label = match mode {
-                                DecodeMode::Cw => "CW",
-                                DecodeMode::AmDsb => "AM DSB",
-                                _ => "Test Tone",
+                            cw_accum_samples = 0;
+                            cw_next_char_idx = 0;
+                            cw_char_schedule.clear();
+                            let _ = self.tx.try_send(DecodeResult::Info {
+                                modulation: "CW".to_owned(),
+                                center_hz: carrier_hz,
+                                bw_hz: 0.0,
+                                snr_db: 0.0,
+                            });
+                        }
+                        continue;
+                    }
+
+                    // Build character schedule on signal onset.
+                    if cw_char_schedule.is_empty() && cw_accum_samples == 0 {
+                        cw_char_schedule = cw_char_timing(
+                            &cw_message,
+                            cw_wpm,
+                            cw_dash_weight,
+                            cw_char_space,
+                            cw_word_space,
+                            cw_msg_repeat,
+                            fs,
+                        );
+                        cw_next_char_idx = 0;
+                    }
+
+                    // Track accumulated samples and emit characters at the
+                    // nominal timing boundaries.
+                    cw_accum_samples += samples.len();
+                    while cw_next_char_idx < cw_char_schedule.len() {
+                        let (ch, threshold) = cw_char_schedule[cw_next_char_idx];
+                        if cw_accum_samples >= threshold {
+                            let _ = self.tx.try_send(DecodeResult::Text(ch.to_string()));
+                            cw_next_char_idx += 1;
+                        } else {
+                            break;
+                        }
+                    }
+
+                    // Spectral analysis for Di bar (same as AM DSB).
+                    spec_buf.extend(samples.iter().map(|&s| C32::new(s, 0.0)));
+                    if spec_buf.len() >= SPECTRUM_WINDOW_SAMPLES {
+                        let decode_buf: Vec<C32> = spec_buf[..SPECTRUM_WINDOW_SAMPLES].to_vec();
+                        spec_buf.drain(..SPECTRUM_WINDOW_SAMPLES / 2);
+
+                        let real: Vec<f32> = decode_buf.iter().map(|c| c.re).collect();
+                        let raw_snr = spectrum_snr_db(&real, fs, carrier_hz);
+                        if smoothed_snr_db == 0.0 {
+                            smoothed_snr_db = raw_snr;
+                        } else {
+                            smoothed_snr_db = 0.2 * raw_snr + 0.8 * smoothed_snr_db;
+                        }
+                        let raw_bw = spectrum_bw_hz(&real, fs, carrier_hz, 7.0);
+                        if smoothed_bw_hz == 0.0 {
+                            smoothed_bw_hz = raw_bw;
+                        } else {
+                            smoothed_bw_hz = 0.2 * raw_bw + 0.8 * smoothed_bw_hz;
+                        }
+                        info_counter += SPECTRUM_WINDOW_SAMPLES / 2;
+                        if info_counter >= INFO_INTERVAL {
+                            info_counter = 0;
+                            let _ = self.tx.try_send(DecodeResult::Info {
+                                modulation: "CW".to_owned(),
+                                center_hz: carrier_hz,
+                                bw_hz: smoothed_bw_hz,
+                                snr_db: smoothed_snr_db,
+                            });
+                        }
+                    }
+                }
+
+                DecodeMode::AmDsb | DecodeMode::TestTone => {
+                    if !is_signal {
+                        if gap_edge {
+                            spec_buf.clear();
+                            info_counter = 0;
+                            smoothed_snr_db = 0.0;
+                            smoothed_bw_hz = 0.0;
+                            let label = if mode == DecodeMode::AmDsb {
+                                "AM DSB"
+                            } else {
+                                "Test Tone"
                             };
                             let _ = self.tx.try_send(DecodeResult::Info {
                                 modulation: label.to_owned(),
@@ -508,8 +624,6 @@ impl DecodeWorker {
                     let decode_buf: Vec<C32> = spec_buf[..SPECTRUM_WINDOW_SAMPLES].to_vec();
                     spec_buf.drain(..SPECTRUM_WINDOW_SAMPLES / 2);
 
-                    // EMA accumulation runs at the spectral window rate (~43 ms)
-                    // for smoothing accuracy; Info is only sent at INFO_INTERVAL.
                     let real: Vec<f32> = decode_buf.iter().map(|c| c.re).collect();
                     let raw_snr = spectrum_snr_db(&real, fs, carrier_hz);
                     if smoothed_snr_db == 0.0 {
@@ -518,26 +632,21 @@ impl DecodeWorker {
                         smoothed_snr_db = 0.2 * raw_snr + 0.8 * smoothed_snr_db;
                     }
                     let (label, bw) = match mode {
-                        DecodeMode::Cw | DecodeMode::AmDsb => {
+                        DecodeMode::AmDsb => {
                             let raw_bw = spectrum_bw_hz(&real, fs, carrier_hz, 7.0);
                             if smoothed_bw_hz == 0.0 {
                                 smoothed_bw_hz = raw_bw;
                             } else {
                                 smoothed_bw_hz = 0.2 * raw_bw + 0.8 * smoothed_bw_hz;
                             }
-                            let label = if mode == DecodeMode::Cw {
-                                "CW"
-                            } else {
-                                "AM DSB"
-                            };
-                            (label, smoothed_bw_hz)
+                            ("AM DSB", smoothed_bw_hz)
                         }
                         _ => {
                             let (_, bin_hz) = power_spectrum(&real, fs);
                             ("Test Tone", bin_hz)
                         }
                     };
-                    info_counter += SPECTRUM_WINDOW_SAMPLES / 2; // new samples per window step
+                    info_counter += SPECTRUM_WINDOW_SAMPLES / 2;
                     if info_counter >= INFO_INTERVAL {
                         info_counter = 0;
                         let _ = self.tx.try_send(DecodeResult::Info {
@@ -669,6 +778,135 @@ impl DecodeWorker {
             }
         }
     }
+}
+
+// ── CW character timing ──────────────────────────────────────────────────────
+
+/// ITU Morse lookup (subset matching `orion_sdr::codec::morse`).
+const MORSE_TABLE: &[(char, &str)] = &[
+    ('A', ".-"),
+    ('B', "-..."),
+    ('C', "-.-."),
+    ('D', "-.."),
+    ('E', "."),
+    ('F', "..-."),
+    ('G', "--."),
+    ('H', "...."),
+    ('I', ".."),
+    ('J', ".---"),
+    ('K', "-.-"),
+    ('L', ".-.."),
+    ('M', "--"),
+    ('N', "-."),
+    ('O', "---"),
+    ('P', ".--."),
+    ('Q', "--.-"),
+    ('R', ".-."),
+    ('S', "..."),
+    ('T', "-"),
+    ('U', "..-"),
+    ('V', "...-"),
+    ('W', ".--"),
+    ('X', "-..-"),
+    ('Y', "-.--"),
+    ('Z', "--.."),
+    ('0', "-----"),
+    ('1', ".----"),
+    ('2', "..---"),
+    ('3', "...--"),
+    ('4', "....-"),
+    ('5', "....."),
+    ('6', "-...."),
+    ('7', "--..."),
+    ('8', "---.."),
+    ('9', "----."),
+    ('.', ".-.-.-"),
+    (',', "--..--"),
+    ('?', "..--.."),
+    ('/', "-..-."),
+];
+
+fn morse_char_units(c: char, dash_weight: f32) -> Option<f32> {
+    let upper = c.to_ascii_uppercase();
+    MORSE_TABLE
+        .iter()
+        .find(|(ch, _)| *ch == upper)
+        .map(|(_, pat)| {
+            let mut units = 0.0_f32;
+            for (i, elem) in pat.chars().enumerate() {
+                if i > 0 {
+                    units += 1.0; // intra-char gap
+                }
+                units += match elem {
+                    '.' => 1.0,
+                    '-' => dash_weight,
+                    _ => 0.0,
+                };
+            }
+            units
+        })
+}
+
+/// Build a schedule of `(character, cumulative_sample_threshold)` pairs for
+/// the full CW message (with repeats).  The threshold is the sample offset
+/// at which the character has been fully transmitted (body + trailing gap),
+/// so the decode worker emits the character when accumulated samples ≥
+/// threshold.  Uses nominal (jitter-free) timing.
+fn cw_char_timing(
+    message: &str,
+    wpm: f32,
+    dash_weight: f32,
+    char_space: f32,
+    word_space: f32,
+    msg_repeat: usize,
+    fs: f32,
+) -> Vec<(char, usize)> {
+    if message.is_empty() || wpm < 1.0 {
+        return Vec::new();
+    }
+    let unit_ms = 1200.0 / wpm;
+    let unit_samples = (unit_ms * 1e-3) * fs;
+
+    // Build repeated text the same way CwSource::render() does.
+    let repeated: Vec<u8> = std::iter::repeat_n(message.as_bytes(), msg_repeat.max(1))
+        .collect::<Vec<_>>()
+        .join(b" ".as_ref());
+    let text = String::from_utf8_lossy(&repeated);
+
+    let mut schedule = Vec::new();
+    let mut cumulative = 0.0_f32;
+    let mut pending_gap: Option<f32> = None;
+
+    for c in text.chars() {
+        if c.is_ascii_whitespace() {
+            if pending_gap.is_some() || !schedule.is_empty() {
+                pending_gap = Some(word_space);
+            }
+            continue;
+        }
+
+        let char_units = match morse_char_units(c, dash_weight) {
+            Some(u) => u,
+            None => continue,
+        };
+
+        // Emit pending gap before this character.
+        if let Some(gap_units) = pending_gap.take() {
+            cumulative += gap_units * unit_samples;
+        }
+
+        // Character body.
+        cumulative += char_units * unit_samples;
+
+        // Emit the character at the end of its body (before the trailing
+        // char gap, so text appears as soon as the character is keyed).
+        schedule.push((c.to_ascii_uppercase(), cumulative.round() as usize));
+
+        // Queue char gap.
+        pending_gap = Some(char_space);
+    }
+
+    schedule
 }
 
 /// Format a decoded `Ft8Message` for the Dt ticker.
