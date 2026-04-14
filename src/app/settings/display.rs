@@ -1,16 +1,16 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use eframe::egui;
-use super::field::{Row, NumField, RowDrawCtx, TimeZoneField};
+use super::field::{NumField, Row, RowDrawCtx, TimeZoneField};
 use crate::config::{TzMode, ViewConfig, format_offset_min};
+use eframe::egui;
 
 // ── Row indices (local) ───────────────────────────────────────────────────
-const DB_MIN:         usize = 0;
-const DB_MAX:         usize = 1;
+const DB_MIN: usize = 0;
+const DB_MAX: usize = 1;
 const SPEC_FREQ_DELTA: usize = 2;
 const SPEC_TIME_RANGE: usize = 3;
-const TIME_ZONE:      usize = 4;
+const TIME_ZONE: usize = 4;
 
 pub(super) struct DisplayRows {
     pub rows: Vec<Row>,
@@ -26,22 +26,40 @@ impl DisplayRows {
         Self {
             rows: vec![
                 Row::Num(NumField {
-                    label: "dB min", value: db_min, default: -80.0,
-                    step: 1.0, min: -160.0, max: -1.0, unit: " dB",
+                    label: "dB min",
+                    value: db_min,
+                    default: -80.0,
+                    step: 1.0,
+                    min: -160.0,
+                    max: -1.0,
+                    unit: " dB",
                 }),
                 Row::Num(NumField {
-                    label: "dB max", value: db_max, default: -20.0,
-                    step: 1.0, min: -159.0, max: 0.0, unit: " dB",
+                    label: "dB max",
+                    value: db_max,
+                    default: -20.0,
+                    step: 1.0,
+                    min: -159.0,
+                    max: 0.0,
+                    unit: " dB",
                 }),
                 Row::Num(NumField {
-                    label: "Spec span", value: spec_freq_delta_hz,
+                    label: "Spec span",
+                    value: spec_freq_delta_hz,
                     default: crate::config::Defaults::SPEC_FREQ_DELTA_HZ,
-                    step: 100.0, min: 100.0, max: 24_000.0, unit: " Hz",
+                    step: 100.0,
+                    min: 100.0,
+                    max: 24_000.0,
+                    unit: " Hz",
                 }),
                 Row::Num(NumField {
-                    label: "Spec time", value: spec_time_range_secs,
+                    label: "Spec time",
+                    value: spec_time_range_secs,
                     default: crate::config::Defaults::SPEC_TIME_RANGE_SECS,
-                    step: 1.0, min: 1.0, max: 120.0, unit: " s",
+                    step: 1.0,
+                    min: 1.0,
+                    max: 120.0,
+                    unit: " s",
                 }),
                 Row::TimeZone(TimeZoneField {
                     label: "Time zone",
@@ -66,7 +84,7 @@ impl DisplayRows {
             f.mode = mode;
             f.configured_mode = mode;
             if let TzMode::Explicit(m) = mode {
-                f.explicit_min            = m;
+                f.explicit_min = m;
                 f.configured_explicit_min = m;
             }
         }
@@ -88,12 +106,14 @@ impl DisplayRows {
 pub(super) fn draw_time_zone(
     ctx: &RowDrawCtx,
     f: &TimeZoneField,
-    x: f32, y: f32, row_h: f32,
+    x: f32,
+    y: f32,
+    row_h: f32,
     focused: bool,
 ) {
     let editing = f.is_editing();
     let val_str = match f.mode {
-        TzMode::Utc   => "utc".to_owned(),
+        TzMode::Utc => "utc".to_owned(),
         TzMode::Local => {
             let live = crate::utils::time::local_utc_offset_min();
             format!("local ({})", format_offset_min_signed(live))
@@ -167,7 +187,10 @@ impl DisplayRows {
     /// - If editing: Enter commits, Escape cancels, other events are consumed
     ///   (so ←/→ reach the field via `nudge_*` in the caller).
     pub fn handle_tz_keys(&mut self, events: &[egui::Event]) -> TzKeysResult {
-        let mut result = TzKeysResult { accepted: false, consumed: false };
+        let mut result = TzKeysResult {
+            accepted: false,
+            consumed: false,
+        };
 
         let f = match &mut self.rows[TIME_ZONE] {
             Row::TimeZone(f) => f,
@@ -178,26 +201,46 @@ impl DisplayRows {
             result.consumed = true;
             for e in events {
                 match e {
-                    egui::Event::Key { key: egui::Key::Enter, pressed: true, .. } => {
+                    egui::Event::Key {
+                        key: egui::Key::Enter,
+                        pressed: true,
+                        ..
+                    } => {
                         if let Some(pending) = f.pending_explicit.take() {
                             f.explicit_min = pending;
                             f.mode = TzMode::Explicit(pending);
                             result.accepted = true;
                         }
                     }
-                    egui::Event::Key { key: egui::Key::Escape, pressed: true, .. } => {
+                    egui::Event::Key {
+                        key: egui::Key::Escape,
+                        pressed: true,
+                        ..
+                    } => {
                         f.pending_explicit = None;
                     }
-                    egui::Event::Key { key: egui::Key::ArrowRight, pressed: true, .. } => {
+                    egui::Event::Key {
+                        key: egui::Key::ArrowRight,
+                        pressed: true,
+                        ..
+                    } => {
                         if let Some(pending) = &mut f.pending_explicit {
-                            *pending = (*pending + super::field::TZ_EXPLICIT_STEP)
-                                .clamp(super::field::TZ_EXPLICIT_MIN, super::field::TZ_EXPLICIT_MAX);
+                            *pending = (*pending + super::field::TZ_EXPLICIT_STEP).clamp(
+                                super::field::TZ_EXPLICIT_MIN,
+                                super::field::TZ_EXPLICIT_MAX,
+                            );
                         }
                     }
-                    egui::Event::Key { key: egui::Key::ArrowLeft, pressed: true, .. } => {
+                    egui::Event::Key {
+                        key: egui::Key::ArrowLeft,
+                        pressed: true,
+                        ..
+                    } => {
                         if let Some(pending) = &mut f.pending_explicit {
-                            *pending = (*pending - super::field::TZ_EXPLICIT_STEP)
-                                .clamp(super::field::TZ_EXPLICIT_MIN, super::field::TZ_EXPLICIT_MAX);
+                            *pending = (*pending - super::field::TZ_EXPLICIT_STEP).clamp(
+                                super::field::TZ_EXPLICIT_MIN,
+                                super::field::TZ_EXPLICIT_MAX,
+                            );
                         }
                     }
                     _ => {}
@@ -209,7 +252,14 @@ impl DisplayRows {
         // Not editing — Enter in Explicit mode opens a sub-edit seeded from
         // the current system offset.
         let enter_pressed = events.iter().any(|e| {
-            matches!(e, egui::Event::Key { key: egui::Key::Enter, pressed: true, .. })
+            matches!(
+                e,
+                egui::Event::Key {
+                    key: egui::Key::Enter,
+                    pressed: true,
+                    ..
+                }
+            )
         });
         if enter_pressed && f.is_explicit() {
             let seed = crate::utils::time::local_utc_offset_min();
@@ -236,22 +286,42 @@ impl DisplayRows {
 
 impl super::SettingsState {
     pub fn db_min(&self) -> f32 {
-        if let Row::Num(f) = &self.display.rows[DB_MIN] { f.value } else { -80.0 }
+        if let Row::Num(f) = &self.display.rows[DB_MIN] {
+            f.value
+        } else {
+            -80.0
+        }
     }
     pub fn db_max(&self) -> f32 {
-        if let Row::Num(f) = &self.display.rows[DB_MAX] { f.value } else { -20.0 }
+        if let Row::Num(f) = &self.display.rows[DB_MAX] {
+            f.value
+        } else {
+            -20.0
+        }
     }
     pub fn set_db_min(&mut self, v: f32) {
-        if let Row::Num(f) = &mut self.display.rows[DB_MIN] { f.value = v.clamp(f.min, f.max); }
+        if let Row::Num(f) = &mut self.display.rows[DB_MIN] {
+            f.value = v.clamp(f.min, f.max);
+        }
     }
     pub fn set_db_max(&mut self, v: f32) {
-        if let Row::Num(f) = &mut self.display.rows[DB_MAX] { f.value = v.clamp(f.min, f.max); }
+        if let Row::Num(f) = &mut self.display.rows[DB_MAX] {
+            f.value = v.clamp(f.min, f.max);
+        }
     }
     pub fn spec_freq_delta_hz(&self) -> f32 {
-        if let Row::Num(f) = &self.display.rows[SPEC_FREQ_DELTA] { f.value } else { 2_000.0 }
+        if let Row::Num(f) = &self.display.rows[SPEC_FREQ_DELTA] {
+            f.value
+        } else {
+            2_000.0
+        }
     }
     pub fn spec_time_range_secs(&self) -> f32 {
-        if let Row::Num(f) = &self.display.rows[SPEC_TIME_RANGE] { f.value } else { 10.0 }
+        if let Row::Num(f) = &self.display.rows[SPEC_TIME_RANGE] {
+            f.value
+        } else {
+            10.0
+        }
     }
     /// Effective UTC offset in minutes for the Time zone row, resolving
     /// `local` against the current system offset.

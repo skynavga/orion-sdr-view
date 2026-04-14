@@ -1,18 +1,18 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use eframe::egui;
-use super::field::{Row, NumField, RowDrawCtx, ToggleField, TextField};
+use super::field::{NumField, Row, RowDrawCtx, TextField, ToggleField};
 use crate::config::ViewConfig;
+use eframe::egui;
 
 // ── Row indices (local) ───────────────────────────────────────────────────
-const AUDIO:    usize = 0;
-const CARRIER:  usize = 1;
-const MOD_IDX:  usize = 2;
-const GAP:      usize = 3;
-const NOISE:    usize = 4;
+const AUDIO: usize = 0;
+const CARRIER: usize = 1;
+const MOD_IDX: usize = 2;
+const GAP: usize = 3;
+const NOISE: usize = 4;
 const WAV_FILE: usize = 5;
-const REPEAT:   usize = 6;
+const REPEAT: usize = 6;
 
 pub(super) struct AmDsbRows {
     pub rows: Vec<Row>,
@@ -28,23 +28,44 @@ impl AmDsbRows {
                 Row::Toggle(ToggleField {
                     label: "Audio",
                     options: &["Morse", "Voice", "Custom"],
-                    index: 0, default: 0,
+                    index: 0,
+                    default: 0,
                 }),
                 Row::Num(NumField {
-                    label: "Carrier Hz", value: 12000.0, default: 12000.0,
-                    step: 100.0, min: 100.0, max: 23_900.0, unit: " Hz",
+                    label: "Carrier Hz",
+                    value: 12000.0,
+                    default: 12000.0,
+                    step: 100.0,
+                    min: 100.0,
+                    max: 23_900.0,
+                    unit: " Hz",
                 }),
                 Row::Num(NumField {
-                    label: "Mod index", value: 1.0, default: 1.0,
-                    step: 0.1, min: 0.1, max: 2.0, unit: "",
+                    label: "Mod index",
+                    value: 1.0,
+                    default: 1.0,
+                    step: 0.1,
+                    min: 0.1,
+                    max: 2.0,
+                    unit: "",
                 }),
                 Row::Num(NumField {
-                    label: "Gap", value: 7.0, default: 7.0,
-                    step: 0.5, min: 0.0, max: 99.99, unit: " s",
+                    label: "Gap",
+                    value: 7.0,
+                    default: 7.0,
+                    step: 0.5,
+                    min: 0.0,
+                    max: 99.99,
+                    unit: " s",
                 }),
                 Row::Num(NumField {
-                    label: "Noise amp", value: 0.05, default: 0.05,
-                    step: 0.01, min: 0.0, max: 0.50, unit: "",
+                    label: "Noise amp",
+                    value: 0.05,
+                    default: 0.05,
+                    step: 0.01,
+                    min: 0.0,
+                    max: 0.50,
+                    unit: "",
                 }),
                 Row::Text(TextField {
                     label: "Audio source",
@@ -53,8 +74,13 @@ impl AmDsbRows {
                     status: None,
                 }),
                 Row::Num(NumField {
-                    label: "Repeat", value: 1.0, default: 1.0,
-                    step: 1.0, min: 1.0, max: 20.0, unit: "×",
+                    label: "Repeat",
+                    value: 1.0,
+                    default: 1.0,
+                    step: 1.0,
+                    min: 1.0,
+                    max: 20.0,
+                    unit: "×",
                 }),
             ],
             pending_wav: None,
@@ -92,7 +118,11 @@ impl AmDsbRows {
     /// Two-phase: focused but not editing (up/down navigate normally) →
     /// Enter starts editing → Enter commits & loads, Escape cancels.
     pub fn handle_wav_keys(&mut self, events: &[egui::Event]) -> WavKeysResult {
-        let mut result = WavKeysResult { load_requested: false, defocus: false, consumed: false };
+        let mut result = WavKeysResult {
+            load_requested: false,
+            defocus: false,
+            consumed: false,
+        };
 
         let editing = self.pending_wav.is_some();
 
@@ -109,12 +139,20 @@ impl AmDsbRows {
                             }
                         }
                     }
-                    egui::Event::Key { key: egui::Key::Backspace, pressed: true, .. } => {
+                    egui::Event::Key {
+                        key: egui::Key::Backspace,
+                        pressed: true,
+                        ..
+                    } => {
                         if let Some(pending) = &mut self.pending_wav {
                             pending.pop();
                         }
                     }
-                    egui::Event::Key { key: egui::Key::Enter, pressed: true, .. } => {
+                    egui::Event::Key {
+                        key: egui::Key::Enter,
+                        pressed: true,
+                        ..
+                    } => {
                         if let Some(pending) = self.pending_wav.take() {
                             if let Row::Text(f) = &mut self.rows[WAV_FILE] {
                                 f.value = pending;
@@ -124,7 +162,11 @@ impl AmDsbRows {
                             // keeps focus on failure so user can re-edit.
                         }
                     }
-                    egui::Event::Key { key: egui::Key::Escape, pressed: true, .. } => {
+                    egui::Event::Key {
+                        key: egui::Key::Escape,
+                        pressed: true,
+                        ..
+                    } => {
                         self.pending_wav = None;
                         result.defocus = true;
                     }
@@ -136,7 +178,14 @@ impl AmDsbRows {
 
         // Not editing: Enter starts an edit.
         let enter_pressed = events.iter().any(|e| {
-            matches!(e, egui::Event::Key { key: egui::Key::Enter, pressed: true, .. })
+            matches!(
+                e,
+                egui::Event::Key {
+                    key: egui::Key::Enter,
+                    pressed: true,
+                    ..
+                }
+            )
         });
         if enter_pressed {
             let current = if let Row::Text(f) = &self.rows[WAV_FILE] {
@@ -159,12 +208,7 @@ impl AmDsbRows {
     }
 
     /// Draw the WAV file text field value.
-    pub fn draw_wav_field(
-        &self,
-        ctx: &RowDrawCtx,
-        val_x: f32, y: f32, row_h: f32,
-        focused: bool,
-    ) {
+    pub fn draw_wav_field(&self, ctx: &RowDrawCtx, val_x: f32, y: f32, row_h: f32, focused: bool) {
         if let Row::Text(f) = &self.rows[WAV_FILE] {
             let editing = self.pending_wav.is_some();
             let max_chars = 36usize;
@@ -199,9 +243,9 @@ impl AmDsbRows {
                 ""
             } else {
                 match f.status {
-                    Some(true)  => "  ✓",
+                    Some(true) => "  ✓",
                     Some(false) => "  ✗",
-                    None        => "",
+                    None => "",
                 }
             };
             let full = format!("{}{}", display, status_suffix);
@@ -222,7 +266,11 @@ impl AmDsbRows {
                 text_color,
             );
             if focused {
-                let hint = if editing { "\u{21b5} load  Esc cancel" } else { "\u{21b5} edit" };
+                let hint = if editing {
+                    "\u{21b5} load  Esc cancel"
+                } else {
+                    "\u{21b5} edit"
+                };
                 ctx.painter.text(
                     egui::pos2(ctx.rect_right - 14.0, y + row_h / 2.0),
                     egui::Align2::RIGHT_CENTER,
@@ -235,7 +283,11 @@ impl AmDsbRows {
     }
 
     fn audio_idx(&self) -> usize {
-        if let Row::Toggle(f) = &self.rows[AUDIO] { f.index } else { 0 }
+        if let Row::Toggle(f) = &self.rows[AUDIO] {
+            f.index
+        } else {
+            0
+        }
     }
 
     pub(super) const WAV_FILE_IDX: usize = WAV_FILE;
@@ -256,13 +308,25 @@ impl super::SettingsState {
         self.amdsb.audio_is_custom()
     }
     pub fn am_audio_idx(&self) -> usize {
-        if let Row::Toggle(f) = &self.amdsb.rows[AUDIO] { f.index } else { 0 }
+        if let Row::Toggle(f) = &self.amdsb.rows[AUDIO] {
+            f.index
+        } else {
+            0
+        }
     }
     pub fn am_audio_str(&self) -> &str {
-        if let Row::Toggle(f) = &self.amdsb.rows[AUDIO] { f.value_str() } else { "Morse" }
+        if let Row::Toggle(f) = &self.amdsb.rows[AUDIO] {
+            f.value_str()
+        } else {
+            "Morse"
+        }
     }
     pub fn am_carrier_hz(&self) -> f32 {
-        if let Row::Num(f) = &self.amdsb.rows[CARRIER] { f.value } else { 5000.0 }
+        if let Row::Num(f) = &self.amdsb.rows[CARRIER] {
+            f.value
+        } else {
+            5000.0
+        }
     }
     pub fn set_am_carrier_hz(&mut self, v: f32) {
         if let Row::Num(f) = &mut self.amdsb.rows[CARRIER] {
@@ -270,16 +334,32 @@ impl super::SettingsState {
         }
     }
     pub fn am_mod_index(&self) -> f32 {
-        if let Row::Num(f) = &self.amdsb.rows[MOD_IDX] { f.value } else { 1.0 }
+        if let Row::Num(f) = &self.amdsb.rows[MOD_IDX] {
+            f.value
+        } else {
+            1.0
+        }
     }
     pub fn am_gap_secs(&self) -> f32 {
-        if let Row::Num(f) = &self.amdsb.rows[GAP] { f.value } else { 2.0 }
+        if let Row::Num(f) = &self.amdsb.rows[GAP] {
+            f.value
+        } else {
+            2.0
+        }
     }
     pub fn am_noise_amp(&self) -> f32 {
-        if let Row::Num(f) = &self.amdsb.rows[NOISE] { f.value } else { 0.05 }
+        if let Row::Num(f) = &self.amdsb.rows[NOISE] {
+            f.value
+        } else {
+            0.05
+        }
     }
     pub fn am_msg_repeat(&self) -> usize {
-        if let Row::Num(f) = &self.amdsb.rows[REPEAT] { f.value as usize } else { 1 }
+        if let Row::Num(f) = &self.amdsb.rows[REPEAT] {
+            f.value as usize
+        } else {
+            1
+        }
     }
     /// Reset the repeat row default (and value) to match the newly-selected audio kind.
     /// `audio_idx` 0 = Morse (default 1), 1 = Voice (default 3), other = 1.
@@ -287,11 +367,15 @@ impl super::SettingsState {
         let default = if audio_idx == 1 { 3.0 } else { 1.0 };
         if let Row::Num(f) = &mut self.amdsb.rows[REPEAT] {
             f.default = default;
-            f.value   = default;
+            f.value = default;
         }
     }
     pub fn wav_path(&self) -> &str {
-        if let Row::Text(f) = &self.amdsb.rows[WAV_FILE] { &f.value } else { "" }
+        if let Row::Text(f) = &self.amdsb.rows[WAV_FILE] {
+            &f.value
+        } else {
+            ""
+        }
     }
     pub fn set_wav_status(&mut self, ok: bool) {
         if let Row::Text(f) = &mut self.amdsb.rows[WAV_FILE] {
@@ -299,6 +383,8 @@ impl super::SettingsState {
         }
     }
     pub fn cycle_am_audio(&mut self) {
-        if let Row::Toggle(f) = &mut self.amdsb.rows[AUDIO] { f.next(); }
+        if let Row::Toggle(f) = &mut self.amdsb.rows[AUDIO] {
+            f.next();
+        }
     }
 }

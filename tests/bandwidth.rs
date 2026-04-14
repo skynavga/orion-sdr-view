@@ -8,12 +8,8 @@
 //! fixtures.  AM DSB is used as the modulation carrier because sidebands
 //! map directly to audio bandwidth, making expected ranges easy to assert.
 
-use orion_sdr_view::decode::{
-    SIGNAL_THRESHOLD, SPECTRUM_WINDOW_SAMPLES, spectrum_bw_hz,
-};
-use orion_sdr_view::source::{
-    AmDsbSource, BuiltinAudio, SignalSource, load_builtin,
-};
+use orion_sdr_view::decode::{SIGNAL_THRESHOLD, SPECTRUM_WINDOW_SAMPLES, spectrum_bw_hz};
+use orion_sdr_view::source::{AmDsbSource, BuiltinAudio, SignalSource, load_builtin};
 
 const FS: f32 = 48_000.0;
 const CARRIER_HZ: f32 = 12_000.0;
@@ -24,8 +20,8 @@ const CARRIER_HZ: f32 = 12_000.0;
 /// Audio is normalised to peak = 0.9 (matching AmDsbSource behaviour) before
 /// modulation so sideband levels are consistent across test helpers.
 fn am_dsb_signal(audio: &[f32]) -> Vec<f32> {
-    use orion_sdr::modulate::AmDsbMod;
     use orion_sdr::core::AudioToIqChain;
+    use orion_sdr::modulate::AmDsbMod;
     let peak = audio.iter().map(|&s| s.abs()).fold(0.0f32, f32::max);
     let scale = if peak > 1e-6 { 0.9 / peak } else { 1.0 };
     let norm: Vec<f32> = audio.iter().map(|&s| s * scale).collect();
@@ -55,7 +51,11 @@ fn band_noise(lo_hz: f32, hi_hz: f32, n: usize) -> Vec<f32> {
             *slot += (2.0 * std::f32::consts::PI * f * i as f32 / FS + phase).sin();
         }
     }
-    let peak = out.iter().map(|&s| s.abs()).fold(0.0f32, f32::max).max(1e-6);
+    let peak = out
+        .iter()
+        .map(|&s| s.abs())
+        .fold(0.0f32, f32::max)
+        .max(1e-6);
     out.iter_mut().for_each(|s| *s *= 0.5 / peak);
     out
 }
@@ -66,14 +66,12 @@ fn band_noise(lo_hz: f32, hi_hz: f32, n: usize) -> Vec<f32> {
 fn measure_bw_via_source(audio: Vec<f32>, audio_rate: f32) -> f32 {
     let audio_secs = audio.len() as f32 / audio_rate;
     let total = ((audio_secs * FS) as usize).max(SPECTRUM_WINDOW_SAMPLES);
-    let mut src = AmDsbSource::new(
-        audio, audio_rate, CARRIER_HZ, 1.0, 0.0, 0.0, 1, FS,
-    );
+    let mut src = AmDsbSource::new(audio, audio_rate, CARRIER_HZ, 1.0, 0.0, 0.0, 1, FS);
     let signal = src.next_samples(total);
     signal
         .chunks_exact(SPECTRUM_WINDOW_SAMPLES)
         .filter(|w| {
-            let rms = (w.iter().map(|&s| s*s).sum::<f32>() / w.len() as f32).sqrt();
+            let rms = (w.iter().map(|&s| s * s).sum::<f32>() / w.len() as f32).sqrt();
             rms >= SIGNAL_THRESHOLD
         })
         .map(|w| spectrum_bw_hz(w, FS, CARRIER_HZ, 7.0))

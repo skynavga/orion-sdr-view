@@ -1,8 +1,8 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use orion_sdr_view::source::tone::{TestSignalGen, TestToneSource};
 use orion_sdr_view::source::SignalSource;
+use orion_sdr_view::source::tone::{TestSignalGen, TestToneSource};
 
 fn make_gen() -> TestSignalGen {
     TestSignalGen::new(1000.0, 48000.0)
@@ -48,7 +48,10 @@ fn awgn_distribution() {
     let variance = samples.iter().map(|s| (s - mean).powi(2)).sum::<f32>() / samples.len() as f32;
     // CLT of 12 uniforms: mean≈0, variance≈1
     assert!(mean.abs() < 0.1, "AWGN mean not near zero: {mean}");
-    assert!((variance - 1.0).abs() < 0.2, "AWGN variance not near 1: {variance}");
+    assert!(
+        (variance - 1.0).abs() < 0.2,
+        "AWGN variance not near 1: {variance}"
+    );
 }
 
 #[test]
@@ -63,7 +66,10 @@ fn start_cycling_begins_ramp_down() {
     for _ in 0..ramp_samples / 2 {
         g.next_sample();
     }
-    assert!(g.tone_amp < g.amp_max, "amplitude should decrease during ramp down");
+    assert!(
+        g.tone_amp < g.amp_max,
+        "amplitude should decrease during ramp down"
+    );
 }
 
 #[test]
@@ -109,7 +115,10 @@ fn restart_resets_state() {
     g.noise_amp = 0.0;
     let s = g.next_sample();
     // next_sample computes sin(phase) THEN advances, so first sample is sin(0)=0
-    assert!(s.abs() < 0.01, "first sample after restart should be near zero: {s}");
+    assert!(
+        s.abs() < 0.01,
+        "first sample after restart should be near zero: {s}"
+    );
 }
 
 #[test]
@@ -125,8 +134,11 @@ fn full_cycle_returns_to_peak() {
         g.next_sample();
     }
     // Should be back at amp_max (in PauseHigh or start of next RampDown)
-    assert!((g.tone_amp - g.amp_max).abs() < 0.01,
-        "amplitude should return to peak after full cycle: {}", g.tone_amp);
+    assert!(
+        (g.tone_amp - g.amp_max).abs() < 0.01,
+        "amplitude should return to peak after full cycle: {}",
+        g.tone_amp
+    );
 }
 
 #[test]

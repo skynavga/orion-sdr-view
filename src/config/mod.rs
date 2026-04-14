@@ -3,26 +3,26 @@
 
 use serde::Deserialize;
 
+mod amdsb;
 mod defaults;
 mod display;
 mod ft8;
-mod tone;
-mod amdsb;
 mod psk31;
+mod tone;
 
+pub use amdsb::AmDsbConfig;
 pub use defaults::Defaults;
 pub use display::{DisplayConfig, TzMode, format_offset_min};
 pub use ft8::Ft8Config;
-pub use tone::TestToneConfig;
-pub use amdsb::AmDsbConfig;
 pub use psk31::Psk31Config;
+pub use tone::TestToneConfig;
 
 #[derive(Debug, Deserialize)]
 pub struct SourcesConfig {
     pub test_tone: Option<TestToneConfig>,
-    pub am_dsb:    Option<AmDsbConfig>,
-    pub psk31:     Option<Psk31Config>,
-    pub ft8:       Option<Ft8Config>,
+    pub am_dsb: Option<AmDsbConfig>,
+    pub psk31: Option<Psk31Config>,
+    pub ft8: Option<Ft8Config>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -77,6 +77,9 @@ impl ViewConfig {
     }
 
     fn empty() -> Self {
-        ViewConfig { display: None, sources: None }
+        ViewConfig {
+            display: None,
+            sources: None,
+        }
     }
 }

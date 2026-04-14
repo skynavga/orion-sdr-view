@@ -56,7 +56,9 @@ pub fn sine_burst(
             };
             let s = amp * env * phase.sin();
             *phase += dphi;
-            if *phase > PI { *phase -= 2.0 * PI; }
+            if *phase > PI {
+                *phase -= 2.0 * PI;
+            }
             s
         })
         .collect()

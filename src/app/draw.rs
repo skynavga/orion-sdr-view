@@ -3,17 +3,17 @@
 
 use eframe::egui;
 
-use crate::decode::DecodeResult;
-use super::{PANE_BG, DecodeBarMode, SourceMode, WaterfallMode};
 use super::view::ViewApp;
+use super::{DecodeBarMode, PANE_BG, SourceMode, WaterfallMode};
+use crate::decode::DecodeResult;
 use crate::source::ft8::{Ft8Mode, Ft8MsgType};
 
 impl ViewApp {
     pub(super) fn draw_hud(&self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("hud").show(ctx, |ui| {
             // Build the status string first so we can centre it.
-            let center  = self.freq_view.center_hz;
-            let span    = self.freq_view.span_hz;
+            let center = self.freq_view.center_hz;
+            let span = self.freq_view.span_hz;
             let zoom_ratio = self.freq_view.zoom_ratio();
             let center_str = if center >= 1000.0 {
                 format!("{:.2}kHz", center / 1000.0)
@@ -32,18 +32,29 @@ impl ViewApp {
             };
             // Format a single marker frequency label, bracketed if active.
             let fmt_hz = |hz: f32| -> String {
-                if hz >= 1000.0 { format!("{:.2}kHz", hz / 1000.0) }
-                else            { format!("{:.0}Hz", hz) }
+                if hz >= 1000.0 {
+                    format!("{:.2}kHz", hz / 1000.0)
+                } else {
+                    format!("{:.0}Hz", hz)
+                }
             };
             let m_a = &self.markers[1];
             let m_b = &self.markers[2];
             let mut marker_str = String::new();
             if m_a.enabled {
-                let tag = if self.active_marker == Some(1) { "[A]" } else { "A" };
+                let tag = if self.active_marker == Some(1) {
+                    "[A]"
+                } else {
+                    "A"
+                };
                 marker_str.push_str(&format!("  {} {}", tag, fmt_hz(m_a.hz)));
             }
             if m_b.enabled {
-                let tag = if self.active_marker == Some(2) { "[B]" } else { "B" };
+                let tag = if self.active_marker == Some(2) {
+                    "[B]"
+                } else {
+                    "B"
+                };
                 marker_str.push_str(&format!("  {} {}", tag, fmt_hz(m_b.hz)));
             }
             if m_a.enabled && m_b.enabled {
@@ -55,42 +66,70 @@ impl ViewApp {
             let cycling = self.source_mode == SourceMode::TestTone && self.signal_gen.cycling;
             let modes: String = {
                 let mut flags = Vec::new();
-                if cycling                            { flags.push("C"); }
-                if self.decode_bar == DecodeBarMode::Info  { flags.push("Di"); }
-                if self.decode_bar == DecodeBarMode::Text  { flags.push("Dt"); }
-                if self.envelope_visible              { flags.push("E"); }
-                if self.source_locked      { flags.push("L"); }
-                if self.peak_hold_visible  { flags.push("P"); }
-                if flags.is_empty() { String::new() }
-                else { format!(" ({})", flags.join(",")) }
+                if cycling {
+                    flags.push("C");
+                }
+                if self.decode_bar == DecodeBarMode::Info {
+                    flags.push("Di");
+                }
+                if self.decode_bar == DecodeBarMode::Text {
+                    flags.push("Dt");
+                }
+                if self.envelope_visible {
+                    flags.push("E");
+                }
+                if self.source_locked {
+                    flags.push("L");
+                }
+                if self.peak_hold_visible {
+                    flags.push("P");
+                }
+                if flags.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({})", flags.join(","))
+                }
             };
             let submode_str: String = match self.source_mode {
                 SourceMode::AmDsb => match self.settings.am_audio_str() {
-                    "Voice"  => "  aud v".to_owned(),
+                    "Voice" => "  aud v".to_owned(),
                     "Custom" => "  aud c".to_owned(),
-                    _        => "  aud m".to_owned(),
+                    _ => "  aud m".to_owned(),
                 },
                 SourceMode::Psk31 => {
                     let mode_ch = match self.settings.psk31_mode_str() {
                         "QPSK31" => "q",
-                        _        => "b",
+                        _ => "b",
                     };
                     let msg_ch = match self.settings.psk31_msg_mode_str() {
                         "Custom" => "c",
-                        _        => "n",
+                        _ => "n",
                     };
                     format!("  mode {mode_ch}  msg {msg_ch}")
                 }
                 SourceMode::Ft8 => {
-                    let mode_ch = match self.ft_mode { Ft8Mode::Ft8 => "8", Ft8Mode::Ft4 => "4" };
-                    let msg_ch  = match self.ft_msg_type { Ft8MsgType::Standard => "s", Ft8MsgType::FreeText => "f" };
+                    let mode_ch = match self.ft_mode {
+                        Ft8Mode::Ft8 => "8",
+                        Ft8Mode::Ft4 => "4",
+                    };
+                    let msg_ch = match self.ft_msg_type {
+                        Ft8MsgType::Standard => "s",
+                        Ft8MsgType::FreeText => "f",
+                    };
                     format!("  mode {mode_ch}  msg {msg_ch}")
                 }
                 _ => String::new(),
             };
             let status = format!(
                 "{}{}{}  ctr {}  span {}  zoom {}  ref {:.0}dB{}",
-                self.source_mode.label(), modes, submode_str, center_str, span_str, zoom_str, self.db_max, marker_str
+                self.source_mode.label(),
+                modes,
+                submode_str,
+                center_str,
+                span_str,
+                zoom_str,
+                self.db_max,
+                marker_str
             );
 
             // Three-section bar: left (title/hints) | centre (status) | —
@@ -162,25 +201,24 @@ impl ViewApp {
                 y += h;
             }
         }
-
     }
 
     pub(super) fn draw_decode_bar(&self, painter: egui::Painter, rect: egui::Rect) {
-        const BAR_BG:    egui::Color32 = egui::Color32::from_rgb(15, 15, 30);
+        const BAR_BG: egui::Color32 = egui::Color32::from_rgb(15, 15, 30);
         const LABEL_COL: egui::Color32 = egui::Color32::from_rgb(80, 100, 140);
-        const TEXT_COL:  egui::Color32 = egui::Color32::from_rgb(200, 200, 200);
-        const DIM_COL:   egui::Color32 = egui::Color32::from_rgb(100, 100, 100);
+        const TEXT_COL: egui::Color32 = egui::Color32::from_rgb(200, 200, 200);
+        const DIM_COL: egui::Color32 = egui::Color32::from_rgb(100, 100, 100);
 
         painter.rect_filled(rect, 0.0, BAR_BG);
 
-        let font   = egui::FontId::new(12.0, egui::FontFamily::Monospace);
+        let font = egui::FontId::new(12.0, egui::FontFamily::Monospace);
         let text_y = rect.center().y;
 
         // Dim mode label on the left: "DEC·i" = info, "DEC·t" = text.
         let dec_label = match self.decode_bar {
             DecodeBarMode::Info => "DEC\u{b7}i",
             DecodeBarMode::Text => "DEC\u{b7}t",
-            DecodeBarMode::Off  => "DEC",
+            DecodeBarMode::Off => "DEC",
         };
         painter.text(
             egui::pos2(rect.left() + 6.0, text_y),
@@ -190,22 +228,37 @@ impl ViewApp {
             LABEL_COL,
         );
 
-        let label_w = painter.layout_no_wrap(dec_label.to_owned(), font.clone(), LABEL_COL).size().x;
+        let label_w = painter
+            .layout_no_wrap(dec_label.to_owned(), font.clone(), LABEL_COL)
+            .size()
+            .x;
         let content_x = rect.left() + 6.0 + label_w + 12.0; // 12 px right margin
 
         // Measure loop timer label so we know where the scrolling text must stop.
         let timer_label = self.loop_timer.label();
-        let timer_w = painter.layout_no_wrap(timer_label.clone(), font.clone(), TEXT_COL).size().x;
-        let em_w    = painter.layout_no_wrap("M".to_owned(),       font.clone(), TEXT_COL).size().x;
+        let timer_w = painter
+            .layout_no_wrap(timer_label.clone(), font.clone(), TEXT_COL)
+            .size()
+            .x;
+        let em_w = painter
+            .layout_no_wrap("M".to_owned(), font.clone(), TEXT_COL)
+            .size()
+            .x;
 
         // For FT8/FT4 sources, show "frm xxx err yyy" to the left of the loop timer.
         let ft_label: Option<String> = if self.source_mode == SourceMode::Ft8 {
-            Some(format!("frm {:03} err {:03} ", self.ft_frame_count, self.ft_err_count))
+            Some(format!(
+                "frm {:03} err {:03} ",
+                self.ft_frame_count, self.ft_err_count
+            ))
         } else {
             None
         };
         let ft_label_w = ft_label.as_ref().map_or(0.0, |s| {
-            painter.layout_no_wrap(s.clone(), font.clone(), TEXT_COL).size().x
+            painter
+                .layout_no_wrap(s.clone(), font.clone(), TEXT_COL)
+                .size()
+                .x
         });
 
         // Right-aligned loop timer: "sig 12.34s loop 007" / "gap 02.00s loop 007"
@@ -223,13 +276,15 @@ impl ViewApp {
             } else {
                 format!("{:.0}Hz", bw_hz)
             };
-            format!("{modulation}  ctr {:.1}kHz  bw {bw_str}  snr {snr_db:.1}dB",
-                center_hz / 1000.0)
+            format!(
+                "{modulation}  ctr {:.1}kHz  bw {bw_str}  snr {snr_db:.1}dB",
+                center_hz / 1000.0
+            )
         };
 
         // Determine whether Dt mode has content to render.
-        let has_dt_text = self.decode_bar == DecodeBarMode::Text
-            && !self.decode_ticker.visible.is_empty();
+        let has_dt_text =
+            self.decode_bar == DecodeBarMode::Text && !self.decode_ticker.visible.is_empty();
 
         if has_dt_text {
             // ── Smooth-scrolling ticker (Dt mode) ─────────────────────────
@@ -255,8 +310,12 @@ impl ViewApp {
             // ── Static left-aligned text (Di mode or waiting) ────────────────
             let (text, color) = if self.decode_bar == DecodeBarMode::Info {
                 // Di mode: show last_info if available.
-                if let Some(DecodeResult::Info { modulation, center_hz, bw_hz, snr_db })
-                    = &self.decode_ticker.last_info
+                if let Some(DecodeResult::Info {
+                    modulation,
+                    center_hz,
+                    bw_hz,
+                    snr_db,
+                }) = &self.decode_ticker.last_info
                 {
                     (info_str(modulation, *center_hz, *bw_hz, *snr_db), TEXT_COL)
                 } else {
@@ -309,9 +368,7 @@ impl ViewApp {
         let bin_hz = |b: usize| b as f32 * nyquist / (n - 1) as f32;
 
         // Hz → X pixel (within visible window)
-        let x_for_hz = |hz: f32| {
-            rect.left() + self.freq_view.hz_to_x_norm(hz) * rect.width()
-        };
+        let x_for_hz = |hz: f32| rect.left() + self.freq_view.hz_to_x_norm(hz) * rect.width();
         let y_for_db = |db: f32| {
             let t = (db - self.db_min) / (self.db_max - self.db_min);
             rect.bottom() - t.clamp(0.0, 1.0) * rect.height()
@@ -340,7 +397,15 @@ impl ViewApp {
         let raw_step = span / 5.0;
         let magnitude = 10f32.powf(raw_step.log10().floor());
         let norm = raw_step / magnitude;
-        let nice = if norm < 1.5 { 1.0 } else if norm < 3.5 { 2.0 } else if norm < 7.5 { 5.0 } else { 10.0 };
+        let nice = if norm < 1.5 {
+            1.0
+        } else if norm < 3.5 {
+            2.0
+        } else if norm < 7.5 {
+            5.0
+        } else {
+            10.0
+        };
         let grid_hz = nice * magnitude;
 
         let first_grid = (lo / grid_hz).ceil() * grid_hz;
@@ -387,7 +452,10 @@ impl ViewApp {
             points.push(egui::pos2(x_for_hz(hz), y_for_db(db)));
         }
         if !points.is_empty() {
-            painter.line(points, egui::Stroke::new(1.5, egui::Color32::from_rgb(0, 220, 180)));
+            painter.line(
+                points,
+                egui::Stroke::new(1.5, egui::Color32::from_rgb(0, 220, 180)),
+            );
         }
 
         // ── Peak hold line ────────────────────────────────────────────────
@@ -399,7 +467,10 @@ impl ViewApp {
                     if !ph_points.is_empty() {
                         painter.line(
                             std::mem::take(&mut ph_points),
-                            egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(255, 180, 0, 180)),
+                            egui::Stroke::new(
+                                1.0,
+                                egui::Color32::from_rgba_premultiplied(255, 180, 0, 180),
+                            ),
                         );
                     }
                     continue;
@@ -409,7 +480,10 @@ impl ViewApp {
             if !ph_points.is_empty() {
                 painter.line(
                     ph_points,
-                    egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(255, 180, 0, 180)),
+                    egui::Stroke::new(
+                        1.0,
+                        egui::Color32::from_rgba_premultiplied(255, 180, 0, 180),
+                    ),
                 );
             }
         }
@@ -419,7 +493,12 @@ impl ViewApp {
     }
 
     /// Draw vertical marker lines into any pane rect.
-    pub(super) fn draw_freq_markers(&self, painter: &egui::Painter, rect: egui::Rect, label_font: &egui::FontId) {
+    pub(super) fn draw_freq_markers(
+        &self,
+        painter: &egui::Painter,
+        rect: egui::Rect,
+        label_font: &egui::FontId,
+    ) {
         let lo = self.freq_view.lo();
         let hi = self.freq_view.hi();
 
@@ -453,19 +532,32 @@ impl ViewApp {
                 } else {
                     format!("{} {:.0}", m.label(), m.hz)
                 };
-                entries.push(Entry { x, row: 0, label: hz_label,
-                    color: m.color(), line_width: 1.0 });
+                entries.push(Entry {
+                    x,
+                    row: 0,
+                    label: hz_label,
+                    color: m.color(),
+                    line_width: 1.0,
+                });
             }
         }
 
         // Bracket markers: assign rows greedily starting from 0.
         for (idx, m) in self.markers[1..].iter().enumerate() {
             let idx = idx + 1; // real index into self.markers
-            if !m.enabled { continue; }
-            if m.hz < lo || m.hz > hi { continue; }
+            if !m.enabled {
+                continue;
+            }
+            if m.hz < lo || m.hz > hi {
+                continue;
+            }
             let x = rect.left() + self.freq_view.hz_to_x_norm(m.hz) * rect.width();
             let is_active = self.active_marker == Some(idx);
-            let color = if is_active { egui::Color32::WHITE } else { m.color() };
+            let color = if is_active {
+                egui::Color32::WHITE
+            } else {
+                m.color()
+            };
             let line_width = if is_active { 1.5 } else { 1.0 };
 
             let hz_label = if m.hz >= 1000.0 {
@@ -473,23 +565,37 @@ impl ViewApp {
             } else {
                 format!("{} {:.0}", m.label(), m.hz)
             };
-            let display_label = if is_active { format!("[{}]", hz_label) } else { hz_label };
+            let display_label = if is_active {
+                format!("[{}]", hz_label)
+            } else {
+                hz_label
+            };
 
             // Find the lowest row where this label fits without overlapping any
             // already-placed label interval on that row.
             let label_x = x + 3.0;
             let label_right = label_x + label_width;
             let row = (0..3)
-                .find(|&r| row_intervals[r].iter().all(|&(lo, hi)| label_right <= lo || label_x >= hi))
+                .find(|&r| {
+                    row_intervals[r]
+                        .iter()
+                        .all(|&(lo, hi)| label_right <= lo || label_x >= hi)
+                })
                 .unwrap_or(2);
             row_intervals[row].push((label_x, label_right));
 
-            entries.push(Entry { x, row, label: display_label, color, line_width });
+            entries.push(Entry {
+                x,
+                row,
+                label: display_label,
+                color,
+                line_width,
+            });
         }
 
         // Draw all markers.
         let dash_len = 8.0;
-        let gap_len  = 5.0;
+        let gap_len = 5.0;
         for e in &entries {
             // Dashed vertical line
             let stroke = egui::Stroke::new(e.line_width, e.color);
@@ -499,10 +605,7 @@ impl ViewApp {
                 let seg_len = if paint { dash_len } else { gap_len };
                 let y_end = (y + seg_len).min(rect.bottom());
                 if paint {
-                    painter.line_segment(
-                        [egui::pos2(e.x, y), egui::pos2(e.x, y_end)],
-                        stroke,
-                    );
+                    painter.line_segment([egui::pos2(e.x, y), egui::pos2(e.x, y_end)], stroke);
                 }
                 y = y_end;
                 paint = !paint;
@@ -526,10 +629,7 @@ impl ViewApp {
         let hi_uv = self.freq_view.hi() / self.freq_view.nyquist;
 
         if let Some(tex) = self.persistence.texture_handle() {
-            let uv = egui::Rect::from_min_max(
-                egui::pos2(lo_uv, 0.0),
-                egui::pos2(hi_uv, 1.0),
-            );
+            let uv = egui::Rect::from_min_max(egui::pos2(lo_uv, 0.0), egui::pos2(hi_uv, 1.0));
             painter.image(tex.id(), rect, uv, egui::Color32::WHITE);
         } else {
             self.persistence.draw(painter, rect, self.envelope_visible);
@@ -537,7 +637,8 @@ impl ViewApp {
         }
 
         if self.envelope_visible {
-            self.persistence.draw_envelope_cropped(painter, rect, lo_uv, hi_uv);
+            self.persistence
+                .draw_envelope_cropped(painter, rect, lo_uv, hi_uv);
         }
 
         let label_font = egui::FontId::new(10.0, egui::FontFamily::Monospace);
@@ -548,7 +649,7 @@ impl ViewApp {
     /// spectrogram, depending on `waterfall_mode` (cycled by `W`).
     pub(super) fn draw_waterfall_pane(&self, painter: &egui::Painter, rect: egui::Rect) {
         match self.waterfall_mode {
-            WaterfallMode::Vertical   => self.draw_vertical_waterfall(painter, rect),
+            WaterfallMode::Vertical => self.draw_vertical_waterfall(painter, rect),
             WaterfallMode::Horizontal => self.draw_horizontal_spectrogram(painter, rect),
         }
     }
@@ -558,10 +659,7 @@ impl ViewApp {
         let hi_uv = self.freq_view.hi() / self.freq_view.nyquist;
 
         if let Some(tex) = self.waterfall.texture_handle() {
-            let uv = egui::Rect::from_min_max(
-                egui::pos2(lo_uv, 0.0),
-                egui::pos2(hi_uv, 1.0),
-            );
+            let uv = egui::Rect::from_min_max(egui::pos2(lo_uv, 0.0), egui::pos2(hi_uv, 1.0));
             painter.image(tex.id(), rect, uv, egui::Color32::WHITE);
         } else {
             self.waterfall.draw(painter, rect);
@@ -591,8 +689,8 @@ impl ViewApp {
 
         // ── Frequency window ─────────────────────────────────────────────
         let center_hz = self.markers[0].hz;
-        let delta_hz  = self.settings.spec_freq_delta_hz();
-        let nyquist   = self.freq_view.nyquist;
+        let delta_hz = self.settings.spec_freq_delta_hz();
+        let nyquist = self.freq_view.nyquist;
         let f_lo = (center_hz - delta_hz).max(0.0);
         let f_hi = (center_hz + delta_hz).min(nyquist);
         let f_span = (f_hi - f_lo).max(1.0);
@@ -609,8 +707,11 @@ impl ViewApp {
         // edges so they don't collide with pane borders or the time-axis
         // "now/-Ns" row.
         let fmt_hz = |hz: f32| -> String {
-            if hz >= 1000.0 { format!("{:.2}k", hz / 1000.0) }
-            else            { format!("{:.0}", hz) }
+            if hz >= 1000.0 {
+                format!("{:.2}k", hz / 1000.0)
+            } else {
+                format!("{:.0}", hz)
+            }
         };
         let label_col = egui::Color32::from_gray(130);
         let hi_half = center_hz + delta_hz * 0.5;
@@ -636,10 +737,15 @@ impl ViewApp {
         let raw_tstep = t_range / 5.0;
         let tmag = 10f32.powf(raw_tstep.log10().floor());
         let tnorm = raw_tstep / tmag;
-        let tnice = if tnorm < 1.5 { 1.0 }
-                    else if tnorm < 3.5 { 2.0 }
-                    else if tnorm < 7.5 { 5.0 }
-                    else { 10.0 };
+        let tnice = if tnorm < 1.5 {
+            1.0
+        } else if tnorm < 3.5 {
+            2.0
+        } else if tnorm < 7.5 {
+            5.0
+        } else {
+            10.0
+        };
         let grid_t = (tnice * tmag).max(0.1);
         let mut t = 0.0_f32;
         while t <= t_range + 0.001 {
@@ -652,11 +758,7 @@ impl ViewApp {
             };
             let label_str = if t == 0.0 { "now".to_owned() } else { label };
             // Keep "now" pinned inside the pane; other labels to the right of the line.
-            let (lx, align) = if t == 0.0 {
-                (x + 3.0, egui::Align2::LEFT_BOTTOM)
-            } else {
-                (x + 3.0, egui::Align2::LEFT_BOTTOM)
-            };
+            let (lx, align) = (x + 3.0, egui::Align2::LEFT_BOTTOM);
             painter.text(
                 egui::pos2(lx, rect.bottom() - 2.0),
                 align,
@@ -695,11 +797,19 @@ impl ViewApp {
         // ±delta window.
         for (idx, m) in self.markers[1..].iter().enumerate() {
             let idx = idx + 1;
-            if !m.enabled { continue; }
-            if m.hz < f_lo || m.hz > f_hi { continue; }
+            if !m.enabled {
+                continue;
+            }
+            if m.hz < f_lo || m.hz > f_hi {
+                continue;
+            }
             let y = y_for_hz(m.hz);
             let is_active = self.active_marker == Some(idx);
-            let color = if is_active { egui::Color32::WHITE } else { m.color() };
+            let color = if is_active {
+                egui::Color32::WHITE
+            } else {
+                m.color()
+            };
             let lw = if is_active { 1.5 } else { 1.0 };
             dashed_hline(painter, rect.left(), rect.right(), y, color, lw);
             let hz_label = if m.hz >= 1000.0 {
@@ -707,7 +817,11 @@ impl ViewApp {
             } else {
                 format!("{} {:.0}", m.label(), m.hz)
             };
-            let display = if is_active { format!("[{}]", hz_label) } else { hz_label };
+            let display = if is_active {
+                format!("[{}]", hz_label)
+            } else {
+                hz_label
+            };
             painter.text(
                 egui::pos2(rect.right() - 4.0, y - 2.0),
                 egui::Align2::RIGHT_BOTTOM,
@@ -724,10 +838,7 @@ impl ViewApp {
         // (vertical) / spectrogram (horizontal)") starting after the key
         // column; height must fit the 24 entries + 4 section headers +
         // title + the two-line copyright footer at the bottom.
-        let overlay_rect = egui::Rect::from_center_size(
-            screen.center(),
-            egui::vec2(660.0, 600.0),
-        );
+        let overlay_rect = egui::Rect::from_center_size(screen.center(), egui::vec2(660.0, 600.0));
         let painter = ui.painter();
         painter.rect_filled(
             overlay_rect,
@@ -751,7 +862,10 @@ impl ViewApp {
             ("C / E / P\tcycle amplitude  |  envelope  |  peak hold", 2),
             ("L\tlock source freq/carrier to display center", 2),
             ("D\tcycle decode bar: off → info → text → off", 2),
-            ("W\tcycle pane 3: waterfall (vertical) / spectrogram (horizontal)", 2),
+            (
+                "W\tcycle pane 3: waterfall (vertical) / spectrogram (horizontal)",
+                2,
+            ),
             ("Frequency Pan / Zoom", 1),
             ("← / →\tpan left / right", 2),
             ("Shift+← / →\tfine pan, snap 100 Hz", 2),
@@ -774,7 +888,7 @@ impl ViewApp {
 
         // Fixed column positions. The key column uses monospace 12pt (~7.2 px/char).
         // Longest key is "Ctrl+Shift+← / →" (17 display chars) → ~122 px + 16 gutter.
-        let col_x  = overlay_rect.left() + 28.0;
+        let col_x = overlay_rect.left() + 28.0;
         let desc_x = col_x + 148.0;
 
         let mut y = overlay_rect.top() + 14.0;
@@ -787,13 +901,31 @@ impl ViewApp {
             let font = egui::FontId::new(size, egui::FontFamily::Monospace);
             if *kind == 2 {
                 let mut parts = text.splitn(2, '\t');
-                let key  = parts.next().unwrap_or("");
+                let key = parts.next().unwrap_or("");
                 let desc = parts.next().unwrap_or("");
-                painter.text(egui::pos2(col_x,  y), egui::Align2::LEFT_TOP, key,  font.clone(), color);
-                painter.text(egui::pos2(desc_x, y), egui::Align2::LEFT_TOP, desc, font,         color);
+                painter.text(
+                    egui::pos2(col_x, y),
+                    egui::Align2::LEFT_TOP,
+                    key,
+                    font.clone(),
+                    color,
+                );
+                painter.text(
+                    egui::pos2(desc_x, y),
+                    egui::Align2::LEFT_TOP,
+                    desc,
+                    font,
+                    color,
+                );
             } else {
                 let x = overlay_rect.left() + 20.0;
-                painter.text(egui::pos2(x, y), egui::Align2::LEFT_TOP, *text, font.clone(), color);
+                painter.text(
+                    egui::pos2(x, y),
+                    egui::Align2::LEFT_TOP,
+                    *text,
+                    font.clone(),
+                    color,
+                );
                 // Right-aligned version on the title row, with the same
                 // 20 px margin used for the title on the left.
                 if *kind == 0 {
@@ -836,12 +968,14 @@ impl ViewApp {
 /// dash geometry used for vertical frequency markers in the other panes.
 fn dashed_hline(
     painter: &egui::Painter,
-    x0: f32, x1: f32, y: f32,
+    x0: f32,
+    x1: f32,
+    y: f32,
     color: egui::Color32,
     width: f32,
 ) {
     const DASH: f32 = 8.0;
-    const GAP:  f32 = 5.0;
+    const GAP: f32 = 5.0;
     let stroke = egui::Stroke::new(width, color);
     let mut x = x0;
     let mut paint = true;

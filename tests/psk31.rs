@@ -5,18 +5,16 @@
 
 use num_complex::Complex32 as C32;
 use orion_sdr::Block;
-use orion_sdr::demodulate::psk31::{Bpsk31Demod, Bpsk31Decider};
 use orion_sdr::codec::varicode::VaricodeDecoder;
+use orion_sdr::demodulate::psk31::{Bpsk31Decider, Bpsk31Demod};
+use orion_sdr::modulate::psk31::{PSK31_BAUD, psk31_sps};
 use orion_sdr::sync::psk31_sync::psk31_sync;
-use orion_sdr::modulate::psk31::{psk31_sps, PSK31_BAUD};
 
 use orion_sdr_view::decode::{
-    DecodeMode, DecodeResult,
-    Psk31Stream, SIGNAL_THRESHOLD, PSK31_MAX_ACCUM_SYMS,
-    PSK31_BW_HZ, SYNC_SEARCH_HZ, SYNC_MIN_SYMS,
-    best_sync, spectrum_snr_db,
+    DecodeMode, DecodeResult, PSK31_BW_HZ, PSK31_MAX_ACCUM_SYMS, Psk31Stream, SIGNAL_THRESHOLD,
+    SYNC_MIN_SYMS, SYNC_SEARCH_HZ, best_sync, spectrum_snr_db,
 };
-use orion_sdr_view::source::{Psk31Source, Psk31Mode, SignalSource};
+use orion_sdr_view::source::{Psk31Mode, Psk31Source, SignalSource};
 
 mod common;
 use common::ticker::{BufferDecode, TickerSimConfig, run_ticker_sim};
@@ -35,12 +33,15 @@ fn decode_bpsk31(
     sps: usize,
 ) -> (DecodeResult, Option<DecodeResult>) {
     let base_hz = (carrier_hz - SYNC_SEARCH_HZ).max(0.0);
-    let max_hz  = carrier_hz + SYNC_SEARCH_HZ;
+    let max_hz = carrier_hz + SYNC_SEARCH_HZ;
     let results = psk31_sync(iq, fs, base_hz, max_hz, 4, 1.5, 256, 20);
 
     println!("  psk31_sync: {} candidates", results.len());
     for r in &results {
-        println!("    cand: carrier_hz={:.1} time_sym={} score={:.2}", r.carrier_hz, r.time_sym, r.score);
+        println!(
+            "    cand: carrier_hz={:.1} time_sym={} score={:.2}",
+            r.carrier_hz, r.time_sym, r.score
+        );
     }
 
     let real: Vec<f32> = iq.iter().map(|c| c.re).collect();
@@ -49,21 +50,24 @@ fn decode_bpsk31(
         Some(r) => r,
         None => {
             let snr = spectrum_snr_db(&real, fs, carrier_hz);
-            return (DecodeResult::Info {
-                modulation: "BPSK31".to_owned(),
-                center_hz:  carrier_hz,
-                bw_hz:      PSK31_BW_HZ,
-                snr_db:     snr,
-            }, None);
+            return (
+                DecodeResult::Info {
+                    modulation: "BPSK31".to_owned(),
+                    center_hz: carrier_hz,
+                    bw_hz: PSK31_BW_HZ,
+                    snr_db: snr,
+                },
+                None,
+            );
         }
     };
 
     let snr = spectrum_snr_db(&real, fs, found_hz);
     let info = DecodeResult::Info {
         modulation: "BPSK31".to_owned(),
-        center_hz:  found_hz,
-        bw_hz:      PSK31_BW_HZ,
-        snr_db:     snr,
+        center_hz: found_hz,
+        bw_hz: PSK31_BW_HZ,
+        snr_db: snr,
     };
 
     let scan_end = ((time_sym + 2) * sps).min(iq.len());
@@ -72,7 +76,10 @@ fn decode_bpsk31(
         .position(|c| c.re * c.re + c.im * c.im > 0.01)
         .unwrap_or(0);
     let max_syms = (iq.len() - start) / sps + 2;
-    println!("  bpsk31: found_hz={found_hz:.1} time_sym={time_sym} start={start} max_syms={max_syms} iq.len={}", iq.len());
+    println!(
+        "  bpsk31: found_hz={found_hz:.1} time_sym={time_sym} start={start} max_syms={max_syms} iq.len={}",
+        iq.len()
+    );
 
     let mut soft = vec![0.0_f32; max_syms];
     let wr = Bpsk31Demod::new(fs, carrier_hz, 1.0).process(&iq[start..], &mut soft);
@@ -83,7 +90,11 @@ fn decode_bpsk31(
     bits.truncate(dr.out_written);
 
     let text = varicode_decode_bits(&bits);
-    println!("  bpsk31: bits.len={} text={:?}", bits.len(), &text[..text.len().min(40)]);
+    println!(
+        "  bpsk31: bits.len={} text={:?}",
+        bits.len(),
+        &text[..text.len().min(40)]
+    );
     if text.is_empty() {
         (info, None)
     } else {
@@ -94,7 +105,9 @@ fn decode_bpsk31(
 /// Push bits through a VaricodeDecoder, flushing with two trailing zeros.
 fn varicode_decode_bits(bits: &[u8]) -> String {
     let mut vdec = VaricodeDecoder::new();
-    for &b in bits { vdec.push_bit(b); }
+    for &b in bits {
+        vdec.push_bit(b);
+    }
     vdec.push_bit(0);
     vdec.push_bit(0);
     let mut text = String::new();
@@ -109,7 +122,10 @@ fn varicode_decode_bits(bits: &[u8]) -> String {
 /// Run the streaming decode pipeline on a Psk31Source, return decoded text.
 fn run_streaming_decode(
     mode: Psk31Mode,
-    msg: &str, repeat: usize, loops: usize, loop_gap: f32,
+    msg: &str,
+    repeat: usize,
+    loops: usize,
+    loop_gap: f32,
 ) -> String {
     use orion_sdr::util::rms;
 
@@ -120,10 +136,7 @@ fn run_streaming_decode(
         Psk31Mode::Qpsk31 => DecodeMode::Qpsk31,
     };
 
-    let mut src = Psk31Source::new(
-        carrier_hz, loop_gap, 0.0, mode,
-        msg.to_owned(), repeat, FS,
-    );
+    let mut src = Psk31Source::new(carrier_hz, loop_gap, 0.0, mode, msg.to_owned(), repeat, FS);
 
     let mut iq_buf: Vec<C32> = Vec::new();
     let mut stream: Option<Psk31Stream> = None;
@@ -133,7 +146,11 @@ fn run_streaming_decode(
     let text_bytes = (msg.len() * repeat + repeat.saturating_sub(1)) as f32;
     let approx_signal_secs = (64.0 + text_bytes * 11.0 + 32.0) / 31.25;
     let total_samples = ((approx_signal_secs + loop_gap) * loops as f32 + 2.0) * FS;
-    let margin = if decode_mode == DecodeMode::Bpsk31 { 1.5 } else { 3.0 };
+    let margin = if decode_mode == DecodeMode::Bpsk31 {
+        1.5
+    } else {
+        3.0
+    };
 
     for _ in (0..total_samples as usize).step_by(800) {
         let samples = src.next_samples(800);
@@ -145,23 +162,29 @@ fn run_streaming_decode(
             if let Some(ref mut s) = stream {
                 if s.fed_up_to() < iq_buf.len() {
                     let text = s.feed(&iq_buf[s.fed_up_to()..]);
-                    if !text.is_empty() { all_text.push_str(&text); }
+                    if !text.is_empty() {
+                        all_text.push_str(&text);
+                    }
                 }
                 let tail = s.flush();
-                if !tail.is_empty() { all_text.push_str(&tail); }
+                if !tail.is_empty() {
+                    all_text.push_str(&tail);
+                }
             }
             stream = None;
             iq_buf.clear();
             continue;
         }
 
-        if !is_signal { continue; }
+        if !is_signal {
+            continue;
+        }
 
         iq_buf.extend(samples.iter().map(|&s| C32::new(s, 0.0)));
 
         if stream.is_none() && iq_buf.len() >= sps * SYNC_MIN_SYMS {
             let base_hz = (carrier_hz - SYNC_SEARCH_HZ).max(0.0);
-            let max_hz  = carrier_hz + SYNC_SEARCH_HZ;
+            let max_hz = carrier_hz + SYNC_SEARCH_HZ;
             let results = psk31_sync(&iq_buf, FS, base_hz, max_hz, 4, margin, 256, 5);
             if let Some((_found_hz, time_sym)) = best_sync(&results, carrier_hz, PSK31_BAUD) {
                 let scan_end = ((time_sym + 2) * sps).min(iq_buf.len());
@@ -183,7 +206,9 @@ fn run_streaming_decode(
                     }
                 };
                 let text = s.feed(&iq_buf[start..]);
-                if !text.is_empty() { all_text.push_str(&text); }
+                if !text.is_empty() {
+                    all_text.push_str(&text);
+                }
                 s.set_fed_up_to(iq_buf.len());
                 stream = Some(s);
             }
@@ -193,7 +218,9 @@ fn run_streaming_decode(
             && s.fed_up_to() < iq_buf.len()
         {
             let text = s.feed(&iq_buf[s.fed_up_to()..]);
-            if !text.is_empty() { all_text.push_str(&text); }
+            if !text.is_empty() {
+                all_text.push_str(&text);
+            }
             s.set_fed_up_to(iq_buf.len());
         }
     }
@@ -208,23 +235,41 @@ fn psk31_decode_yields_text() {
     let sps = psk31_sps(FS);
 
     let mut src = Psk31Source::new(
-        CARRIER_HZ, 0.0, 0.0, Psk31Mode::Bpsk31,
-        MSG.to_owned(), 3, FS,
+        CARRIER_HZ,
+        0.0,
+        0.0,
+        Psk31Mode::Bpsk31,
+        MSG.to_owned(),
+        3,
+        FS,
     );
     let total = PSK31_MAX_ACCUM_SYMS * sps;
     let samples: Vec<f32> = src.next_samples(total);
-    println!("rendered {} samples = {:.1}s, sps={sps}", samples.len(), samples.len() as f32 / FS);
+    println!(
+        "rendered {} samples = {:.1}s, sps={sps}",
+        samples.len(),
+        samples.len() as f32 / FS
+    );
 
     let iq: Vec<C32> = samples.iter().map(|&s| C32::new(s, 0.0)).collect();
     let (info, text) = decode_bpsk31(&iq, CARRIER_HZ, FS, sps);
-    if let DecodeResult::Info { modulation, center_hz, snr_db, .. } = &info {
+    if let DecodeResult::Info {
+        modulation,
+        center_hz,
+        snr_db,
+        ..
+    } = &info
+    {
         println!("Info: {modulation} ctr={center_hz:.0} snr={snr_db:.1}");
     }
     let found_text = matches!(text, Some(DecodeResult::Text(ref t)) if {
         println!("Text: {t:?}");
         !t.is_empty()
     });
-    assert!(found_text, "expected non-empty Text result from full-frame decode");
+    assert!(
+        found_text,
+        "expected non-empty Text result from full-frame decode"
+    );
 }
 
 // ── Dt ticker simulation ─────────────────────────────────────────────────────
@@ -242,42 +287,53 @@ fn psk31_decode_yields_text() {
 ///   Two full source loops so we can see repeat behaviour.
 #[test]
 fn psk31_simulate_dt_ticker() {
-    const MSG:      &str  = "CQ CQ CQ DE N0GNR";
-    const REPEAT:   usize = 5;
-    const BLOCK:    usize = 800;
-    const LOOP_GAP: f32   = 10.0;
-    const LOOPS:    usize = 2;
+    const MSG: &str = "CQ CQ CQ DE N0GNR";
+    const REPEAT: usize = 5;
+    const BLOCK: usize = 800;
+    const LOOP_GAP: f32 = 10.0;
+    const LOOPS: usize = 2;
 
     let sps = psk31_sps(FS);
     let max_accum = PSK31_MAX_ACCUM_SYMS * sps;
 
     let mut src = Psk31Source::new(
-        CARRIER_HZ, LOOP_GAP, 0.0, Psk31Mode::Bpsk31,
-        MSG.to_owned(), REPEAT, FS,
+        CARRIER_HZ,
+        LOOP_GAP,
+        0.0,
+        Psk31Mode::Bpsk31,
+        MSG.to_owned(),
+        REPEAT,
+        FS,
     );
 
-    let text_bytes         = (MSG.len() * REPEAT + (REPEAT - 1)) as f32;
-    let approx_text_syms   = (text_bytes * 11.0) as usize;
+    let text_bytes = (MSG.len() * REPEAT + (REPEAT - 1)) as f32;
+    let approx_text_syms = (text_bytes * 11.0) as usize;
     let approx_signal_syms = 64 + approx_text_syms + 32;
     let approx_signal_secs = approx_signal_syms as f32 / 31.25;
-    let approx_loop_secs   = approx_signal_secs + LOOP_GAP;
-    let total_samples      = ((approx_loop_secs * LOOPS as f32 + 2.0) * FS) as usize;
+    let approx_loop_secs = approx_signal_secs + LOOP_GAP;
+    let total_samples = ((approx_loop_secs * LOOPS as f32 + 2.0) * FS) as usize;
 
     println!("  PSK31 message: {MSG:?} × {REPEAT}, carrier={CARRIER_HZ:.0} Hz");
-    println!("  max_accum={max_accum} samples ({:.1}s)", PSK31_MAX_ACCUM_SYMS as f32 / 31.25);
+    println!(
+        "  max_accum={max_accum} samples ({:.1}s)",
+        PSK31_MAX_ACCUM_SYMS as f32 / 31.25
+    );
     println!("  est. signal frame ≈ {approx_signal_secs:.1}s, loop gap={LOOP_GAP:.0}s");
 
     let cfg = TickerSimConfig {
-        label:         "PSK31 BPSK31",
-        block:         BLOCK,
+        label: "PSK31 BPSK31",
+        block: BLOCK,
         total_samples,
-        fs:            FS,
-        max_accum:     Some(max_accum),
+        fs: FS,
+        max_accum: Some(max_accum),
     };
 
     run_ticker_sim(&mut src, &cfg, |iq| {
         let (info, text) = decode_bpsk31(iq, CARRIER_HZ, FS, sps);
-        BufferDecode { info: Some(info), text }
+        BufferDecode {
+            info: Some(info),
+            text,
+        }
     });
 }
 
@@ -286,29 +342,58 @@ fn psk31_simulate_dt_ticker() {
 #[test]
 fn streaming_decode_bpsk31_5_loops() {
     let text = run_streaming_decode(Psk31Mode::Bpsk31, "CQ CQ CQ DE N0GNR", 5, 5, 15.0);
-    println!("BPSK31 decoded ({} chars): {:?}", text.len(), &text[..text.len().min(80)]);
-    let errors = text.chars().filter(|c| !"CQ DE N0GNR ".contains(*c)).count();
-    assert!(errors == 0, "BPSK31: {errors} unexpected chars in decoded text");
+    println!(
+        "BPSK31 decoded ({} chars): {:?}",
+        text.len(),
+        &text[..text.len().min(80)]
+    );
+    let errors = text
+        .chars()
+        .filter(|c| !"CQ DE N0GNR ".contains(*c))
+        .count();
+    assert!(
+        errors == 0,
+        "BPSK31: {errors} unexpected chars in decoded text"
+    );
 }
 
 #[test]
 fn streaming_decode_qpsk31_5_loops() {
     let text = run_streaming_decode(Psk31Mode::Qpsk31, "CQ CQ CQ DE N0GNR", 5, 5, 15.0);
-    println!("QPSK31 decoded ({} chars): {:?}", text.len(), &text[..text.len().min(80)]);
-    let errors = text.chars().filter(|c| !"CQ DE N0GNR ".contains(*c)).count();
-    assert!(errors == 0, "QPSK31: {errors} unexpected chars in decoded text");
-    assert!(text.contains("CQ CQ CQ DE N0GNR"), "QPSK31: message not found");
+    println!(
+        "QPSK31 decoded ({} chars): {:?}",
+        text.len(),
+        &text[..text.len().min(80)]
+    );
+    let errors = text
+        .chars()
+        .filter(|c| !"CQ DE N0GNR ".contains(*c))
+        .count();
+    assert!(
+        errors == 0,
+        "QPSK31: {errors} unexpected chars in decoded text"
+    );
+    assert!(
+        text.contains("CQ CQ CQ DE N0GNR"),
+        "QPSK31: message not found"
+    );
 }
 
 #[test]
 fn streaming_decode_short_messages_bpsk31() {
     for &(msg, repeat, loops) in &[
-        ("A",  1, 3), ("AB", 1, 3), ("CQ DE N0GNR", 1, 3),
-        ("CQ", 5, 3), ("CQ CQ CQ DE N0GNR", 5, 2),
+        ("A", 1, 3),
+        ("AB", 1, 3),
+        ("CQ DE N0GNR", 1, 3),
+        ("CQ", 5, 3),
+        ("CQ CQ CQ DE N0GNR", 5, 2),
     ] {
         let text = run_streaming_decode(Psk31Mode::Bpsk31, msg, repeat, loops, 5.0);
         println!("BPSK31 msg={msg:?} r={repeat}: {:?}", &text);
-        let errors = text.chars().filter(|c| !msg.contains(*c) && *c != ' ').count();
+        let errors = text
+            .chars()
+            .filter(|c| !msg.contains(*c) && *c != ' ')
+            .count();
         assert!(errors == 0, "BPSK31 msg={msg:?}: {errors} unexpected chars");
         assert!(!text.is_empty(), "BPSK31 msg={msg:?}: no text decoded");
     }
@@ -317,12 +402,18 @@ fn streaming_decode_short_messages_bpsk31() {
 #[test]
 fn streaming_decode_short_messages_qpsk31() {
     for &(msg, repeat, loops) in &[
-        ("A",  1, 3), ("AB", 1, 3), ("CQ DE N0GNR", 1, 3),
-        ("CQ", 5, 3), ("CQ CQ CQ DE N0GNR", 5, 2),
+        ("A", 1, 3),
+        ("AB", 1, 3),
+        ("CQ DE N0GNR", 1, 3),
+        ("CQ", 5, 3),
+        ("CQ CQ CQ DE N0GNR", 5, 2),
     ] {
         let text = run_streaming_decode(Psk31Mode::Qpsk31, msg, repeat, loops, 5.0);
         println!("QPSK31 msg={msg:?} r={repeat}: {:?}", &text);
-        let errors = text.chars().filter(|c| !msg.contains(*c) && *c != ' ').count();
+        let errors = text
+            .chars()
+            .filter(|c| !msg.contains(*c) && *c != ' ')
+            .count();
         assert!(errors == 0, "QPSK31 msg={msg:?}: {errors} unexpected chars");
         assert!(!text.is_empty(), "QPSK31 msg={msg:?}: no text decoded");
     }
@@ -335,8 +426,12 @@ fn streaming_decode_all_printable_ascii_bpsk31() {
     println!("BPSK31 all-ASCII decoded ({} chars)", text.len());
     let expected: Vec<char> = msg.chars().collect();
     let got: Vec<char> = text.chars().collect();
-    assert!(got.len() >= expected.len(),
-        "too few chars: expected {}, got {}", expected.len(), got.len());
+    assert!(
+        got.len() >= expected.len(),
+        "too few chars: expected {}, got {}",
+        expected.len(),
+        got.len()
+    );
     for (i, (g, e)) in got.iter().zip(expected.iter()).enumerate() {
         assert_eq!(g, e, "BPSK31 mismatch at {i}: expected {e:?}, got {g:?}");
     }
@@ -349,8 +444,12 @@ fn streaming_decode_all_printable_ascii_qpsk31() {
     println!("QPSK31 all-ASCII decoded ({} chars)", text.len());
     let expected: Vec<char> = msg.chars().collect();
     let got: Vec<char> = text.chars().collect();
-    assert!(got.len() >= expected.len(),
-        "too few chars: expected {}, got {}", expected.len(), got.len());
+    assert!(
+        got.len() >= expected.len(),
+        "too few chars: expected {}, got {}",
+        expected.len(),
+        got.len()
+    );
     for (i, (g, e)) in got.iter().zip(expected.iter()).enumerate() {
         assert_eq!(g, e, "QPSK31 mismatch at {i}: expected {e:?}, got {g:?}");
     }

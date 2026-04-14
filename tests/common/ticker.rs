@@ -27,25 +27,25 @@ pub struct BufferDecode {
 
 /// Configuration for [`run_ticker_sim`].
 pub struct TickerSimConfig<'a> {
-    pub label:         &'a str,
+    pub label: &'a str,
     /// Audio callback block size in samples (e.g. 800 for PSK31, 1024 for FT8).
-    pub block:         usize,
+    pub block: usize,
     /// How many samples to run the simulation over.
     pub total_samples: usize,
     /// Viewer sample rate (Hz).
-    pub fs:            f32,
+    pub fs: f32,
     /// Optional mid-signal flush size in samples.  When the IQ buffer exceeds
     /// this size while still in signal, the harness invokes `decode_fn` with
     /// the current buffer and resets it.  `None` disables mid-signal flushing
     /// (only gap-edge decodes will occur).
-    pub max_accum:     Option<usize>,
+    pub max_accum: Option<usize>,
 }
 
 /// Final state returned from a ticker simulation run.
 pub struct TickerSimResult {
-    pub ticker:        DecodeTicker,
+    pub ticker: DecodeTicker,
     /// Total number of gap-edge decodes performed.
-    pub gap_decodes:   usize,
+    pub gap_decodes: usize,
     /// Total number of mid-signal max-accum decodes performed.
     pub accum_decodes: usize,
 }
@@ -57,20 +57,20 @@ pub struct TickerSimResult {
 /// once per `max_accum` overflow while in signal.  Whatever it returns is
 /// pushed to the ticker in the usual Info-then-Text order.
 pub fn run_ticker_sim<S, F>(
-    source:    &mut S,
-    cfg:       &TickerSimConfig<'_>,
+    source: &mut S,
+    cfg: &TickerSimConfig<'_>,
     mut decode_fn: F,
 ) -> TickerSimResult
 where
     S: SignalSource + ?Sized,
     F: FnMut(&[C32]) -> BufferDecode,
 {
-    let mut iq_buf:     Vec<C32>     = Vec::new();
-    let mut ticker:     DecodeTicker = DecodeTicker::new();
-    let mut t_secs:     f32          = 0.0;
-    let mut was_silent: bool         = true;
-    let mut gap_decodes:   usize     = 0;
-    let mut accum_decodes: usize     = 0;
+    let mut iq_buf: Vec<C32> = Vec::new();
+    let mut ticker: DecodeTicker = DecodeTicker::new();
+    let mut t_secs: f32 = 0.0;
+    let mut was_silent: bool = true;
+    let mut gap_decodes: usize = 0;
+    let mut accum_decodes: usize = 0;
 
     println!("── Dt ticker simulation: {} ──", cfg.label);
     println!(
@@ -109,10 +109,7 @@ where
                 && iq_buf.len() >= max_accum
             {
                 let buf = std::mem::take(&mut iq_buf);
-                println!(
-                    "t={t_secs:7.2}s  [MAX_ACCUM flush: {} samples]",
-                    buf.len(),
-                );
+                println!("t={t_secs:7.2}s  [MAX_ACCUM flush: {} samples]", buf.len(),);
                 push_decode(&mut ticker, decode_fn(&buf));
                 accum_decodes += 1;
             }
@@ -125,12 +122,22 @@ where
     println!("  visible: {:?}", ticker.visible);
     println!("  visible.len() = {}", ticker.visible.len());
 
-    TickerSimResult { ticker, gap_decodes, accum_decodes }
+    TickerSimResult {
+        ticker,
+        gap_decodes,
+        accum_decodes,
+    }
 }
 
 fn push_decode(ticker: &mut DecodeTicker, d: BufferDecode) {
     if let Some(info) = d.info {
-        if let DecodeResult::Info { ref modulation, center_hz, snr_db, .. } = info {
+        if let DecodeResult::Info {
+            ref modulation,
+            center_hz,
+            snr_db,
+            ..
+        } = info
+        {
             println!("  Info: {modulation} ctr={center_hz:.1}Hz snr={snr_db:.1}dB");
         }
         ticker.push_result(info);
@@ -141,6 +148,6 @@ fn push_decode(ticker: &mut DecodeTicker, d: BufferDecode) {
             ticker.push_result(DecodeResult::Text(s.clone()));
         }
         Some(other) => println!("  {:?}", other),
-        None        => println!("  (no text)"),
+        None => println!("  (no text)"),
     }
 }

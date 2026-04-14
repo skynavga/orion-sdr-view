@@ -3,7 +3,7 @@
 
 use orion_sdr::modulate::{Bpsk31Mod, Qpsk31Mod};
 
-use super::{SignalSource, MAX_SIG_SECS};
+use super::{MAX_SIG_SECS, SignalSource};
 
 // ── PSK31 constants ───────────────────────────────────────────────────────────
 
@@ -15,7 +15,10 @@ pub const PSK31_DEFAULT_GAP_SECS: f32 = 15.0;
 // ── Psk31Mode ─────────────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, PartialEq)]
-pub enum Psk31Mode { Bpsk31, Qpsk31 }
+pub enum Psk31Mode {
+    Bpsk31,
+    Qpsk31,
+}
 
 // ── Psk31Source ───────────────────────────────────────────────────────────────
 
@@ -25,20 +28,20 @@ pub enum Psk31Mode { Bpsk31, Qpsk31 }
 /// at construction. The frame plays once, followed by a configurable silence
 /// gap, then repeats indefinitely without reallocation.
 pub struct Psk31Source {
-    pub carrier_hz:    f32,
-    pub gap_secs:      f32,
-    pub noise_amp:     f32,
-    pub mode:          Psk31Mode,
+    pub carrier_hz: f32,
+    pub gap_secs: f32,
+    pub noise_amp: f32,
+    pub mode: Psk31Mode,
     /// Text to transmit (ASCII). Repeated `msg_repeat` times per loop.
-    pub message:       String,
+    pub message: String,
     /// Number of times to repeat `message` before the silence gap.
-    pub msg_repeat:    usize,
-    mod_rate:          f32,
-    samples:           Vec<f32>,
-    pos:               usize,
-    gap_remaining:     usize,
-    gap_samples:       usize,
-    rng:               u64,
+    pub msg_repeat: usize,
+    mod_rate: f32,
+    samples: Vec<f32>,
+    pos: usize,
+    gap_remaining: usize,
+    gap_samples: usize,
+    rng: u64,
 }
 
 impl Psk31Source {
@@ -111,7 +114,9 @@ impl Psk31Source {
 }
 
 impl SignalSource for Psk31Source {
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
     fn restart(&mut self) {
         self.pos = 0;
         self.gap_remaining = 0;

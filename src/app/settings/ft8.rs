@@ -1,20 +1,20 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use eframe::egui;
-use super::field::{Row, NumField, RowDrawCtx, ToggleField, TextField};
+use super::field::{NumField, Row, RowDrawCtx, TextField, ToggleField};
 use crate::config::ViewConfig;
+use eframe::egui;
 
 // ── Row indices (local) ───────────────────────────────────────────────────
-const MODE:       usize = 0;
-const CARRIER:    usize = 1;
-const GAP:        usize = 2;
-const NOISE:      usize = 3;
-const MSG_TYPE:   usize = 4;
-const CALL_TO:    usize = 5;
-const CALL_DE:    usize = 6;
-const GRID:       usize = 7;
-const FREE_TEXT:  usize = 8;
+const MODE: usize = 0;
+const CARRIER: usize = 1;
+const GAP: usize = 2;
+const NOISE: usize = 3;
+const MSG_TYPE: usize = 4;
+const CALL_TO: usize = 5;
+const CALL_DE: usize = 6;
+const GRID: usize = 7;
+const FREE_TEXT: usize = 8;
 
 pub(super) struct Ft8Rows {
     pub rows: Vec<Row>,
@@ -30,51 +30,63 @@ impl Ft8Rows {
                 Row::Toggle(ToggleField {
                     label: "Mode",
                     options: &["FT8", "FT4"],
-                    index: 0, default: 0,
+                    index: 0,
+                    default: 0,
                 }),
                 Row::Num(NumField {
                     label: "Carrier",
-                    value:   crate::source::ft8::FT8_DEFAULT_CARRIER_HZ,
+                    value: crate::source::ft8::FT8_DEFAULT_CARRIER_HZ,
                     default: crate::source::ft8::FT8_DEFAULT_CARRIER_HZ,
-                    step: 100.0, min: 100.0, max: 22000.0, unit: " Hz",
+                    step: 100.0,
+                    min: 100.0,
+                    max: 22000.0,
+                    unit: " Hz",
                 }),
                 Row::Num(NumField {
                     label: "Gap",
-                    value:   crate::source::ft8::FT8_DEFAULT_GAP_SECS,
+                    value: crate::source::ft8::FT8_DEFAULT_GAP_SECS,
                     default: crate::source::ft8::FT8_DEFAULT_GAP_SECS,
-                    step: 1.0, min: 15.0, max: 99.99, unit: " s",
+                    step: 1.0,
+                    min: 15.0,
+                    max: 99.99,
+                    unit: " s",
                 }),
                 Row::Num(NumField {
                     label: "Noise amp",
-                    value: 0.0, default: 0.0,
-                    step: 0.01, min: 0.0, max: 0.50, unit: "",
+                    value: 0.0,
+                    default: 0.0,
+                    step: 0.01,
+                    min: 0.0,
+                    max: 0.50,
+                    unit: "",
                 }),
                 Row::Toggle(ToggleField {
                     label: "Message",
                     options: &["Standard", "Free text"],
-                    index: 0, default: 0,
+                    index: 0,
+                    default: 0,
                 }),
                 Row::Text(TextField {
                     label: "Call to",
-                    value:         crate::source::ft8::FT8_DEFAULT_CALL_TO.to_owned(),
+                    value: crate::source::ft8::FT8_DEFAULT_CALL_TO.to_owned(),
                     default_value: crate::source::ft8::FT8_DEFAULT_CALL_TO.to_owned(),
                     status: None,
                 }),
                 Row::Text(TextField {
                     label: "Call de",
-                    value:         crate::source::ft8::FT8_DEFAULT_CALL_DE.to_owned(),
+                    value: crate::source::ft8::FT8_DEFAULT_CALL_DE.to_owned(),
                     default_value: crate::source::ft8::FT8_DEFAULT_CALL_DE.to_owned(),
                     status: None,
                 }),
                 Row::Text(TextField {
                     label: "Grid",
-                    value:         crate::source::ft8::FT8_DEFAULT_GRID.to_owned(),
+                    value: crate::source::ft8::FT8_DEFAULT_GRID.to_owned(),
                     default_value: crate::source::ft8::FT8_DEFAULT_GRID.to_owned(),
                     status: None,
                 }),
                 Row::Text(TextField {
                     label: "Free text",
-                    value:         crate::source::ft8::FT8_DEFAULT_FREE_TEXT.to_owned(),
+                    value: crate::source::ft8::FT8_DEFAULT_FREE_TEXT.to_owned(),
                     default_value: crate::source::ft8::FT8_DEFAULT_FREE_TEXT.to_owned(),
                     status: None,
                 }),
@@ -88,32 +100,43 @@ impl Ft8Rows {
         self.rows[GAP].patch_num(cfg.ft8_gap_secs());
         self.rows[NOISE].patch_num(cfg.ft8_noise_amp());
 
-        let mode_idx = match cfg.ft8_mode() { "FT4" => 1, _ => 0 };
+        let mode_idx = match cfg.ft8_mode() {
+            "FT4" => 1,
+            _ => 0,
+        };
         if let Row::Toggle(f) = &mut self.rows[MODE] {
-            f.index   = mode_idx;
+            f.index = mode_idx;
             f.default = mode_idx;
         }
 
         if let Row::Text(f) = &mut self.rows[CALL_TO] {
             let s = cfg.ft8_call_to().to_owned();
-            f.value = s.clone(); f.default_value = s;
+            f.value = s.clone();
+            f.default_value = s;
         }
         if let Row::Text(f) = &mut self.rows[CALL_DE] {
             let s = cfg.ft8_call_de().to_owned();
-            f.value = s.clone(); f.default_value = s;
+            f.value = s.clone();
+            f.default_value = s;
         }
         if let Row::Text(f) = &mut self.rows[GRID] {
             let s = cfg.ft8_grid().to_owned();
-            f.value = s.clone(); f.default_value = s;
+            f.value = s.clone();
+            f.default_value = s;
         }
         if let Row::Text(f) = &mut self.rows[FREE_TEXT] {
             let s = cfg.ft8_free_text().to_owned();
-            f.value = s.clone(); f.default_value = s;
+            f.value = s.clone();
+            f.default_value = s;
         }
     }
 
     pub fn msg_is_free_text(&self) -> bool {
-        if let Row::Toggle(f) = &self.rows[MSG_TYPE] { f.index == 1 } else { false }
+        if let Row::Toggle(f) = &self.rows[MSG_TYPE] {
+            f.index == 1
+        } else {
+            false
+        }
     }
 
     pub fn visible_indices(&self) -> Vec<usize> {
@@ -129,7 +152,11 @@ impl Ft8Rows {
 
     /// Handle keyboard input when the free-text row is focused.
     pub fn handle_text_keys(&mut self, events: &[egui::Event]) -> TextKeysResult {
-        let mut result = TextKeysResult { accepted: false, defocus: false, consumed: false };
+        let mut result = TextKeysResult {
+            accepted: false,
+            defocus: false,
+            consumed: false,
+        };
 
         if self.pending_text.is_some() {
             result.consumed = true;
@@ -144,12 +171,20 @@ impl Ft8Rows {
                             }
                         }
                     }
-                    egui::Event::Key { key: egui::Key::Backspace, pressed: true, .. } => {
+                    egui::Event::Key {
+                        key: egui::Key::Backspace,
+                        pressed: true,
+                        ..
+                    } => {
                         if let Some(pending) = &mut self.pending_text {
                             pending.pop();
                         }
                     }
-                    egui::Event::Key { key: egui::Key::Enter, pressed: true, .. } => {
+                    egui::Event::Key {
+                        key: egui::Key::Enter,
+                        pressed: true,
+                        ..
+                    } => {
                         if let Some(pending) = self.pending_text.take() {
                             let committed = if pending.trim().is_empty() {
                                 crate::source::ft8::FT8_DEFAULT_FREE_TEXT.to_owned()
@@ -163,7 +198,11 @@ impl Ft8Rows {
                         }
                         result.defocus = true;
                     }
-                    egui::Event::Key { key: egui::Key::Escape, pressed: true, .. } => {
+                    egui::Event::Key {
+                        key: egui::Key::Escape,
+                        pressed: true,
+                        ..
+                    } => {
                         self.pending_text = None;
                         result.defocus = true;
                     }
@@ -175,7 +214,14 @@ impl Ft8Rows {
 
         // Not editing: Enter starts an edit.
         let enter_pressed = events.iter().any(|e| {
-            matches!(e, egui::Event::Key { key: egui::Key::Enter, pressed: true, .. })
+            matches!(
+                e,
+                egui::Event::Key {
+                    key: egui::Key::Enter,
+                    pressed: true,
+                    ..
+                }
+            )
         });
         if enter_pressed {
             let current = if let Row::Text(f) = &self.rows[FREE_TEXT] {
@@ -194,12 +240,7 @@ impl Ft8Rows {
     }
 
     /// Draw the free-text field (editable).
-    pub fn draw_free_text(
-        &self,
-        ctx: &RowDrawCtx,
-        val_x: f32, y: f32, row_h: f32,
-        focused: bool,
-    ) {
+    pub fn draw_free_text(&self, ctx: &RowDrawCtx, val_x: f32, y: f32, row_h: f32, focused: bool) {
         if let Row::Text(f) = &self.rows[FREE_TEXT] {
             let max_chars = 20usize;
             let (raw_text, editing) = if let Some(pending) = &self.pending_text {
@@ -213,7 +254,11 @@ impl Ft8Rows {
             } else {
                 raw_text
             };
-            let text_color = if focused || editing { egui::Color32::WHITE } else { ctx.val_color };
+            let text_color = if focused || editing {
+                egui::Color32::WHITE
+            } else {
+                ctx.val_color
+            };
             ctx.painter.text(
                 egui::pos2(val_x, y + row_h / 2.0),
                 egui::Align2::LEFT_CENTER,
@@ -222,7 +267,11 @@ impl Ft8Rows {
                 text_color,
             );
             if focused {
-                let hint = if editing { "\u{21b5} accept  Esc cancel" } else { "\u{21b5} edit" };
+                let hint = if editing {
+                    "\u{21b5} accept  Esc cancel"
+                } else {
+                    "\u{21b5} edit"
+                };
                 ctx.painter.text(
                     egui::pos2(ctx.rect_right - 14.0, y + row_h / 2.0),
                     egui::Align2::RIGHT_CENTER,
@@ -239,7 +288,9 @@ impl Ft8Rows {
         &self,
         row_idx: usize,
         ctx: &RowDrawCtx,
-        val_x: f32, y: f32, row_h: f32,
+        val_x: f32,
+        y: f32,
+        row_h: f32,
         focused: bool,
     ) {
         if let Row::Text(f) = &self.rows[row_idx] {
@@ -248,7 +299,11 @@ impl Ft8Rows {
                 egui::Align2::LEFT_CENTER,
                 &f.value,
                 ctx.med.clone(),
-                if focused { egui::Color32::WHITE } else { ctx.val_color },
+                if focused {
+                    egui::Color32::WHITE
+                } else {
+                    ctx.val_color
+                },
             );
             if focused {
                 ctx.painter.text(
@@ -267,7 +322,7 @@ impl Ft8Rows {
 
 pub(super) struct TextKeysResult {
     pub accepted: bool,
-    pub defocus:  bool,
+    pub defocus: bool,
     pub consumed: bool,
 }
 
@@ -275,10 +330,16 @@ pub(super) struct TextKeysResult {
 
 impl super::SettingsState {
     pub fn ft8_mode_str(&self) -> &str {
-        if let Row::Toggle(f) = &self.ft8.rows[MODE] { f.value_str() } else { "FT8" }
+        if let Row::Toggle(f) = &self.ft8.rows[MODE] {
+            f.value_str()
+        } else {
+            "FT8"
+        }
     }
     pub fn ft8_carrier_hz(&self) -> f32 {
-        if let Row::Num(f) = &self.ft8.rows[CARRIER] { f.value } else {
+        if let Row::Num(f) = &self.ft8.rows[CARRIER] {
+            f.value
+        } else {
             crate::source::ft8::FT8_DEFAULT_CARRIER_HZ
         }
     }
@@ -288,33 +349,47 @@ impl super::SettingsState {
         }
     }
     pub fn ft8_gap_secs(&self) -> f32 {
-        if let Row::Num(f) = &self.ft8.rows[GAP] { f.value } else {
+        if let Row::Num(f) = &self.ft8.rows[GAP] {
+            f.value
+        } else {
             crate::source::ft8::FT8_DEFAULT_GAP_SECS
         }
     }
     pub fn ft8_noise_amp(&self) -> f32 {
-        if let Row::Num(f) = &self.ft8.rows[NOISE] { f.value } else { 0.0 }
+        if let Row::Num(f) = &self.ft8.rows[NOISE] {
+            f.value
+        } else {
+            0.0
+        }
     }
     pub fn ft8_msg_repeat(&self) -> usize {
         1
     }
     pub fn ft8_call_to(&self) -> &str {
-        if let Row::Text(f) = &self.ft8.rows[CALL_TO] { &f.value } else {
+        if let Row::Text(f) = &self.ft8.rows[CALL_TO] {
+            &f.value
+        } else {
             crate::source::ft8::FT8_DEFAULT_CALL_TO
         }
     }
     pub fn ft8_call_de(&self) -> &str {
-        if let Row::Text(f) = &self.ft8.rows[CALL_DE] { &f.value } else {
+        if let Row::Text(f) = &self.ft8.rows[CALL_DE] {
+            &f.value
+        } else {
             crate::source::ft8::FT8_DEFAULT_CALL_DE
         }
     }
     pub fn ft8_grid(&self) -> &str {
-        if let Row::Text(f) = &self.ft8.rows[GRID] { &f.value } else {
+        if let Row::Text(f) = &self.ft8.rows[GRID] {
+            &f.value
+        } else {
             crate::source::ft8::FT8_DEFAULT_GRID
         }
     }
     pub fn ft8_free_text(&self) -> &str {
-        if let Row::Text(f) = &self.ft8.rows[FREE_TEXT] { &f.value } else {
+        if let Row::Text(f) = &self.ft8.rows[FREE_TEXT] {
+            &f.value
+        } else {
             crate::source::ft8::FT8_DEFAULT_FREE_TEXT
         }
     }

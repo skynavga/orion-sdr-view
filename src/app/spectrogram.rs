@@ -132,7 +132,8 @@ impl SpectrogramDisplay {
         // each row is an independent copy of (cols-1) entries.
         for r in 0..rows {
             let row_start = r * cols;
-            self.pixels.copy_within(row_start..row_start + cols - 1, row_start + 1);
+            self.pixels
+                .copy_within(row_start..row_start + cols - 1, row_start + 1);
         }
 
         // Map row index → frequency.  Row 0 = hi edge, row (rows-1) = lo edge.
@@ -168,18 +169,13 @@ impl SpectrogramDisplay {
             .iter()
             .flat_map(|c| [c.r(), c.g(), c.b(), 255])
             .collect();
-        let image = egui::ColorImage::from_rgba_unmultiplied(
-            [self.max_cols, self.freq_rows],
-            &rgba,
-        );
+        let image =
+            egui::ColorImage::from_rgba_unmultiplied([self.max_cols, self.freq_rows], &rgba);
         match &mut self.texture {
             Some(h) => h.set(image, egui::TextureOptions::NEAREST),
             None => {
-                self.texture = Some(ctx.load_texture(
-                    "spectrogram",
-                    image,
-                    egui::TextureOptions::NEAREST,
-                ));
+                self.texture =
+                    Some(ctx.load_texture("spectrogram", image, egui::TextureOptions::NEAREST));
             }
         }
     }

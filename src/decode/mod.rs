@@ -15,21 +15,20 @@
 //!
 //! The main thread drains results each frame and updates `DecodeTicker`.
 
-use std::sync::{Arc, Mutex};
 use std::sync::mpsc::{Receiver, SyncSender};
+use std::sync::{Arc, Mutex};
 
 use num_complex::Complex32 as C32;
-use orion_sdr::util::rms;
-use orion_sdr::sync::psk31_sync::psk31_sync;
-use orion_sdr::modulate::psk31::{psk31_sps, PSK31_BAUD};
 use orion_sdr::codec::Ft8StreamDecoder;
-use orion_sdr::message::{gridfield_to_str, Ft8Message};
+use orion_sdr::message::{Ft8Message, gridfield_to_str};
+use orion_sdr::modulate::psk31::{PSK31_BAUD, psk31_sps};
+use orion_sdr::sync::psk31_sync::psk31_sync;
+use orion_sdr::util::rms;
 
 // Re-exports from orion-sdr (migrated from local definitions).
 pub use orion_sdr::codec::psk31::Psk31Stream;
 pub use orion_sdr::util::{
-    SIGNAL_THRESHOLD, PSK31_BW_HZ,
-    power_spectrum, spectrum_snr_db, spectrum_bw_hz, best_sync,
+    PSK31_BW_HZ, SIGNAL_THRESHOLD, best_sync, power_spectrum, spectrum_bw_hz, spectrum_snr_db,
 };
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -49,14 +48,18 @@ pub enum DecodeMode {
 
 #[derive(Clone, Debug)]
 pub struct DecodeConfig {
-    pub mode:       DecodeMode,
+    pub mode: DecodeMode,
     pub carrier_hz: f32,
-    pub fs:         f32,
+    pub fs: f32,
 }
 
 impl DecodeConfig {
     pub fn new(fs: f32) -> Self {
-        Self { mode: DecodeMode::Off, carrier_hz: 0.0, fs }
+        Self {
+            mode: DecodeMode::Off,
+            carrier_hz: 0.0,
+            fs,
+        }
     }
 }
 
@@ -67,9 +70,9 @@ pub enum DecodeResult {
     /// Non-text signal — display a one-line summary.
     Info {
         modulation: String,
-        center_hz:  f32,
-        bw_hz:      f32,
-        snr_db:     f32,
+        center_hz: f32,
+        bw_hz: f32,
+        snr_db: f32,
     },
     /// No signal detected or carrier not found.
     NoSignal,
@@ -82,7 +85,7 @@ pub enum DecodeResult {
 // ── DecodeTicker ──────────────────────────────────────────────────────────────
 
 /// Minimum seconds to hold an Info result before replacing it.
-const INFO_HOLD_SECS:    f32 = 3.0;
+const INFO_HOLD_SECS: f32 = 3.0;
 /// Scroll speed in pixels per second.
 /// 36 px/s at 12 pt monospace (~7.2 px/char) ≈ 5 chars/s.
 const SCROLL_PX_PER_SEC: f32 = 36.0;
@@ -125,13 +128,13 @@ impl Default for DecodeTicker {
 impl DecodeTicker {
     pub fn new() -> Self {
         Self {
-            pending:      std::collections::VecDeque::new(),
-            visible:      String::new(),
-            sub_px:       0.0,
-            last_result:  DecodeResult::NoSignal,
+            pending: std::collections::VecDeque::new(),
+            visible: String::new(),
+            sub_px: 0.0,
+            last_result: DecodeResult::NoSignal,
             hold_elapsed: 0.0,
-            last_info:    None,
-            in_gap:       false,
+            last_info: None,
+            in_gap: false,
         }
     }
 
@@ -149,38 +152,38 @@ impl DecodeTicker {
                     self.pending.push_back(c);
                 }
                 if !matches!(self.last_result, DecodeResult::Text(_)) {
-                    self.last_result  = r;
+                    self.last_result = r;
                     self.hold_elapsed = 0.0;
                 }
             }
             DecodeResult::Info { .. } => {
                 self.last_info = Some(r.clone());
                 let hold = match self.last_result {
-                    DecodeResult::Text(_)     => 0.0,
+                    DecodeResult::Text(_) => 0.0,
                     DecodeResult::Info { .. } => INFO_HOLD_SECS,
                     DecodeResult::NoSignal | DecodeResult::Gap { .. } => 0.0,
                 };
                 if self.hold_elapsed >= hold {
-                    self.last_result  = r;
+                    self.last_result = r;
                     self.hold_elapsed = 0.0;
                 }
             }
             DecodeResult::NoSignal => {
                 let hold = match self.last_result {
-                    DecodeResult::Text(_)     => 0.0,
+                    DecodeResult::Text(_) => 0.0,
                     DecodeResult::Info { .. } => INFO_HOLD_SECS,
                     DecodeResult::NoSignal | DecodeResult::Gap { .. } => 0.0,
                 };
                 if self.hold_elapsed >= hold {
-                    self.last_result  = r;
+                    self.last_result = r;
                     self.hold_elapsed = 0.0;
                 }
             }
             DecodeResult::Gap { .. } => {
-                self.last_result  = DecodeResult::NoSignal;
+                self.last_result = DecodeResult::NoSignal;
                 self.hold_elapsed = 0.0;
-                self.last_info    = None;
-                self.in_gap       = true;
+                self.last_info = None;
+                self.in_gap = true;
             }
         }
     }
@@ -194,9 +197,10 @@ impl DecodeTicker {
         self.hold_elapsed += dt;
 
         // Only scroll if there's something to show or inject.
-        let has_work = !self.pending.is_empty()
-            || (self.in_gap && !self.visible.is_empty());
-        if !has_work { return; }
+        let has_work = !self.pending.is_empty() || (self.in_gap && !self.visible.is_empty());
+        if !has_work {
+            return;
+        }
 
         self.sub_px += SCROLL_PX_PER_SEC * dt;
 
@@ -221,11 +225,11 @@ impl DecodeTicker {
     pub fn reset(&mut self) {
         self.pending.clear();
         self.visible.clear();
-        self.sub_px       = 0.0;
+        self.sub_px = 0.0;
         self.hold_elapsed = 0.0;
-        self.last_result  = DecodeResult::NoSignal;
-        self.last_info    = None;
-        self.in_gap       = false;
+        self.last_result = DecodeResult::NoSignal;
+        self.last_info = None;
+        self.in_gap = false;
     }
 }
 
@@ -259,24 +263,24 @@ pub const SYNC_MIN_SYMS: usize = 64;
 
 pub struct DecodeWorker {
     config: Arc<Mutex<DecodeConfig>>,
-    rx:     Receiver<Vec<f32>>,
-    tx:     SyncSender<DecodeResult>,
+    rx: Receiver<Vec<f32>>,
+    tx: SyncSender<DecodeResult>,
 }
 
 impl DecodeWorker {
     pub fn new(
         config: Arc<Mutex<DecodeConfig>>,
-        rx:     Receiver<Vec<f32>>,
-        tx:     SyncSender<DecodeResult>,
+        rx: Receiver<Vec<f32>>,
+        tx: SyncSender<DecodeResult>,
     ) -> Self {
         Self { config, rx, tx }
     }
 
     pub fn run(self) {
-        let mut iq_buf:        Vec<C32> = Vec::new();
-        let mut last_mode    = DecodeMode::Off;
+        let mut iq_buf: Vec<C32> = Vec::new();
+        let mut last_mode = DecodeMode::Off;
         let mut last_carrier = 0.0_f32;
-        let mut was_signal   = false;
+        let mut was_signal = false;
         // EMA-smoothed BW for AM DSB (α = 0.3 → ~2–3 window time constant).
         let mut smoothed_bw_hz = 0.0_f32;
         // Rolling window state for AM DSB / Test Tone spectral analysis.
@@ -297,8 +301,8 @@ impl DecodeWorker {
 
         loop {
             let samples = match self.rx.recv_timeout(std::time::Duration::from_millis(100)) {
-                Ok(s)  => s,
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout)      => continue,
+                Ok(s) => s,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
             };
 
@@ -311,16 +315,16 @@ impl DecodeWorker {
             if samples.is_empty() {
                 iq_buf.clear();
                 spec_buf.clear();
-                smoothed_bw_hz       = 0.0;
-                smoothed_snr_db      = 0.0;
-                was_signal           = false;
-                info_counter         = 0;
-                psk31_stream         = None;
-                ft_decoder           = None;
+                smoothed_bw_hz = 0.0;
+                smoothed_snr_db = 0.0;
+                was_signal = false;
+                info_counter = 0;
+                psk31_stream = None;
+                ft_decoder = None;
                 ft_decoded_this_burst = false;
-                ft_shift_phase       = 0.0;
-                last_mode            = mode;
-                last_carrier         = carrier_hz;
+                ft_shift_phase = 0.0;
+                last_mode = mode;
+                last_carrier = carrier_hz;
                 continue;
             }
 
@@ -328,16 +332,16 @@ impl DecodeWorker {
             if mode != last_mode || (carrier_hz - last_carrier).abs() > 0.5 {
                 iq_buf.clear();
                 spec_buf.clear();
-                smoothed_bw_hz       = 0.0;
-                smoothed_snr_db      = 0.0;
-                was_signal           = false;
-                info_counter         = 0;
-                psk31_stream         = None;
-                ft_decoder           = None;
+                smoothed_bw_hz = 0.0;
+                smoothed_snr_db = 0.0;
+                was_signal = false;
+                info_counter = 0;
+                psk31_stream = None;
+                ft_decoder = None;
                 ft_decoded_this_burst = false;
-                ft_shift_phase       = 0.0;
-                last_mode            = mode;
-                last_carrier         = carrier_hz;
+                ft_shift_phase = 0.0;
+                last_mode = mode;
+                last_carrier = carrier_hz;
             }
 
             let is_signal = rms(&samples) >= SIGNAL_THRESHOLD;
@@ -346,20 +350,24 @@ impl DecodeWorker {
 
             match mode {
                 DecodeMode::Bpsk31 | DecodeMode::Qpsk31 => {
-                    let sps        = psk31_sps(fs);
-                    let max_accum  = PSK31_MAX_ACCUM_SYMS * sps;
-                    let mode_label = if mode == DecodeMode::Bpsk31 { "BPSK31" } else { "QPSK31" };
+                    let sps = psk31_sps(fs);
+                    let max_accum = PSK31_MAX_ACCUM_SYMS * sps;
+                    let mode_label = if mode == DecodeMode::Bpsk31 {
+                        "BPSK31"
+                    } else {
+                        "QPSK31"
+                    };
 
                     if !is_signal {
                         if gap_edge {
-                            info_counter    = 0;
+                            info_counter = 0;
                             smoothed_snr_db = 0.0;
                             // Send zeroed Info so the Di bar clears immediately.
                             let _ = self.tx.try_send(DecodeResult::Info {
                                 modulation: mode_label.to_owned(),
-                                center_hz:  carrier_hz,
-                                bw_hz:      0.0,
-                                snr_db:     0.0,
+                                center_hz: carrier_hz,
+                                bw_hz: 0.0,
+                                snr_db: 0.0,
                             });
                             if let Some(ref mut stream) = psk31_stream {
                                 // Flush remaining samples + Viterbi tail + varicode.
@@ -381,14 +389,15 @@ impl DecodeWorker {
                         iq_buf.extend(samples.iter().map(|&s| C32::new(s, 0.0)));
 
                         // Try to establish the stream if we haven't yet.
-                        if psk31_stream.is_none()
-                            && iq_buf.len() >= sps * SYNC_MIN_SYMS
-                        {
+                        if psk31_stream.is_none() && iq_buf.len() >= sps * SYNC_MIN_SYMS {
                             let margin = if mode == DecodeMode::Bpsk31 { 1.5 } else { 3.0 };
                             let base_hz = (carrier_hz - SYNC_SEARCH_HZ).max(0.0);
-                            let max_hz  = carrier_hz + SYNC_SEARCH_HZ;
-                            let results = psk31_sync(&iq_buf, fs, base_hz, max_hz, 4, margin, 256, 5);
-                            if let Some((_found_hz, time_sym)) = best_sync(&results, carrier_hz, PSK31_BAUD) {
+                            let max_hz = carrier_hz + SYNC_SEARCH_HZ;
+                            let results =
+                                psk31_sync(&iq_buf, fs, base_hz, max_hz, 4, margin, 256, 5);
+                            if let Some((_found_hz, time_sym)) =
+                                best_sync(&results, carrier_hz, PSK31_BAUD)
+                            {
                                 let scan_end = ((time_sym + 2) * sps).min(iq_buf.len());
                                 let onset = iq_buf[..scan_end]
                                     .iter()
@@ -439,8 +448,7 @@ impl DecodeWorker {
                         if info_counter >= INFO_INTERVAL {
                             info_counter = 0;
                             let tail_start = iq_buf.len().saturating_sub(SPECTRUM_WINDOW_SAMPLES);
-                            let win: Vec<f32> = iq_buf[tail_start..]
-                                .iter().map(|c| c.re).collect();
+                            let win: Vec<f32> = iq_buf[tail_start..].iter().map(|c| c.re).collect();
                             let raw_snr = spectrum_snr_db(&win, fs, carrier_hz);
                             if smoothed_snr_db == 0.0 {
                                 smoothed_snr_db = raw_snr;
@@ -449,9 +457,9 @@ impl DecodeWorker {
                             }
                             let _ = self.tx.try_send(DecodeResult::Info {
                                 modulation: mode_label.to_owned(),
-                                center_hz:  carrier_hz,
-                                bw_hz:      PSK31_BW_HZ,
-                                snr_db:     smoothed_snr_db,
+                                center_hz: carrier_hz,
+                                bw_hz: PSK31_BW_HZ,
+                                snr_db: smoothed_snr_db,
                             });
                         }
 
@@ -473,22 +481,28 @@ impl DecodeWorker {
                     if !is_signal {
                         if gap_edge {
                             spec_buf.clear();
-                            info_counter    = 0;
+                            info_counter = 0;
                             smoothed_snr_db = 0.0;
-                            smoothed_bw_hz  = 0.0;
+                            smoothed_bw_hz = 0.0;
                             // Send zeroed Info so the Di bar clears immediately.
-                            let label = if mode == DecodeMode::AmDsb { "AM DSB" } else { "Test Tone" };
+                            let label = if mode == DecodeMode::AmDsb {
+                                "AM DSB"
+                            } else {
+                                "Test Tone"
+                            };
                             let _ = self.tx.try_send(DecodeResult::Info {
                                 modulation: label.to_owned(),
-                                center_hz:  carrier_hz,
-                                bw_hz:      0.0,
-                                snr_db:     0.0,
+                                center_hz: carrier_hz,
+                                bw_hz: 0.0,
+                                snr_db: 0.0,
                             });
                         }
                         continue;
                     }
                     spec_buf.extend(samples.iter().map(|&s| C32::new(s, 0.0)));
-                    if spec_buf.len() < SPECTRUM_WINDOW_SAMPLES { continue; }
+                    if spec_buf.len() < SPECTRUM_WINDOW_SAMPLES {
+                        continue;
+                    }
 
                     let decode_buf: Vec<C32> = spec_buf[..SPECTRUM_WINDOW_SAMPLES].to_vec();
                     spec_buf.drain(..SPECTRUM_WINDOW_SAMPLES / 2);
@@ -522,17 +536,17 @@ impl DecodeWorker {
                         info_counter = 0;
                         let _ = self.tx.try_send(DecodeResult::Info {
                             modulation: label.to_owned(),
-                            center_hz:  carrier_hz,
-                            bw_hz:      bw,
-                            snr_db:     smoothed_snr_db,
+                            center_hz: carrier_hz,
+                            bw_hz: bw,
+                            snr_db: smoothed_snr_db,
                         });
                     }
                 }
 
                 DecodeMode::Ft8 | DecodeMode::Ft4 => {
                     let is_ft8 = mode == DecodeMode::Ft8;
-                    let label  = if is_ft8 { "FT8" } else { "FT4" };
-                    let bw_hz  = if is_ft8 { FT8_BW_HZ } else { FT4_BW_HZ };
+                    let label = if is_ft8 { "FT8" } else { "FT4" };
+                    let bw_hz = if is_ft8 { FT8_BW_HZ } else { FT4_BW_HZ };
                     let native_fs = fs / FT8_UPSAMPLE as f32; // 12 kHz
                     // The source modulates at FT8_MOD_BASE_HZ then shifts up to
                     // carrier_hz.  We reverse that shift before decimating so the
@@ -557,22 +571,22 @@ impl DecodeWorker {
                                 // SNR from the last spectral update.
                                 let _ = self.tx.try_send(DecodeResult::Info {
                                     modulation: label.to_owned(),
-                                    center_hz:  carrier_hz,
-                                    bw_hz:      if decoded { bw_hz } else { 0.0 },
-                                    snr_db:     smoothed_snr_db,
+                                    center_hz: carrier_hz,
+                                    bw_hz: if decoded { bw_hz } else { 0.0 },
+                                    snr_db: smoothed_snr_db,
                                 });
                                 let _ = self.tx.try_send(DecodeResult::Gap { decoded });
                                 dec.clear();
                             }
                             ft_decoded_this_burst = false;
-                            smoothed_snr_db       = 0.0;
-                            info_counter          = 0;
+                            smoothed_snr_db = 0.0;
+                            info_counter = 0;
                         }
                     } else {
                         // Create decoder on first signal after a gap or mode switch.
                         if ft_decoder.is_none() {
                             let base_hz = (native_carrier - FT8_SEARCH_HZ).max(0.0);
-                            let max_hz  = native_carrier + FT8_SEARCH_HZ;
+                            let max_hz = native_carrier + FT8_SEARCH_HZ;
                             ft_decoder = Some(if is_ft8 {
                                 Ft8StreamDecoder::new_ft8(native_fs, base_hz, max_hz, 8)
                             } else {
@@ -592,17 +606,19 @@ impl DecodeWorker {
                         let shift_hz = carrier_hz - crate::source::ft8::FT8_MOD_BASE_HZ;
                         let phase_inc = 2.0 * std::f32::consts::PI * shift_hz / fs;
                         let two_pi = 2.0 * std::f32::consts::PI;
-                        let mut downsampled: Vec<C32> = Vec::with_capacity(
-                            samples.len() / FT8_UPSAMPLE + 1,
-                        );
+                        let mut downsampled: Vec<C32> =
+                            Vec::with_capacity(samples.len() / FT8_UPSAMPLE + 1);
                         for (i, s) in samples.iter().enumerate() {
                             if i % FT8_UPSAMPLE == 0 {
                                 let (sin_p, cos_p) = ft_shift_phase.sin_cos();
                                 downsampled.push(C32::new(s * cos_p, -s * sin_p));
                             }
                             ft_shift_phase += phase_inc;
-                            if ft_shift_phase >= two_pi { ft_shift_phase -= two_pi; }
-                            else if ft_shift_phase < 0.0 { ft_shift_phase += two_pi; }
+                            if ft_shift_phase >= two_pi {
+                                ft_shift_phase -= two_pi;
+                            } else if ft_shift_phase < 0.0 {
+                                ft_shift_phase += two_pi;
+                            }
                         }
 
                         if let Some(ref mut dec) = ft_decoder {
@@ -625,8 +641,7 @@ impl DecodeWorker {
                             info_counter = 0;
                             if let Some(ref dec) = ft_decoder {
                                 // Use the decoder's buffer for SNR estimation.
-                                let real: Vec<f32> = dec.view_buf()
-                                    .iter().map(|c| c.re).collect();
+                                let real: Vec<f32> = dec.view_buf().iter().map(|c| c.re).collect();
                                 let raw_snr = spectrum_snr_db(&real, native_fs, native_carrier);
                                 smoothed_snr_db = if smoothed_snr_db == 0.0 {
                                     raw_snr
@@ -636,9 +651,9 @@ impl DecodeWorker {
                             }
                             let _ = self.tx.try_send(DecodeResult::Info {
                                 modulation: label.to_owned(),
-                                center_hz:  carrier_hz,
+                                center_hz: carrier_hz,
                                 bw_hz,
-                                snr_db:     smoothed_snr_db,
+                                snr_db: smoothed_snr_db,
                             });
                         }
                     }
@@ -648,9 +663,7 @@ impl DecodeWorker {
             }
         }
     }
-
 }
-
 
 /// Format a decoded `Ft8Message` for the Dt ticker.
 ///
@@ -660,7 +673,11 @@ impl DecodeWorker {
 /// Other:     `"[undecoded]"`
 fn format_ft8_message(msg: &Ft8Message, _label: &str) -> String {
     match msg {
-        Ft8Message::Standard { call_to, call_de, extra } => {
+        Ft8Message::Standard {
+            call_to,
+            call_de,
+            extra,
+        } => {
             let extra_str = gridfield_to_str(extra);
             if extra_str.is_empty() || extra_str == "None" {
                 format!("{call_to} DE {call_de}")
@@ -669,14 +686,16 @@ fn format_ft8_message(msg: &Ft8Message, _label: &str) -> String {
             }
         }
         Ft8Message::FreeText(text) => text.clone(),
-        Ft8Message::NonStd { call_to, call_de, .. } => {
+        Ft8Message::NonStd {
+            call_to, call_de, ..
+        } => {
             format!("{call_to} DE {call_de}")
         }
-        Ft8Message::Telemetry(data) => {
-            data.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join("")
-        }
+        Ft8Message::Telemetry(data) => data
+            .iter()
+            .map(|b| format!("{b:02X}"))
+            .collect::<Vec<_>>()
+            .join(""),
         Ft8Message::Unknown(_) => "[undecoded]".to_owned(),
     }
 }
-
-

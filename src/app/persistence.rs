@@ -63,8 +63,8 @@ impl PersistenceMap {
         let n = spectrum_db.len().min(self.freq_bins);
         for (fb, &db) in spectrum_db.iter().enumerate().take(n) {
             let t = (db - db_min) / db_range;
-            let pb = ((t * (self.power_bins - 1) as f32).round() as usize)
-                .clamp(0, self.power_bins - 1);
+            let pb =
+                ((t * (self.power_bins - 1) as f32).round() as usize).clamp(0, self.power_bins - 1);
             let idx = pb * self.freq_bins + fb;
             self.counts[idx] = self.counts[idx].saturating_add(1);
             if self.counts[idx] > self.max_count {
@@ -166,29 +166,46 @@ impl PersistenceRenderer {
     }
 
     /// Draw the envelope cropped to UV range [lo_uv, hi_uv] (frequency zoom).
-    pub fn draw_envelope_cropped(&self, painter: &egui::Painter, rect: egui::Rect, lo_uv: f32, hi_uv: f32) {
+    pub fn draw_envelope_cropped(
+        &self,
+        painter: &egui::Painter,
+        rect: egui::Rect,
+        lo_uv: f32,
+        hi_uv: f32,
+    ) {
         let peaks = self.map.mean_power_bins();
         let n = peaks.len();
-        if n < 2 { return; }
+        if n < 2 {
+            return;
+        }
 
         let lo_bin = (lo_uv * (n - 1) as f32) as usize;
         let hi_bin = ((hi_uv * (n - 1) as f32) as usize).min(n - 1);
-        if hi_bin <= lo_bin { return; }
+        if hi_bin <= lo_bin {
+            return;
+        }
         let vis_bins = hi_bin - lo_bin + 1;
 
         let y_for_pb = |pb: usize| {
             let t = pb as f32 / (self.map.power_bins - 1) as f32;
             rect.bottom() - t * rect.height()
         };
-        let x_for_vis = |vi: usize| rect.left() + (vi as f32 / (vis_bins - 1) as f32) * rect.width();
+        let x_for_vis =
+            |vi: usize| rect.left() + (vi as f32 / (vis_bins - 1) as f32) * rect.width();
 
-        let stroke = egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(255, 255, 255, 160));
+        let stroke = egui::Stroke::new(
+            1.0,
+            egui::Color32::from_rgba_premultiplied(255, 255, 255, 160),
+        );
         let mut prev: Option<egui::Pos2> = None;
         for vi in 0..vis_bins {
             let fb = lo_bin + vi;
             let pt = peaks[fb].map(|pb| egui::pos2(x_for_vis(vi), y_for_pb(pb)));
             match (prev, pt) {
-                (Some(a), Some(b)) => { painter.line_segment([a, b], stroke); prev = Some(b); }
+                (Some(a), Some(b)) => {
+                    painter.line_segment([a, b], stroke);
+                    prev = Some(b);
+                }
                 (_, Some(b)) => prev = Some(b),
                 (_, None) => prev = None,
             }
@@ -219,10 +236,12 @@ impl PersistenceRenderer {
             let t = pb as f32 / (self.map.power_bins - 1) as f32;
             rect.bottom() - t * rect.height()
         };
-        let x_for_fb =
-            |fb: usize| rect.left() + (fb as f32 / (n - 1) as f32) * rect.width();
+        let x_for_fb = |fb: usize| rect.left() + (fb as f32 / (n - 1) as f32) * rect.width();
 
-        let stroke = egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(255, 255, 255, 160));
+        let stroke = egui::Stroke::new(
+            1.0,
+            egui::Color32::from_rgba_premultiplied(255, 255, 255, 160),
+        );
 
         // Walk columns, emitting line segments between consecutive non-empty columns.
         let mut prev: Option<egui::Pos2> = None;

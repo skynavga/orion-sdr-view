@@ -2,20 +2,20 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use num_complex::Complex32 as C32;
-use orion_sdr::modulate::{Ft8Mod, Ft4Mod};
-use orion_sdr::codec::{Ft8Codec, Ft4Codec};
-use orion_sdr::message::{Ft8Message, CallsignHashTable, GridField, pack77};
+use orion_sdr::codec::{Ft4Codec, Ft8Codec};
+use orion_sdr::message::{CallsignHashTable, Ft8Message, GridField, pack77};
+use orion_sdr::modulate::{Ft4Mod, Ft8Mod};
 
-use super::{SignalSource, MAX_SIG_SECS};
+use super::{MAX_SIG_SECS, SignalSource};
 
 // ── FT8 constants ─────────────────────────────────────────────────────────────
 
-pub const FT8_DEFAULT_CARRIER_HZ:    f32 = 12_000.0;
+pub const FT8_DEFAULT_CARRIER_HZ: f32 = 12_000.0;
 pub const FT8_DEFAULT_GAP_SECS: f32 = 15.0;
-pub const FT8_DEFAULT_CALL_TO:       &str = "CQ";
-pub const FT8_DEFAULT_CALL_DE:       &str = "N0GNR";
-pub const FT8_DEFAULT_GRID:          &str = "FN31";
-pub const FT8_DEFAULT_FREE_TEXT:     &str = "CQ DX";
+pub const FT8_DEFAULT_CALL_TO: &str = "CQ";
+pub const FT8_DEFAULT_CALL_DE: &str = "N0GNR";
+pub const FT8_DEFAULT_GRID: &str = "FN31";
+pub const FT8_DEFAULT_FREE_TEXT: &str = "CQ DX";
 
 /// Native FT8/FT4 sample rate used by the modulators.
 const FT8_NATIVE_FS: f32 = 12_000.0;
@@ -27,12 +27,18 @@ pub const FT8_MOD_BASE_HZ: f32 = 1_500.0;
 // ── Ft8Mode ───────────────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Ft8Mode { Ft8, Ft4 }
+pub enum Ft8Mode {
+    Ft8,
+    Ft4,
+}
 
 // ── Ft8MsgType ────────────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Ft8MsgType { Standard, FreeText }
+pub enum Ft8MsgType {
+    Standard,
+    FreeText,
+}
 
 // ── Ft8Source ─────────────────────────────────────────────────────────────────
 
@@ -43,45 +49,45 @@ pub enum Ft8MsgType { Standard, FreeText }
 /// followed by a configurable silence gap, then repeats indefinitely.
 #[allow(dead_code)]
 pub struct Ft8Source {
-    pub carrier_hz:  f32,
-    pub gap_secs:    f32,
-    pub noise_amp:   f32,
-    pub ft8_mode:    Ft8Mode,
-    pub msg_type:    Ft8MsgType,
-    pub msg_repeat:  usize,
+    pub carrier_hz: f32,
+    pub gap_secs: f32,
+    pub noise_amp: f32,
+    pub ft8_mode: Ft8Mode,
+    pub msg_type: Ft8MsgType,
+    pub msg_repeat: usize,
 
     // Standard message fields
     pub call_to: String,
     pub call_de: String,
-    pub grid:    String,
+    pub grid: String,
 
     // FreeText field
     pub free_text: String,
 
     // Internal
-    samples:       Vec<f32>,   // pre-rendered frame at 48 kHz
-    mod_rate:      f32,        // viewer sample rate (48 kHz)
-    pos:           usize,
+    samples: Vec<f32>, // pre-rendered frame at 48 kHz
+    mod_rate: f32,     // viewer sample rate (48 kHz)
+    pos: usize,
     gap_remaining: usize,
-    gap_samples:   usize,
-    play_count:    usize,      // how many times the frame has played in this cycle
-    rng:           u64,
+    gap_samples: usize,
+    play_count: usize, // how many times the frame has played in this cycle
+    rng: u64,
 }
 
 impl Ft8Source {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         carrier_hz: f32,
-        gap_secs:   f32,
-        noise_amp:  f32,
-        ft8_mode:   Ft8Mode,
-        msg_type:   Ft8MsgType,
-        call_to:    String,
-        call_de:    String,
-        grid:       String,
-        free_text:  String,
+        gap_secs: f32,
+        noise_amp: f32,
+        ft8_mode: Ft8Mode,
+        msg_type: Ft8MsgType,
+        call_to: String,
+        call_de: String,
+        grid: String,
+        free_text: String,
         msg_repeat: usize,
-        mod_rate:   f32,
+        mod_rate: f32,
     ) -> Self {
         let gap_samples = (gap_secs * mod_rate) as usize;
         let mut src = Self {
@@ -133,9 +139,9 @@ impl Ft8Source {
         // Upsample 4× (complex) with a windowed-sinc lowpass FIR.
         // Cutoff fc = fs_native/2 / fs_out = 6/48 = 0.125 (normalised to fs_out).
         // 63-tap Hann window; gain scaled ×L=4 to restore unity passband gain.
-        const L:     usize = 4;
+        const L: usize = 4;
         const NTAPS: usize = 63;
-        let     fc = 0.125_f32;
+        let fc = 0.125_f32;
 
         let mut h = [0.0_f32; NTAPS];
         let half = (NTAPS / 2) as isize;
@@ -147,8 +153,8 @@ impl Ft8Source {
                 (2.0 * std::f32::consts::PI * fc * n as f32).sin()
                     / (std::f32::consts::PI * n as f32)
             };
-            let w = 0.5 * (1.0 - (2.0 * std::f32::consts::PI * k as f32
-                / (NTAPS - 1) as f32).cos());
+            let w =
+                0.5 * (1.0 - (2.0 * std::f32::consts::PI * k as f32 / (NTAPS - 1) as f32).cos());
             *hk = sinc * w * L as f32;
         }
 
@@ -183,13 +189,18 @@ impl Ft8Source {
         let phase_inc = 2.0 * std::f32::consts::PI * shift_hz / self.mod_rate;
         let two_pi = 2.0 * std::f32::consts::PI;
         let mut phase = 0.0_f32;
-        let up: Vec<f32> = up_iq.iter().map(|&s| {
-            let mixer = C32::new(phase.cos(), phase.sin());
-            let y = (s * mixer).re;
-            phase += phase_inc;
-            if phase >= two_pi { phase -= two_pi; }
-            y
-        }).collect();
+        let up: Vec<f32> = up_iq
+            .iter()
+            .map(|&s| {
+                let mixer = C32::new(phase.cos(), phase.sin());
+                let y = (s * mixer).re;
+                phase += phase_inc;
+                if phase >= two_pi {
+                    phase -= two_pi;
+                }
+                y
+            })
+            .collect();
 
         self.samples = up;
         self.pos = 0;
@@ -208,7 +219,7 @@ impl Ft8Source {
             Ft8MsgType::Standard => Ft8Message::Standard {
                 call_to: self.call_to.clone(),
                 call_de: self.call_de.clone(),
-                extra:   GridField::Grid(self.grid.clone()),
+                extra: GridField::Grid(self.grid.clone()),
             },
             Ft8MsgType::FreeText => Ft8Message::FreeText(self.free_text.clone()),
         }
@@ -223,7 +234,9 @@ impl Ft8Source {
 }
 
 impl SignalSource for Ft8Source {
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
 
     fn restart(&mut self) {
         self.pos = 0;
@@ -265,9 +278,7 @@ impl SignalSource for Ft8Source {
                     self.gap_remaining = self.gap_samples;
                     continue;
                 }
-                let available = (frame_len - self.pos)
-                    .min(n - i)
-                    .min(remaining_budget);
+                let available = (frame_len - self.pos).min(n - i).min(remaining_budget);
                 for k in 0..available {
                     let noise = if self.noise_amp > 0.0 {
                         self.noise_amp * self.xorshift()

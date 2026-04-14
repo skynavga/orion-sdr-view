@@ -4,11 +4,11 @@
 //! Integration tests for FT8/FT4 source generation and decode.
 
 use num_complex::Complex32 as C32;
-use orion_sdr::util::rms;
 use orion_sdr::codec::Ft8StreamDecoder;
+use orion_sdr::util::rms;
 use orion_sdr_view::decode::{DecodeResult, FT8_BW_HZ};
-use orion_sdr_view::source::{Ft8Source, Ft8Mode, Ft8MsgType, SignalSource};
 use orion_sdr_view::source::ft8::FT8_MOD_BASE_HZ;
+use orion_sdr_view::source::{Ft8Mode, Ft8MsgType, Ft8Source, SignalSource};
 
 mod common;
 use common::ticker::{BufferDecode, TickerSimConfig, run_ticker_sim};
@@ -136,10 +136,17 @@ fn ft8_source_loop_gap_timing() {
 #[test]
 fn ft8_source_noise_in_gap() {
     let mut src = Ft8Source::new(
-        CARRIER_HZ, 1.0, 0.05,
-        Ft8Mode::Ft8, Ft8MsgType::Standard,
-        "CQ".to_owned(), "N0GNR".to_owned(), "FN31".to_owned(), "CQ DX".to_owned(),
-        1, FS,
+        CARRIER_HZ,
+        1.0,
+        0.05,
+        Ft8Mode::Ft8,
+        Ft8MsgType::Standard,
+        "CQ".to_owned(),
+        "N0GNR".to_owned(),
+        "FN31".to_owned(),
+        "CQ DX".to_owned(),
+        1,
+        FS,
     );
     let _frame = src.next_samples(FT8_FRAME_LEN_48K);
     let gap = src.next_samples(4096);
@@ -170,10 +177,17 @@ fn ft8_decode_standard_message() {
     const CALL_TO: &str = "CQ";
 
     let mut src = Ft8Source::new(
-        CARRIER_HZ, 0.0, 0.0,
-        Ft8Mode::Ft8, Ft8MsgType::Standard,
-        CALL_TO.to_owned(), CALL_DE.to_owned(), "FN31".to_owned(), String::new(),
-        1, FS,
+        CARRIER_HZ,
+        0.0,
+        0.0,
+        Ft8Mode::Ft8,
+        Ft8MsgType::Standard,
+        CALL_TO.to_owned(),
+        CALL_DE.to_owned(),
+        "FN31".to_owned(),
+        String::new(),
+        1,
+        FS,
     );
 
     // Collect exactly one frame at 48 kHz.
@@ -187,12 +201,7 @@ fn ft8_decode_standard_message() {
         .collect();
 
     // Source renders at CARRIER_HZ in the native 12 kHz domain; search there.
-    let mut dec = Ft8StreamDecoder::new_ft8(
-        12_000.0,
-        CARRIER_HZ - 50.0,
-        CARRIER_HZ + 50.0,
-        8,
-    );
+    let mut dec = Ft8StreamDecoder::new_ft8(12_000.0, CARRIER_HZ - 50.0, CARRIER_HZ + 50.0, 8);
 
     let results = dec.feed(&iq_12k);
 
@@ -217,10 +226,17 @@ fn ft4_decode_standard_message() {
     const CALL_TO: &str = "CQ";
 
     let mut src = Ft8Source::new(
-        CARRIER_HZ, 0.0, 0.0,
-        Ft8Mode::Ft4, Ft8MsgType::Standard,
-        CALL_TO.to_owned(), CALL_DE.to_owned(), "FN31".to_owned(), String::new(),
-        1, FS,
+        CARRIER_HZ,
+        0.0,
+        0.0,
+        Ft8Mode::Ft4,
+        Ft8MsgType::Standard,
+        CALL_TO.to_owned(),
+        CALL_DE.to_owned(),
+        "FN31".to_owned(),
+        String::new(),
+        1,
+        FS,
     );
 
     let samples_48k = src.next_samples(FT4_FRAME_LEN_48K);
@@ -230,12 +246,7 @@ fn ft4_decode_standard_message() {
         .map(|&s| C32::new(s, 0.0))
         .collect();
 
-    let mut dec = Ft8StreamDecoder::new_ft4(
-        12_000.0,
-        CARRIER_HZ - 50.0,
-        CARRIER_HZ + 50.0,
-        8,
-    );
+    let mut dec = Ft8StreamDecoder::new_ft4(12_000.0, CARRIER_HZ - 50.0, CARRIER_HZ + 50.0, 8);
 
     let results = dec.feed(&iq_12k);
 
@@ -262,10 +273,17 @@ fn ft8_decode_shifted_12khz_carrier() {
     const SHIFTED_CARRIER: f32 = 12_000.0;
 
     let mut src = Ft8Source::new(
-        SHIFTED_CARRIER, 0.0, 0.0,
-        Ft8Mode::Ft8, Ft8MsgType::Standard,
-        "CQ".to_owned(), CALL_DE.to_owned(), "FN31".to_owned(), String::new(),
-        1, FS,
+        SHIFTED_CARRIER,
+        0.0,
+        0.0,
+        Ft8Mode::Ft8,
+        Ft8MsgType::Standard,
+        "CQ".to_owned(),
+        CALL_DE.to_owned(),
+        "FN31".to_owned(),
+        String::new(),
+        1,
+        FS,
     );
 
     let samples_48k = src.next_samples(FT8_FRAME_LEN_48K);
@@ -283,12 +301,8 @@ fn ft8_decode_shifted_12khz_carrier() {
         })
         .collect();
 
-    let mut dec = Ft8StreamDecoder::new_ft8(
-        12_000.0,
-        FT8_MOD_BASE_HZ - 50.0,
-        FT8_MOD_BASE_HZ + 50.0,
-        8,
-    );
+    let mut dec =
+        Ft8StreamDecoder::new_ft8(12_000.0, FT8_MOD_BASE_HZ - 50.0, FT8_MOD_BASE_HZ + 50.0, 8);
 
     let results = dec.feed(&iq_12k);
 
@@ -312,10 +326,17 @@ fn ft4_decode_shifted_12khz_carrier() {
     const SHIFTED_CARRIER: f32 = 12_000.0;
 
     let mut src = Ft8Source::new(
-        SHIFTED_CARRIER, 0.0, 0.0,
-        Ft8Mode::Ft4, Ft8MsgType::Standard,
-        "CQ".to_owned(), CALL_DE.to_owned(), "FN31".to_owned(), String::new(),
-        1, FS,
+        SHIFTED_CARRIER,
+        0.0,
+        0.0,
+        Ft8Mode::Ft4,
+        Ft8MsgType::Standard,
+        "CQ".to_owned(),
+        CALL_DE.to_owned(),
+        "FN31".to_owned(),
+        String::new(),
+        1,
+        FS,
     );
 
     let samples_48k = src.next_samples(FT4_FRAME_LEN_48K);
@@ -332,12 +353,8 @@ fn ft4_decode_shifted_12khz_carrier() {
         })
         .collect();
 
-    let mut dec = Ft8StreamDecoder::new_ft4(
-        12_000.0,
-        FT8_MOD_BASE_HZ - 50.0,
-        FT8_MOD_BASE_HZ + 50.0,
-        8,
-    );
+    let mut dec =
+        Ft8StreamDecoder::new_ft4(12_000.0, FT8_MOD_BASE_HZ - 50.0, FT8_MOD_BASE_HZ + 50.0, 8);
 
     let results = dec.feed(&iq_12k);
 
@@ -361,7 +378,7 @@ fn ft4_decode_shifted_12khz_carrier() {
 /// 12 kHz, feed Ft8StreamDecoder, and return Info + (optional) Text results
 /// for the ticker harness.
 fn decode_ft8_buffer(iq_48k: &[C32], carrier_hz: f32) -> BufferDecode {
-    let shift_hz  = carrier_hz - FT8_MOD_BASE_HZ;
+    let shift_hz = carrier_hz - FT8_MOD_BASE_HZ;
     let phase_inc = 2.0 * std::f32::consts::PI * shift_hz / FS;
     let iq_12k: Vec<C32> = iq_48k
         .iter()
@@ -381,27 +398,32 @@ fn decode_ft8_buffer(iq_48k: &[C32], carrier_hz: f32) -> BufferDecode {
         8,
     );
     let results = dec.feed(&iq_12k);
-    let tail    = dec.flush();
+    let tail = dec.flush();
 
     let mut text_out = String::new();
     for r in results.iter().chain(tail.iter()) {
         let s = format!("{:?}", r.message);
-        if !text_out.is_empty() { text_out.push(' '); }
+        if !text_out.is_empty() {
+            text_out.push(' ');
+        }
         text_out.push_str(&s);
     }
 
     let info = DecodeResult::Info {
         modulation: "FT8".to_owned(),
-        center_hz:  carrier_hz,
-        bw_hz:      FT8_BW_HZ,
-        snr_db:     0.0,
+        center_hz: carrier_hz,
+        bw_hz: FT8_BW_HZ,
+        snr_db: 0.0,
     };
     let text = if text_out.is_empty() {
         None
     } else {
         Some(DecodeResult::Text(text_out))
     };
-    BufferDecode { info: Some(info), text }
+    BufferDecode {
+        info: Some(info),
+        text,
+    }
 }
 
 /// Simulate the Dt mode ticker for FT8: feed Ft8Source through the shared
@@ -409,24 +431,24 @@ fn decode_ft8_buffer(iq_48k: &[C32], carrier_hz: f32) -> BufferDecode {
 /// would display.  Parameters: repeat=2, gap=1 s, two full loops.
 #[test]
 fn ft8_simulate_dt_ticker() {
-    const REPEAT:   usize = 2;
-    const GAP_SECS: f32   = 1.0;
-    const LOOPS:    usize = 2;
-    const BLOCK:    usize = 1024;
+    const REPEAT: usize = 2;
+    const GAP_SECS: f32 = 1.0;
+    const LOOPS: usize = 2;
+    const BLOCK: usize = 1024;
 
     let mut src = make_ft8_source(REPEAT, GAP_SECS);
 
     // One FT8 frame = 12.64 s.  Each loop emits REPEAT frames (~25 s) + GAP.
-    let loop_secs     = 12.64 * REPEAT as f32 + GAP_SECS;
+    let loop_secs = 12.64 * REPEAT as f32 + GAP_SECS;
     let total_samples = ((loop_secs * LOOPS as f32 + 1.0) * FS) as usize;
 
     let cfg = TickerSimConfig {
-        label:         "FT8 standard CQ",
-        block:         BLOCK,
+        label: "FT8 standard CQ",
+        block: BLOCK,
         total_samples,
-        fs:            FS,
+        fs: FS,
         // FT8 frames are long; rely on gap-edge decoding only.
-        max_accum:     None,
+        max_accum: None,
     };
 
     let result = run_ticker_sim(&mut src, &cfg, |iq| decode_ft8_buffer(iq, CARRIER_HZ));
@@ -461,22 +483,22 @@ fn ft8_simulate_dt_ticker() {
 /// which hand `Ft8StreamDecoder` a single complete frame in one call.
 #[test]
 fn ft8_streaming_decode_multi_loop() {
-    const REPEAT:   usize = 2;
-    const GAP_SECS: f32   = 0.5;
-    const LOOPS:    usize = 2;
-    const BLOCK:    usize = 800;
+    const REPEAT: usize = 2;
+    const GAP_SECS: f32 = 0.5;
+    const LOOPS: usize = 2;
+    const BLOCK: usize = 800;
 
     let mut src = make_ft8_source(REPEAT, GAP_SECS);
 
     // One FT8 frame = 12.64 s.  Each loop emits REPEAT frames + GAP, plus
     // a small tail so the final gap edge is seen.
-    let loop_secs     = 12.64 * REPEAT as f32 + GAP_SECS;
+    let loop_secs = 12.64 * REPEAT as f32 + GAP_SECS;
     let total_samples = ((loop_secs * LOOPS as f32 + 1.0) * FS) as usize;
 
     // Incremental phase accumulator for the carrier-shift reversal.
-    let shift_hz  = CARRIER_HZ - FT8_MOD_BASE_HZ;
+    let shift_hz = CARRIER_HZ - FT8_MOD_BASE_HZ;
     let phase_inc = 2.0 * std::f32::consts::PI * shift_hz / FS;
-    let two_pi    = 2.0 * std::f32::consts::PI;
+    let two_pi = 2.0 * std::f32::consts::PI;
     let mut phase = 0.0_f32;
     // Absolute sample index into the source stream, used for i % 4 decimation.
     let mut sample_idx: usize = 0;
@@ -492,7 +514,8 @@ fn ft8_streaming_decode_multi_loop() {
     let mut all_messages: Vec<String> = Vec::new();
     let mut gap_edges = 0usize;
 
-    let push_results = |results: Vec<orion_sdr::codec::Ft8DecodeResult>, tag: &str,
+    let push_results = |results: Vec<orion_sdr::codec::Ft8DecodeResult>,
+                        tag: &str,
                         all_messages: &mut Vec<String>| {
         for r in results {
             let s = format!("{:?}", r.message);
@@ -508,13 +531,16 @@ fn ft8_streaming_decode_multi_loop() {
         let samples = src.next_samples(n);
 
         let is_signal = rms(&samples) >= 0.01;
-        let gap_edge  = !is_signal && was_signal;
-        was_signal    = is_signal;
+        let gap_edge = !is_signal && was_signal;
+        was_signal = is_signal;
 
         if gap_edge {
             gap_edges += 1;
             let flush_results = dec.flush();
-            println!("[gap #{gap_edges}] flush -> {} results", flush_results.len());
+            println!(
+                "[gap #{gap_edges}] flush -> {} results",
+                flush_results.len()
+            );
             push_results(flush_results, "flush", &mut all_messages);
             dec.clear();
         }
@@ -530,8 +556,11 @@ fn ft8_streaming_decode_multi_loop() {
                     downsampled.push(C32::new(s * cos_p, -s * sin_p));
                 }
                 phase += phase_inc;
-                if phase >= two_pi { phase -= two_pi; }
-                else if phase < 0.0 { phase += two_pi; }
+                if phase >= two_pi {
+                    phase -= two_pi;
+                } else if phase < 0.0 {
+                    phase += two_pi;
+                }
             }
             let results = dec.feed(&downsampled);
             if !results.is_empty() {
@@ -545,8 +574,11 @@ fn ft8_streaming_decode_multi_loop() {
             // the shift stays coherent with the source timeline.
             for _ in 0..n {
                 phase += phase_inc;
-                if phase >= two_pi { phase -= two_pi; }
-                else if phase < 0.0 { phase += two_pi; }
+                if phase >= two_pi {
+                    phase -= two_pi;
+                } else if phase < 0.0 {
+                    phase += two_pi;
+                }
             }
         }
 
@@ -559,10 +591,7 @@ fn ft8_streaming_decode_multi_loop() {
         gap_edges,
     );
 
-    let callsign_hits = all_messages
-        .iter()
-        .filter(|s| s.contains("N0GNR"))
-        .count();
+    let callsign_hits = all_messages.iter().filter(|s| s.contains("N0GNR")).count();
     assert!(
         callsign_hits >= LOOPS,
         "expected ≥ {LOOPS} decoded messages containing N0GNR (one per loop), got {callsign_hits}: {all_messages:?}"

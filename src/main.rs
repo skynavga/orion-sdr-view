@@ -11,8 +11,8 @@ mod utils;
 use clap::Parser;
 use eframe::egui;
 
+use app::{DECODE_BAR_H, ViewApp};
 use config::ViewConfig;
-use app::{ViewApp, DECODE_BAR_H};
 
 #[derive(Parser)]
 #[command(name = "orion-sdr-view", about = "SDR spectrum viewer")]

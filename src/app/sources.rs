@@ -1,14 +1,14 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use crate::decode::{DecodeMode};
-use crate::source::tone::TestToneSource;
+use crate::decode::DecodeMode;
 use crate::source::amdsb::{AmDsbSource, BuiltinAudio, load_builtin};
+use crate::source::ft8::{Ft8Mode, Ft8MsgType, Ft8Source};
 use crate::source::psk31::{Psk31Mode, Psk31Source};
-use crate::source::ft8::{Ft8Source, Ft8Mode, Ft8MsgType};
+use crate::source::tone::TestToneSource;
 
-use super::{SAMPLE_RATE, SourceMode};
 use super::view::ViewApp;
+use super::{SAMPLE_RATE, SourceMode};
 
 // ── Source construction and sync ──────────────────────────────────────────────
 
@@ -19,7 +19,10 @@ impl ViewApp {
             // Custom with no path yet — start silent; audio loaded on WAV entry
             (Vec::new(), SAMPLE_RATE)
         } else {
-            let builtin = BuiltinAudio::ALL[self.settings.am_audio_idx().min(BuiltinAudio::ALL.len() - 1)];
+            let builtin = BuiltinAudio::ALL[self
+                .settings
+                .am_audio_idx()
+                .min(BuiltinAudio::ALL.len() - 1)];
             load_builtin(builtin)
         };
         AmDsbSource::new(
@@ -38,7 +41,7 @@ impl ViewApp {
     pub(super) fn make_psk31_source(&self) -> Psk31Source {
         let mode = match self.settings.psk31_mode_str() {
             "QPSK31" => Psk31Mode::Qpsk31,
-            _        => Psk31Mode::Bpsk31,
+            _ => Psk31Mode::Bpsk31,
         };
         Psk31Source::new(
             self.settings.psk31_carrier_hz(),
@@ -55,7 +58,7 @@ impl ViewApp {
     pub(super) fn make_ft8_source(&self) -> Ft8Source {
         let mode = match self.settings.ft8_mode_str() {
             "FT4" => Ft8Mode::Ft4,
-            _     => Ft8Mode::Ft8,
+            _ => Ft8Mode::Ft8,
         };
         let msg_type = if self.settings.ft8_msg_is_free_text() {
             Ft8MsgType::FreeText
@@ -88,9 +91,9 @@ impl ViewApp {
             // otherwise go carrier-only (no audio).
             let path_str = self.settings.wav_path().to_owned();
             if !path_str.is_empty() {
-                if let Ok((audio, rate)) = crate::source::amdsb::load_wav_file(
-                    std::path::Path::new(&path_str),
-                ) {
+                if let Ok((audio, rate)) =
+                    crate::source::amdsb::load_wav_file(std::path::Path::new(&path_str))
+                {
                     if let Some(am) = self.source.as_any_mut().downcast_mut::<AmDsbSource>() {
                         am.set_audio(audio, rate);
                     }
@@ -199,50 +202,53 @@ impl ViewApp {
         if let Some(psk31) = self.source.as_any_mut().downcast_mut::<Psk31Source>() {
             let new_mode = match self.settings.psk31_mode_str() {
                 "QPSK31" => Psk31Mode::Qpsk31,
-                _        => Psk31Mode::Bpsk31,
+                _ => Psk31Mode::Bpsk31,
             };
-            let new_repeat      = self.settings.psk31_msg_repeat();
-            let carrier_changed = (psk31.carrier_hz - self.settings.psk31_carrier_hz()).abs() > 0.01;
-            let mode_changed    = psk31.mode != new_mode;
-            let repeat_changed  = psk31.msg_repeat != new_repeat;
-            psk31.carrier_hz    = self.settings.psk31_carrier_hz();
-            psk31.noise_amp     = self.settings.psk31_noise_amp();
-            psk31.gap_secs      = self.settings.psk31_gap_secs();
-            psk31.mode          = new_mode;
-            psk31.msg_repeat    = new_repeat.max(1);
+            let new_repeat = self.settings.psk31_msg_repeat();
+            let carrier_changed =
+                (psk31.carrier_hz - self.settings.psk31_carrier_hz()).abs() > 0.01;
+            let mode_changed = psk31.mode != new_mode;
+            let repeat_changed = psk31.msg_repeat != new_repeat;
+            psk31.carrier_hz = self.settings.psk31_carrier_hz();
+            psk31.noise_amp = self.settings.psk31_noise_amp();
+            psk31.gap_secs = self.settings.psk31_gap_secs();
+            psk31.mode = new_mode;
+            psk31.msg_repeat = new_repeat.max(1);
             // message is NOT synced here — it is applied only when the user
             // explicitly accepts the text edit via Enter (see apply_psk31_message).
-            if carrier_changed || mode_changed || repeat_changed { psk31.render(); }
+            if carrier_changed || mode_changed || repeat_changed {
+                psk31.render();
+            }
             psk31.update_gap();
         }
 
         if let Some(ft8) = self.source.as_any_mut().downcast_mut::<Ft8Source>() {
             let new_mode = match self.settings.ft8_mode_str() {
                 "FT4" => Ft8Mode::Ft4,
-                _     => Ft8Mode::Ft8,
+                _ => Ft8Mode::Ft8,
             };
             let new_msg_type = if self.settings.ft8_msg_is_free_text() {
                 Ft8MsgType::FreeText
             } else {
                 Ft8MsgType::Standard
             };
-            let new_repeat       = self.settings.ft8_msg_repeat();
-            let carrier_changed  = (ft8.carrier_hz - self.settings.ft8_carrier_hz()).abs() > 0.01;
-            let mode_changed     = ft8.ft8_mode != new_mode;
+            let new_repeat = self.settings.ft8_msg_repeat();
+            let carrier_changed = (ft8.carrier_hz - self.settings.ft8_carrier_hz()).abs() > 0.01;
+            let mode_changed = ft8.ft8_mode != new_mode;
             let msg_type_changed = ft8.msg_type != new_msg_type;
-            let repeat_changed   = ft8.msg_repeat != new_repeat;
-            ft8.carrier_hz    = self.settings.ft8_carrier_hz();
-            ft8.noise_amp     = self.settings.ft8_noise_amp();
-            ft8.gap_secs      = self.settings.ft8_gap_secs();
-            ft8.ft8_mode      = new_mode;
-            ft8.msg_type      = new_msg_type;
-            ft8.msg_repeat    = new_repeat.max(1);
+            let repeat_changed = ft8.msg_repeat != new_repeat;
+            ft8.carrier_hz = self.settings.ft8_carrier_hz();
+            ft8.noise_amp = self.settings.ft8_noise_amp();
+            ft8.gap_secs = self.settings.ft8_gap_secs();
+            ft8.ft8_mode = new_mode;
+            ft8.msg_type = new_msg_type;
+            ft8.msg_repeat = new_repeat.max(1);
             // free_text is NOT synced here — applied only on explicit text edit accept
             if carrier_changed || mode_changed || msg_type_changed || repeat_changed {
                 ft8.render();
             }
             ft8.update_gap();
-            self.ft_mode     = ft8.ft8_mode;
+            self.ft_mode = ft8.ft8_mode;
             self.ft_msg_type = ft8.msg_type;
         }
 
@@ -301,23 +307,23 @@ impl ViewApp {
         let mode = match self.source_mode {
             SourceMode::Psk31 => match self.settings.psk31_mode_str() {
                 "QPSK31" => DecodeMode::Qpsk31,
-                _        => DecodeMode::Bpsk31,
+                _ => DecodeMode::Bpsk31,
             },
-            SourceMode::AmDsb    => DecodeMode::AmDsb,
+            SourceMode::AmDsb => DecodeMode::AmDsb,
             SourceMode::TestTone => DecodeMode::TestTone,
-            SourceMode::Ft8      => match self.ft_mode {
+            SourceMode::Ft8 => match self.ft_mode {
                 Ft8Mode::Ft8 => DecodeMode::Ft8,
                 Ft8Mode::Ft4 => DecodeMode::Ft4,
             },
         };
         let carrier_hz = match self.source_mode {
-            SourceMode::Psk31    => self.settings.psk31_carrier_hz(),
-            SourceMode::AmDsb    => self.settings.am_carrier_hz(),
+            SourceMode::Psk31 => self.settings.psk31_carrier_hz(),
+            SourceMode::AmDsb => self.settings.am_carrier_hz(),
             SourceMode::TestTone => self.settings.freq_hz(),
-            SourceMode::Ft8      => self.settings.ft8_carrier_hz(),
+            SourceMode::Ft8 => self.settings.ft8_carrier_hz(),
         };
         if let Ok(mut cfg) = self.decode_config.lock() {
-            cfg.mode       = mode;
+            cfg.mode = mode;
             cfg.carrier_hz = carrier_hz;
         }
     }

@@ -1,13 +1,13 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use serde::Deserialize;
 use super::Defaults;
+use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
 pub struct DisplayConfig {
-    pub db_min:    Option<f32>,
-    pub db_max:    Option<f32>,
+    pub db_min: Option<f32>,
+    pub db_max: Option<f32>,
     pub time_zone: Option<String>,
     /// Half-width (± Hz) of the frequency window shown by the horizontal
     /// spectrogram pane, centered on the primary marker frequency.
@@ -30,16 +30,28 @@ pub enum TzMode {
 
 impl super::ViewConfig {
     pub fn db_min(&self) -> f32 {
-        self.display.as_ref().and_then(|d| d.db_min).unwrap_or(Defaults::DB_MIN)
+        self.display
+            .as_ref()
+            .and_then(|d| d.db_min)
+            .unwrap_or(Defaults::DB_MIN)
     }
     pub fn db_max(&self) -> f32 {
-        self.display.as_ref().and_then(|d| d.db_max).unwrap_or(Defaults::DB_MAX)
+        self.display
+            .as_ref()
+            .and_then(|d| d.db_max)
+            .unwrap_or(Defaults::DB_MAX)
     }
     pub fn spec_freq_delta_hz(&self) -> f32 {
-        self.display.as_ref().and_then(|d| d.spec_freq_delta_hz).unwrap_or(Defaults::SPEC_FREQ_DELTA_HZ)
+        self.display
+            .as_ref()
+            .and_then(|d| d.spec_freq_delta_hz)
+            .unwrap_or(Defaults::SPEC_FREQ_DELTA_HZ)
     }
     pub fn spec_time_range_secs(&self) -> f32 {
-        self.display.as_ref().and_then(|d| d.spec_time_range_secs).unwrap_or(Defaults::SPEC_TIME_RANGE_SECS)
+        self.display
+            .as_ref()
+            .and_then(|d| d.spec_time_range_secs)
+            .unwrap_or(Defaults::SPEC_TIME_RANGE_SECS)
     }
 
     /// Returns the parsed `time_zone` mode from the YAML config.
@@ -53,13 +65,10 @@ impl super::ViewConfig {
     pub fn time_zone_mode(&self) -> TzMode {
         let raw = match self.display.as_ref().and_then(|d| d.time_zone.as_deref()) {
             Some(s) => s,
-            None    => return TzMode::Utc,
+            None => return TzMode::Utc,
         };
         parse_time_zone_mode(raw).unwrap_or_else(|| {
-            eprintln!(
-                "config: unrecognized time_zone {:?}, using UTC",
-                raw,
-            );
+            eprintln!("config: unrecognized time_zone {:?}, using UTC", raw,);
             TzMode::Utc
         })
     }
@@ -69,9 +78,9 @@ impl super::ViewConfig {
     /// display range `[-12*60, 14*60]` minutes.
     pub fn time_zone_offset_min(&self) -> i32 {
         match self.time_zone_mode() {
-            TzMode::Utc            => 0,
-            TzMode::Local          => crate::utils::time::local_utc_offset_min(),
-            TzMode::Explicit(min)  => min,
+            TzMode::Utc => 0,
+            TzMode::Local => crate::utils::time::local_utc_offset_min(),
+            TzMode::Explicit(min) => min,
         }
     }
 }
@@ -94,9 +103,9 @@ pub(super) fn parse_time_zone_mode(raw: &str) -> Option<TzMode> {
 /// Parse a `+HH:MM` / `-HH:MM` offset string to minutes, or `None` on error.
 fn parse_offset_hhmm(s: &str) -> Option<i32> {
     let (sign, rest) = match s.as_bytes().first()? {
-        b'+' => ( 1, &s[1..]),
+        b'+' => (1, &s[1..]),
         b'-' => (-1, &s[1..]),
-        _    => return None,
+        _ => return None,
     };
     let (h_str, m_str) = rest.split_once(':')?;
     let h: i32 = h_str.parse().ok()?;
@@ -120,7 +129,7 @@ pub fn format_offset_min(min: i32) -> String {
         return "utc".to_owned();
     }
     let sign = if min > 0 { '+' } else { '-' };
-    let abs  = min.unsigned_abs() as i32;
+    let abs = min.unsigned_abs() as i32;
     let h = abs / 60;
     let m = abs % 60;
     format!("{sign}{h:02}:{m:02}")

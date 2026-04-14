@@ -54,7 +54,8 @@ impl WaterfallDisplay {
         let filled = self.current_rows.min(self.max_rows - 1);
 
         // Shift existing rows down by one to make room at index 0.
-        self.pixels.copy_within(0..filled * self.freq_bins, self.freq_bins);
+        self.pixels
+            .copy_within(0..filled * self.freq_bins, self.freq_bins);
 
         // Write new row at the top.
         for (slot, &db) in self.pixels.iter_mut().zip(spectrum_db.iter()).take(n) {
