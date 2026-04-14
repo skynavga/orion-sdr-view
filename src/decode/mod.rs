@@ -826,7 +826,8 @@ const MORSE_TABLE: &[(char, &str)] = &[
     ('/', "-..-."),
 ];
 
-fn morse_char_units(c: char, dash_weight: f32) -> Option<f32> {
+/// Compute the duration of a Morse character in units (dot-lengths).
+pub fn morse_char_units(c: char, dash_weight: f32) -> Option<f32> {
     let upper = c.to_ascii_uppercase();
     MORSE_TABLE
         .iter()
@@ -852,7 +853,7 @@ fn morse_char_units(c: char, dash_weight: f32) -> Option<f32> {
 /// at which the character has been fully transmitted (body + trailing gap),
 /// so the decode worker emits the character when accumulated samples ≥
 /// threshold.  Uses nominal (jitter-free) timing.
-fn cw_char_timing(
+pub fn cw_char_timing(
     message: &str,
     wpm: f32,
     dash_weight: f32,
