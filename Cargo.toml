@@ -40,7 +40,7 @@ eframe = { version = "0.33", default-features = false, features = [
 egui = { version = "0.33", optional = true }
 num-complex = "0.4"
 rustfft = "6"
-orion-sdr = "0.0.32"
+orion-sdr = { path = "../orion-sdr" }
 hound = "3"
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
