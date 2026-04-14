@@ -3,12 +3,12 @@
 
 //! Integration tests for the CW source.
 
+use orion_sdr_view::source::SignalSource;
 use orion_sdr_view::source::cw::{
     CW_DEFAULT_CARRIER_HZ, CW_DEFAULT_CHAR_SPACE, CW_DEFAULT_DASH_WEIGHT, CW_DEFAULT_FALL_MS,
     CW_DEFAULT_GAP_SECS, CW_DEFAULT_JITTER_PCT, CW_DEFAULT_NOISE_AMP, CW_DEFAULT_REPEAT,
-    CW_DEFAULT_RISE_MS, CW_DEFAULT_WPM, CW_DEFAULT_WORD_SPACE, CwSource,
+    CW_DEFAULT_RISE_MS, CW_DEFAULT_WORD_SPACE, CW_DEFAULT_WPM, CwSource,
 };
-use orion_sdr_view::source::SignalSource;
 
 const FS: f32 = 48_000.0;
 
@@ -65,8 +65,8 @@ fn cw_source_gap_has_only_noise() {
     // Use a very short message with no noise to verify the gap is silent.
     let mut src = CwSource::new(
         CW_DEFAULT_CARRIER_HZ,
-        1.0, // 1 second gap
-        0.0, // no noise
+        1.0,  // 1 second gap
+        0.0,  // no noise
         30.0, // fast WPM for short signal
         0.0,
         CW_DEFAULT_DASH_WEIGHT,
@@ -87,10 +87,7 @@ fn cw_source_gap_has_only_noise() {
     // Now read some gap samples.
     let gap_samples = src.next_samples(4800);
     let max_abs = gap_samples.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
-    assert!(
-        max_abs < 1e-6,
-        "expected silence in gap, max_abs={max_abs}"
-    );
+    assert!(max_abs < 1e-6, "expected silence in gap, max_abs={max_abs}");
 }
 
 // ── Restart ──────────────────────────────────────────────────────────────────

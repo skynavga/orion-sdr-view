@@ -124,7 +124,8 @@ impl CwSource {
         }
 
         // Stage 2: Keying envelope → IQ via CwKeyedMod.
-        let mut modulator = CwKeyedMod::new(self.mod_rate, self.carrier_hz, self.rise_ms, self.fall_ms);
+        let mut modulator =
+            CwKeyedMod::new(self.mod_rate, self.carrier_hz, self.rise_ms, self.fall_ms);
         let mut iq = vec![C32::new(0.0, 0.0); envelope.len()];
         modulator.process(&envelope, &mut iq);
 

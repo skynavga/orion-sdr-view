@@ -3,6 +3,7 @@
 
 use crate::decode::DecodeMode;
 use crate::source::amdsb::{AmDsbSource, BuiltinAudio, load_builtin};
+use crate::source::cw::CwSource;
 use crate::source::ft8::{Ft8Mode, Ft8MsgType, Ft8Source};
 use crate::source::psk31::{Psk31Mode, Psk31Source};
 use crate::source::tone::TestToneSource;
@@ -33,6 +34,25 @@ impl ViewApp {
             self.settings.am_gap_secs(),
             self.settings.am_noise_amp(),
             self.settings.am_msg_repeat(),
+            SAMPLE_RATE,
+        )
+    }
+
+    /// Build a fresh CwSource from current settings values.
+    pub(super) fn make_cw_source(&self) -> CwSource {
+        CwSource::new(
+            self.settings.cw_carrier_hz(),
+            self.settings.cw_gap_secs(),
+            self.settings.cw_noise_amp(),
+            self.settings.cw_wpm(),
+            self.settings.cw_jitter_pct(),
+            self.settings.cw_dash_weight(),
+            self.settings.cw_char_space(),
+            self.settings.cw_word_space(),
+            self.settings.cw_rise_ms(),
+            self.settings.cw_fall_ms(),
+            self.settings.cw_message().to_owned(),
+            self.settings.cw_msg_repeat(),
             SAMPLE_RATE,
         )
     }
@@ -222,6 +242,43 @@ impl ViewApp {
             psk31.update_gap();
         }
 
+        if let Some(cw) = self.source.as_any_mut().downcast_mut::<CwSource>() {
+            let carrier_changed = (cw.carrier_hz - self.settings.cw_carrier_hz()).abs() > 0.01;
+            let wpm_changed = (cw.wpm - self.settings.cw_wpm()).abs() > 0.01;
+            let jitter_changed = (cw.jitter_pct - self.settings.cw_jitter_pct()).abs() > 0.01;
+            let weight_changed = (cw.dash_weight - self.settings.cw_dash_weight()).abs() > 0.01;
+            let char_sp_changed = (cw.char_space - self.settings.cw_char_space()).abs() > 0.01;
+            let word_sp_changed = (cw.word_space - self.settings.cw_word_space()).abs() > 0.01;
+            let rise_changed = (cw.rise_ms - self.settings.cw_rise_ms()).abs() > 0.01;
+            let fall_changed = (cw.fall_ms - self.settings.cw_fall_ms()).abs() > 0.01;
+            let repeat_changed = cw.msg_repeat != self.settings.cw_msg_repeat();
+            cw.carrier_hz = self.settings.cw_carrier_hz();
+            cw.wpm = self.settings.cw_wpm();
+            cw.jitter_pct = self.settings.cw_jitter_pct();
+            cw.dash_weight = self.settings.cw_dash_weight();
+            cw.char_space = self.settings.cw_char_space();
+            cw.word_space = self.settings.cw_word_space();
+            cw.rise_ms = self.settings.cw_rise_ms();
+            cw.fall_ms = self.settings.cw_fall_ms();
+            cw.noise_amp = self.settings.cw_noise_amp();
+            cw.gap_secs = self.settings.cw_gap_secs();
+            cw.msg_repeat = self.settings.cw_msg_repeat().max(1);
+            // Message is NOT synced here — applied only on explicit text edit accept.
+            if carrier_changed
+                || wpm_changed
+                || jitter_changed
+                || weight_changed
+                || char_sp_changed
+                || word_sp_changed
+                || rise_changed
+                || fall_changed
+                || repeat_changed
+            {
+                cw.render();
+            }
+            cw.update_gap();
+        }
+
         if let Some(ft8) = self.source.as_any_mut().downcast_mut::<Ft8Source>() {
             let new_mode = match self.settings.ft8_mode_str() {
                 "FT4" => Ft8Mode::Ft4,
@@ -292,6 +349,16 @@ impl ViewApp {
         self.reset_playback();
     }
 
+    /// Apply the committed CW message and repeat count to the live source and
+    /// re-render.  Called only when the user explicitly accepts the message edit.
+    pub(super) fn apply_cw_message(&mut self) {
+        if let Some(cw) = self.source.as_any_mut().downcast_mut::<CwSource>() {
+            cw.message = self.settings.cw_message().to_owned();
+            cw.render();
+        }
+        self.reset_playback();
+    }
+
     /// Apply the committed FT8 free-text message to the live source and re-render.
     /// Called only when the user explicitly accepts the text edit via Enter.
     pub(super) fn apply_ft8_free_text(&mut self) {
@@ -309,6 +376,7 @@ impl ViewApp {
                 "QPSK31" => DecodeMode::Qpsk31,
                 _ => DecodeMode::Bpsk31,
             },
+            SourceMode::Cw => DecodeMode::Cw,
             SourceMode::AmDsb => DecodeMode::AmDsb,
             SourceMode::TestTone => DecodeMode::TestTone,
             SourceMode::Ft8 => match self.ft_mode {
@@ -318,6 +386,7 @@ impl ViewApp {
         };
         let carrier_hz = match self.source_mode {
             SourceMode::Psk31 => self.settings.psk31_carrier_hz(),
+            SourceMode::Cw => self.settings.cw_carrier_hz(),
             SourceMode::AmDsb => self.settings.am_carrier_hz(),
             SourceMode::TestTone => self.settings.freq_hz(),
             SourceMode::Ft8 => self.settings.ft8_carrier_hz(),

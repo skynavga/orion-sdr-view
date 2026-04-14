@@ -40,6 +40,7 @@ pub enum DecodeMode {
     Qpsk31,
     AmDsb,
     TestTone,
+    Cw,
     /// FT8 full-frame accumulate+decode (Phase 2).
     Ft8,
     /// FT4 full-frame accumulate+decode (Phase 2).
@@ -477,7 +478,7 @@ impl DecodeWorker {
                     }
                 }
 
-                DecodeMode::AmDsb | DecodeMode::TestTone => {
+                DecodeMode::Cw | DecodeMode::AmDsb | DecodeMode::TestTone => {
                     if !is_signal {
                         if gap_edge {
                             spec_buf.clear();
@@ -485,10 +486,10 @@ impl DecodeWorker {
                             smoothed_snr_db = 0.0;
                             smoothed_bw_hz = 0.0;
                             // Send zeroed Info so the Di bar clears immediately.
-                            let label = if mode == DecodeMode::AmDsb {
-                                "AM DSB"
-                            } else {
-                                "Test Tone"
+                            let label = match mode {
+                                DecodeMode::Cw => "CW",
+                                DecodeMode::AmDsb => "AM DSB",
+                                _ => "Test Tone",
                             };
                             let _ = self.tx.try_send(DecodeResult::Info {
                                 modulation: label.to_owned(),
@@ -517,14 +518,19 @@ impl DecodeWorker {
                         smoothed_snr_db = 0.2 * raw_snr + 0.8 * smoothed_snr_db;
                     }
                     let (label, bw) = match mode {
-                        DecodeMode::AmDsb => {
+                        DecodeMode::Cw | DecodeMode::AmDsb => {
                             let raw_bw = spectrum_bw_hz(&real, fs, carrier_hz, 7.0);
                             if smoothed_bw_hz == 0.0 {
                                 smoothed_bw_hz = raw_bw;
                             } else {
                                 smoothed_bw_hz = 0.2 * raw_bw + 0.8 * smoothed_bw_hz;
                             }
-                            ("AM DSB", smoothed_bw_hz)
+                            let label = if mode == DecodeMode::Cw {
+                                "CW"
+                            } else {
+                                "AM DSB"
+                            };
+                            (label, smoothed_bw_hz)
                         }
                         _ => {
                             let (_, bin_hz) = power_spectrum(&real, fs);

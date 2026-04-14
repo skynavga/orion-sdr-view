@@ -141,6 +141,7 @@ impl WaterfallMode {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum SourceMode {
     TestTone,
+    Cw,
     AmDsb,
     Psk31,
     Ft8,
@@ -149,6 +150,7 @@ pub(super) enum SourceMode {
 impl SourceMode {
     pub(super) const ALL: &'static [SourceMode] = &[
         SourceMode::TestTone,
+        SourceMode::Cw,
         SourceMode::AmDsb,
         SourceMode::Psk31,
         SourceMode::Ft8,
@@ -157,6 +159,7 @@ impl SourceMode {
     pub(super) fn label(self) -> &'static str {
         match self {
             SourceMode::TestTone => "Test Tone",
+            SourceMode::Cw => "CW",
             SourceMode::AmDsb => "AM DSB",
             SourceMode::Psk31 => "PSK31",
             SourceMode::Ft8 => "FT8",

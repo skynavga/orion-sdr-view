@@ -241,6 +241,7 @@ impl ViewApp {
         let hz = FreqView::snap_hz(self.freq_view.center_hz, 10.0);
         match self.source_mode {
             SourceMode::TestTone => self.settings.set_freq_hz(hz),
+            SourceMode::Cw => self.settings.set_cw_carrier_hz(hz),
             SourceMode::AmDsb => self.settings.set_am_carrier_hz(hz),
             SourceMode::Psk31 => self.settings.set_psk31_carrier_hz(hz),
             SourceMode::Ft8 => self.settings.set_ft8_carrier_hz(hz),
@@ -259,6 +260,7 @@ impl ViewApp {
                     SAMPLE_RATE,
                 )))
             }
+            SourceMode::Cw => Box::new(self.make_cw_source()),
             SourceMode::AmDsb => Box::new(self.make_am_source()),
             SourceMode::Psk31 => Box::new(self.make_psk31_source()),
             SourceMode::Ft8 => {
@@ -270,8 +272,8 @@ impl ViewApp {
         self.settings.set_source_mode(mode as usize);
         self.sync_decode_config();
         self.reset_playback();
-        // Text mode is only valid for PSK31/FT8; clamp if we switched away.
-        let has_text = matches!(mode, SourceMode::Psk31 | SourceMode::Ft8);
+        // Text mode is only valid for CW/PSK31/FT8; clamp if we switched away.
+        let has_text = matches!(mode, SourceMode::Cw | SourceMode::Psk31 | SourceMode::Ft8);
         if !has_text && self.decode_bar == DecodeBarMode::Text {
             self.decode_bar = DecodeBarMode::Info;
         }
@@ -296,6 +298,9 @@ impl ViewApp {
             }
             if result.wav_load_requested && self.try_load_wav() {
                 self.settings.defocus();
+            }
+            if result.cw_msg_accepted {
+                self.apply_cw_message();
             }
             if result.psk31_msg_accepted {
                 self.apply_psk31_message();
@@ -347,6 +352,10 @@ impl ViewApp {
                 }
                 if cycle_audio {
                     match self.source_mode {
+                        SourceMode::Cw => {
+                            self.settings.cycle_cw_msg_mode();
+                            self.apply_cw_message();
+                        }
                         SourceMode::AmDsb => {
                             self.settings.cycle_am_audio();
                             self.reload_builtin_audio();
@@ -415,7 +424,10 @@ impl ViewApp {
                 self.reset_playback();
             }
             if i.key_pressed(egui::Key::D) {
-                let has_text = matches!(self.source_mode, SourceMode::Psk31 | SourceMode::Ft8);
+                let has_text = matches!(
+                    self.source_mode,
+                    SourceMode::Cw | SourceMode::Psk31 | SourceMode::Ft8
+                );
                 self.decode_bar = self.decode_bar.next(has_text);
             }
             if i.key_pressed(egui::Key::E) {
@@ -699,6 +711,10 @@ impl ViewApp {
         }
         if cycle_audio {
             match self.source_mode {
+                SourceMode::Cw => {
+                    self.settings.cycle_cw_msg_mode();
+                    self.apply_cw_message();
+                }
                 SourceMode::AmDsb => {
                     self.settings.cycle_am_audio();
                     self.reload_builtin_audio();
