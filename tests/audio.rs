@@ -42,8 +42,8 @@ fn morse_known_patterns() {
     // SOS = ··· ——— ···
     assert_eq!(morse('S'), &[false, false, false]);
     assert_eq!(morse('O'), &[true, true, true]);
-    assert_eq!(morse('E'), &[false]);           // single dit
-    assert_eq!(morse('T'), &[true]);             // single dah
+    assert_eq!(morse('E'), &[false]); // single dit
+    assert_eq!(morse('T'), &[true]); // single dah
     assert_eq!(morse('0'), &[true, true, true, true, true]);
     assert_eq!(morse('5'), &[false, false, false, false, false]);
 }

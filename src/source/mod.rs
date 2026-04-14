@@ -14,9 +14,9 @@ pub const MAX_SIG_SECS: f32 = 99.99;
 #[allow(unused_imports)]
 pub use amdsb::{AmDsbSource, BuiltinAudio, load_builtin};
 #[allow(unused_imports)]
-pub use ft8::{Ft8Source, Ft8Mode, Ft8MsgType};
+pub use ft8::{Ft8Mode, Ft8MsgType, Ft8Source};
 #[allow(unused_imports)]
-pub use psk31::{Psk31Source, Psk31Mode};
+pub use psk31::{Psk31Mode, Psk31Source};
 
 /// Common interface for all signal sources.
 ///

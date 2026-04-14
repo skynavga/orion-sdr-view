@@ -57,7 +57,7 @@ impl TestSignalGen {
             phase: 0.0,
             freq_hz,
             sample_rate,
-            tone_amp: 0.65,              // start at maximum, visible immediately
+            tone_amp: 0.65, // start at maximum, visible immediately
             noise_amp: 0.05,
             rng: 0x853c_49e6_748f_ea9b,
             cycling: false,
@@ -65,7 +65,7 @@ impl TestSignalGen {
             amp_max: 0.65,
             ramp_secs,
             pause_secs,
-            cycle_state: CycleState::PauseHigh,  // FSM starts mid-sequence at peak
+            cycle_state: CycleState::PauseHigh, // FSM starts mid-sequence at peak
             samples_remaining: pause_samples,
         }
     }
@@ -204,7 +204,9 @@ impl SignalSource for TestToneSource {
     fn sample_rate(&self) -> f32 {
         self.signal_gen.sample_rate
     }
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
     fn restart(&mut self) {
         self.signal_gen.restart();
     }

@@ -94,8 +94,6 @@ impl SpectrumProcessor {
 
 fn hann_window(n: usize) -> Vec<f32> {
     (0..n)
-        .map(|i| {
-            0.5 * (1.0 - (2.0 * std::f32::consts::PI * i as f32 / (n - 1) as f32).cos())
-        })
+        .map(|i| 0.5 * (1.0 - (2.0 * std::f32::consts::PI * i as f32 / (n - 1) as f32).cos()))
         .collect()
 }

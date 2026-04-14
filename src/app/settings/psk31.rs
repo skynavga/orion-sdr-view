@@ -1,19 +1,19 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use eframe::egui;
-use super::field::{Row, NumField, RowDrawCtx, ToggleField, TextField};
+use super::field::{NumField, Row, RowDrawCtx, TextField, ToggleField};
 use crate::config::ViewConfig;
+use eframe::egui;
 
 // ── Row indices (local) ───────────────────────────────────────────────────
-const MODE:       usize = 0;
-const CARRIER:    usize = 1;
-const GAP:        usize = 2;
-const NOISE:      usize = 3;
-const MSG_MODE:   usize = 4;
-const MSG:        usize = 5;
+const MODE: usize = 0;
+const CARRIER: usize = 1;
+const GAP: usize = 2;
+const NOISE: usize = 3;
+const MSG_MODE: usize = 4;
+const MSG: usize = 5;
 const CUSTOM_MSG: usize = 6;
-const REPEAT:     usize = 7;
+const REPEAT: usize = 7;
 
 pub(super) struct Psk31Rows {
     pub rows: Vec<Row>,
@@ -31,26 +31,41 @@ impl Psk31Rows {
                 Row::Toggle(ToggleField {
                     label: "Mode",
                     options: &["BPSK31", "QPSK31"],
-                    index: 0, default: 0,
+                    index: 0,
+                    default: 0,
                 }),
                 Row::Num(NumField {
-                    label: "Carrier", value: 12000.0, default: 12000.0,
-                    step: 100.0, min: 100.0, max: 22000.0, unit: " Hz",
+                    label: "Carrier",
+                    value: 12000.0,
+                    default: 12000.0,
+                    step: 100.0,
+                    min: 100.0,
+                    max: 22000.0,
+                    unit: " Hz",
                 }),
                 Row::Num(NumField {
                     label: "Gap",
-                    value:   crate::source::psk31::PSK31_DEFAULT_GAP_SECS,
+                    value: crate::source::psk31::PSK31_DEFAULT_GAP_SECS,
                     default: crate::source::psk31::PSK31_DEFAULT_GAP_SECS,
-                    step: 0.5, min: 0.5, max: 99.99, unit: " s",
+                    step: 0.5,
+                    min: 0.5,
+                    max: 99.99,
+                    unit: " s",
                 }),
                 Row::Num(NumField {
-                    label: "Noise amp", value: 0.05, default: 0.05,
-                    step: 0.01, min: 0.0, max: 0.50, unit: "",
+                    label: "Noise amp",
+                    value: 0.05,
+                    default: 0.05,
+                    step: 0.01,
+                    min: 0.0,
+                    max: 0.50,
+                    unit: "",
                 }),
                 Row::Toggle(ToggleField {
                     label: "Message",
                     options: &["Canned", "Custom"],
-                    index: 0, default: 0,
+                    index: 0,
+                    default: 0,
                 }),
                 Row::Text(TextField {
                     label: "Text",
@@ -65,9 +80,13 @@ impl Psk31Rows {
                     status: None,
                 }),
                 Row::Num(NumField {
-                    label: "Repeat", value: crate::source::psk31::PSK31_DEFAULT_REPEAT as f32,
+                    label: "Repeat",
+                    value: crate::source::psk31::PSK31_DEFAULT_REPEAT as f32,
                     default: crate::source::psk31::PSK31_DEFAULT_REPEAT as f32,
-                    step: 1.0, min: 1.0, max: 20.0, unit: "×",
+                    step: 1.0,
+                    min: 1.0,
+                    max: 20.0,
+                    unit: "×",
                 }),
             ],
             pending_msg: None,
@@ -82,29 +101,36 @@ impl Psk31Rows {
         self.rows[REPEAT].patch_num(cfg.psk31_msg_repeat() as f32);
 
         // Patch mode toggle
-        let mode_idx = match cfg.psk31_mode() { "QPSK31" => 1, _ => 0 };
+        let mode_idx = match cfg.psk31_mode() {
+            "QPSK31" => 1,
+            _ => 0,
+        };
         if let Row::Toggle(f) = &mut self.rows[MODE] {
-            f.index   = mode_idx;
+            f.index = mode_idx;
             f.default = mode_idx;
         }
 
         // Patch canned message text
         if let Row::Text(f) = &mut self.rows[MSG] {
             let msg = cfg.psk31_canned_text().to_owned();
-            f.value         = msg.clone();
+            f.value = msg.clone();
             f.default_value = msg;
         }
 
         // Patch custom message text
         if let Row::Text(f) = &mut self.rows[CUSTOM_MSG] {
             let msg = cfg.psk31_custom_text().to_owned();
-            f.value         = msg.clone();
+            f.value = msg.clone();
             f.default_value = msg;
         }
     }
 
     pub fn msg_is_custom(&self) -> bool {
-        if let Row::Toggle(f) = &self.rows[MSG_MODE] { f.index == 1 } else { false }
+        if let Row::Toggle(f) = &self.rows[MSG_MODE] {
+            f.index == 1
+        } else {
+            false
+        }
     }
 
     /// Visible rows in the order they appear in the settings overlay.
@@ -122,8 +148,16 @@ impl Psk31Rows {
     /// Handle keyboard input when the custom PSK31 message row is focused.
     /// `focused_local_idx` is the local row index (CUSTOM_MSG).
     /// Returns a result indicating what happened.
-    pub fn handle_msg_keys(&mut self, events: &[egui::Event], focused_local_idx: usize) -> MsgKeysResult {
-        let mut result = MsgKeysResult { msg_accepted: false, defocus: false, consumed: false };
+    pub fn handle_msg_keys(
+        &mut self,
+        events: &[egui::Event],
+        focused_local_idx: usize,
+    ) -> MsgKeysResult {
+        let mut result = MsgKeysResult {
+            msg_accepted: false,
+            defocus: false,
+            consumed: false,
+        };
 
         let editing = self.pending_msg.is_some();
 
@@ -140,12 +174,20 @@ impl Psk31Rows {
                             }
                         }
                     }
-                    egui::Event::Key { key: egui::Key::Backspace, pressed: true, .. } => {
+                    egui::Event::Key {
+                        key: egui::Key::Backspace,
+                        pressed: true,
+                        ..
+                    } => {
                         if let Some(pending) = &mut self.pending_msg {
                             pending.pop();
                         }
                     }
-                    egui::Event::Key { key: egui::Key::Enter, pressed: true, .. } => {
+                    egui::Event::Key {
+                        key: egui::Key::Enter,
+                        pressed: true,
+                        ..
+                    } => {
                         if let Some(pending) = self.pending_msg.take() {
                             let target = self.editing_msg_row.unwrap_or(MSG);
                             let default_text = if target == CUSTOM_MSG {
@@ -166,7 +208,11 @@ impl Psk31Rows {
                         }
                         result.defocus = true;
                     }
-                    egui::Event::Key { key: egui::Key::Escape, pressed: true, .. } => {
+                    egui::Event::Key {
+                        key: egui::Key::Escape,
+                        pressed: true,
+                        ..
+                    } => {
                         self.pending_msg = None;
                         self.editing_msg_row = None;
                         result.defocus = true;
@@ -182,7 +228,14 @@ impl Psk31Rows {
 
         // Check for Enter key
         let enter_pressed = events.iter().any(|e| {
-            matches!(e, egui::Event::Key { key: egui::Key::Enter, pressed: true, .. })
+            matches!(
+                e,
+                egui::Event::Key {
+                    key: egui::Key::Enter,
+                    pressed: true,
+                    ..
+                }
+            )
         });
         if enter_pressed {
             let current = if let Row::Text(f) = &self.rows[edit_target] {
@@ -207,12 +260,7 @@ impl Psk31Rows {
     }
 
     /// Draw the canned PSK31 message text field (read-only).
-    pub fn draw_canned_msg(
-        &self,
-        ctx: &RowDrawCtx,
-        val_x: f32, y: f32, row_h: f32,
-        focused: bool,
-    ) {
+    pub fn draw_canned_msg(&self, ctx: &RowDrawCtx, val_x: f32, y: f32, row_h: f32, focused: bool) {
         if let Row::Text(f) = &self.rows[MSG] {
             let max_chars = 36usize;
             let display = if f.value.chars().count() > max_chars {
@@ -221,7 +269,11 @@ impl Psk31Rows {
             } else {
                 f.value.clone()
             };
-            let text_color = if focused { egui::Color32::WHITE } else { ctx.val_color };
+            let text_color = if focused {
+                egui::Color32::WHITE
+            } else {
+                ctx.val_color
+            };
             ctx.painter.text(
                 egui::pos2(val_x, y + row_h / 2.0),
                 egui::Align2::LEFT_CENTER,
@@ -242,12 +294,7 @@ impl Psk31Rows {
     }
 
     /// Draw the custom PSK31 message text field (editable).
-    pub fn draw_custom_msg(
-        &self,
-        ctx: &RowDrawCtx,
-        val_x: f32, y: f32, row_h: f32,
-        focused: bool,
-    ) {
+    pub fn draw_custom_msg(&self, ctx: &RowDrawCtx, val_x: f32, y: f32, row_h: f32, focused: bool) {
         if let Row::Text(f) = &self.rows[CUSTOM_MSG] {
             let max_chars = 36usize;
             let (raw_text, editing) = if let Some(pending) = &self.pending_msg {
@@ -274,7 +321,11 @@ impl Psk31Rows {
                 text_color,
             );
             if focused {
-                let hint = if editing { "\u{21b5} accept  Esc cancel" } else { "\u{21b5} edit" };
+                let hint = if editing {
+                    "\u{21b5} accept  Esc cancel"
+                } else {
+                    "\u{21b5} edit"
+                };
                 ctx.painter.text(
                     egui::pos2(ctx.rect_right - 14.0, y + row_h / 2.0),
                     egui::Align2::RIGHT_CENTER,
@@ -302,10 +353,18 @@ pub(super) struct MsgKeysResult {
 
 impl super::SettingsState {
     pub fn psk31_mode_str(&self) -> &str {
-        if let Row::Toggle(f) = &self.psk31.rows[MODE] { f.value_str() } else { "BPSK31" }
+        if let Row::Toggle(f) = &self.psk31.rows[MODE] {
+            f.value_str()
+        } else {
+            "BPSK31"
+        }
     }
     pub fn psk31_carrier_hz(&self) -> f32 {
-        if let Row::Num(f) = &self.psk31.rows[CARRIER] { f.value } else { 10000.0 }
+        if let Row::Num(f) = &self.psk31.rows[CARRIER] {
+            f.value
+        } else {
+            10000.0
+        }
     }
     pub fn set_psk31_carrier_hz(&mut self, v: f32) {
         if let Row::Num(f) = &mut self.psk31.rows[CARRIER] {
@@ -313,27 +372,55 @@ impl super::SettingsState {
         }
     }
     pub fn psk31_gap_secs(&self) -> f32 {
-        if let Row::Num(f) = &self.psk31.rows[GAP] { f.value } else { crate::source::psk31::PSK31_DEFAULT_GAP_SECS }
+        if let Row::Num(f) = &self.psk31.rows[GAP] {
+            f.value
+        } else {
+            crate::source::psk31::PSK31_DEFAULT_GAP_SECS
+        }
     }
     pub fn psk31_noise_amp(&self) -> f32 {
-        if let Row::Num(f) = &self.psk31.rows[NOISE] { f.value } else { 0.05 }
+        if let Row::Num(f) = &self.psk31.rows[NOISE] {
+            f.value
+        } else {
+            0.05
+        }
     }
     /// Returns the active message (Canned or Custom, depending on toggle).
     pub fn psk31_message(&self) -> &str {
         if self.psk31.msg_is_custom() {
-            if let Row::Text(f) = &self.psk31.rows[CUSTOM_MSG] { &f.value } else { "" }
-        } else if let Row::Text(f) = &self.psk31.rows[MSG] { &f.value } else { "" }
+            if let Row::Text(f) = &self.psk31.rows[CUSTOM_MSG] {
+                &f.value
+            } else {
+                ""
+            }
+        } else if let Row::Text(f) = &self.psk31.rows[MSG] {
+            &f.value
+        } else {
+            ""
+        }
     }
     pub fn psk31_msg_mode_str(&self) -> &str {
-        if let Row::Toggle(f) = &self.psk31.rows[MSG_MODE] { f.value_str() } else { "Canned" }
+        if let Row::Toggle(f) = &self.psk31.rows[MSG_MODE] {
+            f.value_str()
+        } else {
+            "Canned"
+        }
     }
     pub fn cycle_psk31_mode(&mut self) {
-        if let Row::Toggle(f) = &mut self.psk31.rows[MODE] { f.next(); }
+        if let Row::Toggle(f) = &mut self.psk31.rows[MODE] {
+            f.next();
+        }
     }
     pub fn cycle_psk31_msg_mode(&mut self) {
-        if let Row::Toggle(f) = &mut self.psk31.rows[MSG_MODE] { f.next(); }
+        if let Row::Toggle(f) = &mut self.psk31.rows[MSG_MODE] {
+            f.next();
+        }
     }
     pub fn psk31_msg_repeat(&self) -> usize {
-        if let Row::Num(f) = &self.psk31.rows[REPEAT] { f.value as usize } else { 3 }
+        if let Row::Num(f) = &self.psk31.rows[REPEAT] {
+            f.value as usize
+        } else {
+            3
+        }
     }
 }

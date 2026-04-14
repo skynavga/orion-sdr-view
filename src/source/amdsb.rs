@@ -7,7 +7,7 @@ use std::path::Path;
 use orion_sdr::core::AudioToIqChain;
 use orion_sdr::modulate::AmDsbMod;
 
-use super::{SignalSource, MAX_SIG_SECS};
+use super::{MAX_SIG_SECS, SignalSource};
 
 // ── BuiltinAudio ─────────────────────────────────────────────────────────────
 
@@ -60,15 +60,14 @@ pub fn load_builtin(kind: BuiltinAudio) -> (Vec<f32>, f32) {
 }
 
 pub fn load_wav_file(path: &Path) -> Result<(Vec<f32>, f32), String> {
-    let mut reader = hound::WavReader::open(path)
-        .map_err(|e| {
-            let msg = format!("{e}");
-            if msg.contains("os error") {
-                msg
-            } else {
-                format!("{msg} (only PCM/float WAV supported)")
-            }
-        })?;
+    let mut reader = hound::WavReader::open(path).map_err(|e| {
+        let msg = format!("{e}");
+        if msg.contains("os error") {
+            msg
+        } else {
+            format!("{msg} (only PCM/float WAV supported)")
+        }
+    })?;
     let spec = reader.spec();
     let fs = spec.sample_rate as f32;
     let samples: Vec<f32> = match spec.sample_format {
@@ -224,7 +223,9 @@ impl AmDsbSource {
 }
 
 impl SignalSource for AmDsbSource {
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
     fn restart(&mut self) {
         self.audio_pos = 0.0;
         self.play_count = 0;

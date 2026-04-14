@@ -25,7 +25,11 @@ and waterfall from a configurable signal source.
 
 - Rust (edition 2024)
 - macOS or Linux (uses OpenGL via `eframe` glow backend)
-- [orion-sdr](https://crates.io/crates/orion-sdr) 0.0.30 (pulled automatically from crates.io)
+- [orion-sdr](https://crates.io/crates/orion-sdr) 0.0.32 (pulled automatically from crates.io)
+
+The GUI dependencies (`eframe`, `egui`) are behind an optional `gui` feature
+(enabled by default). Use `--no-default-features` to build and test the library
+without a windowing system, e.g. on headless CI runners.
 
 ## Screen Shots
 

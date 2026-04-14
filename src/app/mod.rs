@@ -1,9 +1,9 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-mod view;
-mod sources;
 mod draw;
+mod sources;
+mod view;
 
 pub(super) mod freqview;
 pub(super) mod persistence;
@@ -37,23 +37,35 @@ use crate::decode::SIGNAL_THRESHOLD;
 
 /// Tracks signal/gap phase timing and loop iteration count for the decode bar.
 pub(super) struct LoopTimer {
-    pub(super) in_signal:  bool,
+    pub(super) in_signal: bool,
     pub(super) phase_secs: f32,
     pub(super) loop_count: u32,
 }
 
 impl LoopTimer {
-    pub(super) fn new() -> Self { Self { in_signal: false, phase_secs: 0.0, loop_count: 0 } }
+    pub(super) fn new() -> Self {
+        Self {
+            in_signal: false,
+            phase_secs: 0.0,
+            loop_count: 0,
+        }
+    }
 
-    pub(super) fn reset(&mut self) { self.in_signal = false; self.phase_secs = 0.0; self.loop_count = 0; }
+    pub(super) fn reset(&mut self) {
+        self.in_signal = false;
+        self.phase_secs = 0.0;
+        self.loop_count = 0;
+    }
 
     /// Call once per frame with the measured block RMS and the frame duration.
     pub(super) fn tick(&mut self, rms: f32, dt: f32) {
         let active = rms >= SIGNAL_THRESHOLD;
         if active != self.in_signal {
             // Transition: gap→signal increments loop count.
-            if active { self.loop_count = (self.loop_count + 1) % 1000; }
-            self.in_signal  = active;
+            if active {
+                self.loop_count = (self.loop_count + 1) % 1000;
+            }
+            self.in_signal = active;
             self.phase_secs = 0.0;
         } else {
             self.phase_secs += dt;
@@ -87,12 +99,20 @@ impl DecodeBarMode {
     /// non-text sources (Test Tone, AM DSB) skip straight from Info back to Off.
     pub(super) fn next(self, has_text: bool) -> Self {
         match self {
-            Self::Off  => Self::Info,
-            Self::Info => if has_text { Self::Text } else { Self::Off },
+            Self::Off => Self::Info,
+            Self::Info => {
+                if has_text {
+                    Self::Text
+                } else {
+                    Self::Off
+                }
+            }
             Self::Text => Self::Off,
         }
     }
-    pub(super) fn is_visible(self) -> bool { self != Self::Off }
+    pub(super) fn is_visible(self) -> bool {
+        self != Self::Off
+    }
 }
 
 // ── Waterfall mode (pane 3) ───────────────────────────────────────────────────
@@ -110,7 +130,7 @@ pub(super) enum WaterfallMode {
 impl WaterfallMode {
     pub(super) fn next(self) -> Self {
         match self {
-            Self::Vertical   => Self::Horizontal,
+            Self::Vertical => Self::Horizontal,
             Self::Horizontal => Self::Vertical,
         }
     }
@@ -127,7 +147,12 @@ pub(super) enum SourceMode {
 }
 
 impl SourceMode {
-    pub(super) const ALL: &'static [SourceMode] = &[SourceMode::TestTone, SourceMode::AmDsb, SourceMode::Psk31, SourceMode::Ft8];
+    pub(super) const ALL: &'static [SourceMode] = &[
+        SourceMode::TestTone,
+        SourceMode::AmDsb,
+        SourceMode::Psk31,
+        SourceMode::Ft8,
+    ];
 
     pub(super) fn label(self) -> &'static str {
         match self {

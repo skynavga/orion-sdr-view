@@ -1,8 +1,8 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use eframe::egui;
 use crate::config::TzMode;
+use eframe::egui;
 
 // ── Field kinds ────────────────────────────────────────────────────────────
 
@@ -21,7 +21,9 @@ impl NumField {
     pub fn nudge(&mut self, delta: f32) {
         self.value = (self.value + delta * self.step).clamp(self.min, self.max);
     }
-    pub fn reset(&mut self) { self.value = self.default; }
+    pub fn reset(&mut self) {
+        self.value = self.default;
+    }
 }
 
 /// A discrete toggle field (cycles through a fixed list of string labels).
@@ -33,10 +35,18 @@ pub(super) struct ToggleField {
 }
 
 impl ToggleField {
-    pub fn next(&mut self) { self.index = (self.index + 1) % self.options.len(); }
-    pub fn prev(&mut self) { self.index = (self.index + self.options.len() - 1) % self.options.len(); }
-    pub fn reset(&mut self) { self.index = self.default; }
-    pub fn value_str(&self) -> &'static str { self.options[self.index] }
+    pub fn next(&mut self) {
+        self.index = (self.index + 1) % self.options.len();
+    }
+    pub fn prev(&mut self) {
+        self.index = (self.index + self.options.len() - 1) % self.options.len();
+    }
+    pub fn reset(&mut self) {
+        self.index = self.default;
+    }
+    pub fn value_str(&self) -> &'static str {
+        self.options[self.index]
+    }
 }
 
 /// A text-edit field (e.g. file path or PSK31 message).
@@ -50,13 +60,16 @@ pub(super) struct TextField {
 }
 
 impl TextField {
-    pub fn reset(&mut self) { self.value = self.default_value.clone(); self.status = None; }
+    pub fn reset(&mut self) {
+        self.value = self.default_value.clone();
+        self.status = None;
+    }
 }
 
 /// Minimum/maximum explicit offset in minutes (matches the supported display
 /// range for time-zone configuration).
 pub(super) const TZ_EXPLICIT_MIN: i32 = -12 * 60;
-pub(super) const TZ_EXPLICIT_MAX: i32 =  14 * 60;
+pub(super) const TZ_EXPLICIT_MAX: i32 = 14 * 60;
 /// Step size for ←/→ nudges inside the explicit sub-edit (15 minutes).
 pub(super) const TZ_EXPLICIT_STEP: i32 = 15;
 
@@ -85,8 +98,8 @@ impl TimeZoneField {
     pub fn next(&mut self) {
         self.pending_explicit = None;
         self.mode = match self.mode {
-            TzMode::Utc         => TzMode::Local,
-            TzMode::Local       => TzMode::Explicit(self.explicit_min),
+            TzMode::Utc => TzMode::Local,
+            TzMode::Local => TzMode::Explicit(self.explicit_min),
             TzMode::Explicit(_) => TzMode::Utc,
         };
     }
@@ -94,9 +107,9 @@ impl TimeZoneField {
     pub fn prev(&mut self) {
         self.pending_explicit = None;
         self.mode = match self.mode {
-            TzMode::Utc         => TzMode::Explicit(self.explicit_min),
+            TzMode::Utc => TzMode::Explicit(self.explicit_min),
             TzMode::Explicit(_) => TzMode::Local,
-            TzMode::Local       => TzMode::Utc,
+            TzMode::Local => TzMode::Utc,
         };
     }
     pub fn reset(&mut self) {
@@ -112,8 +125,8 @@ impl TimeZoneField {
     /// `TzMode::Local`.  Uses the pending sub-edit value if present.
     pub fn effective_min(&self, local_now: i32) -> i32 {
         match self.mode {
-            TzMode::Utc         => 0,
-            TzMode::Local       => local_now,
+            TzMode::Utc => 0,
+            TzMode::Local => local_now,
             TzMode::Explicit(_) => self.pending_explicit.unwrap_or(self.explicit_min),
         }
     }
@@ -150,7 +163,8 @@ impl Row {
             Row::Text(_) => {}
             Row::TimeZone(f) => {
                 if let Some(pending) = &mut f.pending_explicit {
-                    *pending = (*pending + TZ_EXPLICIT_STEP).clamp(TZ_EXPLICIT_MIN, TZ_EXPLICIT_MAX);
+                    *pending =
+                        (*pending + TZ_EXPLICIT_STEP).clamp(TZ_EXPLICIT_MIN, TZ_EXPLICIT_MAX);
                 } else {
                     f.next();
                 }
@@ -164,7 +178,8 @@ impl Row {
             Row::Text(_) => {}
             Row::TimeZone(f) => {
                 if let Some(pending) = &mut f.pending_explicit {
-                    *pending = (*pending - TZ_EXPLICIT_STEP).clamp(TZ_EXPLICIT_MIN, TZ_EXPLICIT_MAX);
+                    *pending =
+                        (*pending - TZ_EXPLICIT_STEP).clamp(TZ_EXPLICIT_MIN, TZ_EXPLICIT_MAX);
                 } else {
                     f.prev();
                 }
@@ -183,7 +198,7 @@ impl Row {
     pub fn patch_num(&mut self, v: f32) {
         if let Row::Num(f) = self {
             let clamped = v.clamp(f.min, f.max);
-            f.value   = clamped;
+            f.value = clamped;
             f.default = clamped;
         }
     }
@@ -196,20 +211,15 @@ impl Row {
 /// one parameter keeps helpers' arg lists tractable (they vary per row only in
 /// `val_x`, `y`, `row_h`, `focused`).
 pub(super) struct RowDrawCtx<'a> {
-    pub painter:    &'a egui::Painter,
+    pub painter: &'a egui::Painter,
     pub rect_right: f32,
-    pub med:        &'a egui::FontId,
-    pub small:      &'a egui::FontId,
-    pub val_color:  egui::Color32,
+    pub med: &'a egui::FontId,
+    pub small: &'a egui::FontId,
+    pub val_color: egui::Color32,
 }
 
 /// Draw a numeric row value.
-pub(super) fn draw_num(
-    ctx: &RowDrawCtx,
-    f: &NumField,
-    x: f32, y: f32, row_h: f32,
-    focused: bool,
-) {
+pub(super) fn draw_num(ctx: &RowDrawCtx, f: &NumField, x: f32, y: f32, row_h: f32, focused: bool) {
     let val_str = if f.step < 0.1 {
         format!("{:.2}{}", f.value, f.unit)
     } else if f.step < 1.0 {
@@ -239,7 +249,9 @@ pub(super) fn draw_num(
 pub(super) fn draw_toggle(
     ctx: &RowDrawCtx,
     f: &ToggleField,
-    x: f32, y: f32, row_h: f32,
+    x: f32,
+    y: f32,
+    row_h: f32,
     focused: bool,
 ) {
     let val_str = format!("◀ {} ▶", f.value_str());
@@ -248,6 +260,10 @@ pub(super) fn draw_toggle(
         egui::Align2::LEFT_CENTER,
         val_str,
         ctx.med.clone(),
-        if focused { egui::Color32::WHITE } else { ctx.val_color },
+        if focused {
+            egui::Color32::WHITE
+        } else {
+            ctx.val_color
+        },
     );
 }
