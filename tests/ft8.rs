@@ -551,7 +551,7 @@ fn ft8_streaming_decode_multi_loop() {
             let mut downsampled: Vec<C32> = Vec::with_capacity(n / 4 + 1);
             for (k, s) in samples.iter().enumerate() {
                 let abs_idx = sample_idx + k;
-                if abs_idx % 4 == 0 {
+                if abs_idx.is_multiple_of(4) {
                     let (sin_p, cos_p) = phase.sin_cos();
                     downsampled.push(C32::new(s * cos_p, -s * sin_p));
                 }

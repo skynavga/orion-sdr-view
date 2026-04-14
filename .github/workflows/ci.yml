@@ -38,8 +38,8 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-check-
 
       - run: cargo fmt --check
-      - run: cargo check
-      - run: cargo clippy -- -D warnings
+      - run: cargo check --lib --tests
+      - run: cargo clippy --lib --tests -- -D warnings
 
   # ── Rust tests ─────────────────────────────────────────────────────────────
   test:
@@ -68,4 +68,4 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-test-${{ matrix.toolchain }}-
 
       - name: Run tests
-        run: cargo test --release
+        run: cargo test --lib --tests --release
