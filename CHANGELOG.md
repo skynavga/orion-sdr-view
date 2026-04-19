@@ -9,6 +9,42 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.12] - 2026-04-19
+
+### Added
+
+- CW (Morse code) signal source with configurable WPM, jitter,
+  dash weighting, character/word spacing, rise/fall envelope,
+  message text, and repeat count
+- CW decode with character-timed text output in Dt mode, using
+  holdoff-based signal tracking to ride through keying gaps
+- FT8-style frame delimiters (`|| HH:MM:SS.fff | text ||`) and
+  word-boundary spaces in CW Dt output; truncation ellipsis (…)
+  when signal exceeds the 99.99 s cap
+- 30 CW integration tests: source generation, character timing,
+  round-trip decode at varied WPM/noise/block sizes, and
+  multi-loop 5 WPM verification
+- Settings panel rows for all CW source parameters (WPM, jitter,
+  dash weight, char/word spacing, rise/fall, message, repeat,
+  carrier, gap, noise)
+
+### Changed
+
+- Split `src/decode/mod.rs` into per-mode modules (`psk31.rs`,
+  `cw.rs`, `amdsb.rs`, `tone.rs`, `ft8.rs`) with shared spectral
+  analysis extracted to `spectral.rs`
+- `LoopTimer` now uses holdoff-aware signal tracking; CW keying
+  gaps no longer cause sig/gap timer flicker or spurious loop
+  count increments
+- Gap injection in the main thread uses holdoff-filtered state,
+  fixing Di bar "waiting for signal" flicker and Dt spurious
+  space injection during CW keying gaps
+- R key and source cycling now reset all source settings rows to
+  defaults and reconstruct the source
+- CW character schedule rebuilds mid-signal when WPM or other
+  timing parameters change via the settings panel
+- Bumped `orion-sdr` dependency 0.0.32 → 0.0.33
+
 ## [0.0.11] - 2026-04-13
 
 ### Added
