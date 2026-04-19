@@ -91,6 +91,13 @@ impl ViewApp {
                 }
             };
             let submode_str: String = match self.source_mode {
+                SourceMode::Cw => {
+                    let msg_ch = match self.settings.cw_msg_mode_str() {
+                        "Custom" => "c",
+                        _ => "n",
+                    };
+                    format!("  msg {msg_ch}  {}wpm", self.settings.cw_wpm() as u32)
+                }
                 SourceMode::AmDsb => match self.settings.am_audio_str() {
                     "Voice" => "  aud v".to_owned(),
                     "Custom" => "  aud c".to_owned(),

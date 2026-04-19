@@ -216,11 +216,41 @@ impl ViewApp {
         app
     }
 
+    /// Compute the holdoff duration for the loop timer based on current mode.
+    /// CW mode needs holdoff to ride through keying gaps; other modes use 0.
+    pub(super) fn cw_holdoff_secs(&self) -> f32 {
+        if self.source_mode != SourceMode::Cw {
+            return 0.0;
+        }
+        let wpm = self.settings.cw_wpm();
+        if wpm < 1.0 {
+            return 0.0;
+        }
+        let unit_secs = 1.2 / wpm; // 1200 ms / wpm, in seconds
+        let word_gap_secs = unit_secs * self.settings.cw_word_space();
+        word_gap_secs * 2.0
+    }
+
     /// Full reset: restart source, reset timers, flush decode pipeline.
     /// Call on R key, mode/message/audio cycle — anything that changes the signal.
     pub(super) fn reset_playback(&mut self) {
-        self.source.restart();
+        self.settings.reset_source_rows();
+        self.sync_settings();
+        self.source = match self.source_mode {
+            SourceMode::TestTone => {
+                self.signal_gen = TestSignalGen::new(self.settings.freq_hz(), SAMPLE_RATE);
+                Box::new(TestToneSource::new(TestSignalGen::new(
+                    self.settings.freq_hz(),
+                    SAMPLE_RATE,
+                )))
+            }
+            SourceMode::Cw => Box::new(self.make_cw_source()),
+            SourceMode::AmDsb => Box::new(self.make_am_source()),
+            SourceMode::Psk31 => Box::new(self.make_psk31_source()),
+            SourceMode::Ft8 => Box::new(self.make_ft8_source()),
+        };
         self.loop_timer.reset();
+        self.loop_timer.set_holdoff(self.cw_holdoff_secs());
         self.decode_ticker.reset();
         self.last_block_was_signal = false;
         self.spectrogram.clear();
@@ -241,6 +271,7 @@ impl ViewApp {
         let hz = FreqView::snap_hz(self.freq_view.center_hz, 10.0);
         match self.source_mode {
             SourceMode::TestTone => self.settings.set_freq_hz(hz),
+            SourceMode::Cw => self.settings.set_cw_carrier_hz(hz),
             SourceMode::AmDsb => self.settings.set_am_carrier_hz(hz),
             SourceMode::Psk31 => self.settings.set_psk31_carrier_hz(hz),
             SourceMode::Ft8 => self.settings.set_ft8_carrier_hz(hz),
@@ -259,6 +290,7 @@ impl ViewApp {
                     SAMPLE_RATE,
                 )))
             }
+            SourceMode::Cw => Box::new(self.make_cw_source()),
             SourceMode::AmDsb => Box::new(self.make_am_source()),
             SourceMode::Psk31 => Box::new(self.make_psk31_source()),
             SourceMode::Ft8 => {
@@ -270,8 +302,8 @@ impl ViewApp {
         self.settings.set_source_mode(mode as usize);
         self.sync_decode_config();
         self.reset_playback();
-        // Text mode is only valid for PSK31/FT8; clamp if we switched away.
-        let has_text = matches!(mode, SourceMode::Psk31 | SourceMode::Ft8);
+        // Text mode is only valid for CW/PSK31/FT8; clamp if we switched away.
+        let has_text = matches!(mode, SourceMode::Cw | SourceMode::Psk31 | SourceMode::Ft8);
         if !has_text && self.decode_bar == DecodeBarMode::Text {
             self.decode_bar = DecodeBarMode::Info;
         }
@@ -296,6 +328,9 @@ impl ViewApp {
             }
             if result.wav_load_requested && self.try_load_wav() {
                 self.settings.defocus();
+            }
+            if result.cw_msg_accepted {
+                self.apply_cw_message();
             }
             if result.psk31_msg_accepted {
                 self.apply_psk31_message();
@@ -347,6 +382,10 @@ impl ViewApp {
                 }
                 if cycle_audio {
                     match self.source_mode {
+                        SourceMode::Cw => {
+                            self.settings.cycle_cw_msg_mode();
+                            self.apply_cw_message();
+                        }
                         SourceMode::AmDsb => {
                             self.settings.cycle_am_audio();
                             self.reload_builtin_audio();
@@ -415,7 +454,10 @@ impl ViewApp {
                 self.reset_playback();
             }
             if i.key_pressed(egui::Key::D) {
-                let has_text = matches!(self.source_mode, SourceMode::Psk31 | SourceMode::Ft8);
+                let has_text = matches!(
+                    self.source_mode,
+                    SourceMode::Cw | SourceMode::Psk31 | SourceMode::Ft8
+                );
                 self.decode_bar = self.decode_bar.next(has_text);
             }
             if i.key_pressed(egui::Key::E) {
@@ -699,6 +741,10 @@ impl ViewApp {
         }
         if cycle_audio {
             match self.source_mode {
+                SourceMode::Cw => {
+                    self.settings.cycle_cw_msg_mode();
+                    self.apply_cw_message();
+                }
                 SourceMode::AmDsb => {
                     self.settings.cycle_am_audio();
                     self.reload_builtin_audio();
@@ -749,8 +795,9 @@ impl eframe::App for ViewApp {
 
         let block_is_signal = block_rms >= SIGNAL_THRESHOLD;
 
-        // Track FT8/FT4 signal onset for timestamp capture.
+        // Track signal onset for timestamp capture.
         let is_ft8_mode = self.source_mode == SourceMode::Ft8;
+        let is_cw_mode = self.source_mode == SourceMode::Cw;
         if is_ft8_mode {
             let was_signal = self.last_block_was_signal;
             if block_is_signal && !was_signal {
@@ -758,7 +805,19 @@ impl eframe::App for ViewApp {
                 self.ft_signal_onset = Some(std::time::SystemTime::now());
             }
         }
-
+        // CW uses holdoff-aware onset from the loop timer.
+        if is_cw_mode && self.loop_timer.signal_onset {
+            self.ft_signal_onset = Some(std::time::SystemTime::now());
+            // Inject opening frame delimiter: "|| HH:MM:SS.fff | "
+            let ts = format_time(self.ft_signal_onset.unwrap(), self.time_zone_offset_min);
+            let ts_str = if ts.is_empty() {
+                "--:--:--.---".to_owned()
+            } else {
+                ts
+            };
+            self.decode_ticker
+                .push_result(DecodeResult::Text(format!("|| {ts_str} | ")));
+        }
         self.last_block_was_signal = block_is_signal;
 
         // Drain decode results first so Info/Text from the decode thread are
@@ -805,13 +864,19 @@ impl eframe::App for ViewApp {
             }
         }
 
-        if !block_is_signal && self.decode_bar.is_visible() {
-            // Push Gap every silent frame so that late-arriving Info/Text from
-            // the decode thread's batch decode cannot pin the Di bar to stale
-            // data.  The decode thread no longer sends Gap, so this is the sole
-            // source; it keeps last_result=NoSignal throughout the gap.
-            // Gap also sets in_gap=true in the ticker, which drives SPACE
-            // injection during tick() at the nominal character scroll rate.
+        // CW closing delimiter: inject after draining all decode results so
+        // the last characters appear before the "||" separator.
+        if is_cw_mode && self.loop_timer.gap_onset {
+            self.decode_ticker
+                .push_result(DecodeResult::Text(" ||".to_owned()));
+        }
+
+        if !self.loop_timer.in_signal && self.decode_bar.is_visible() {
+            // Push Gap when the loop timer considers us in a real gap (after
+            // any holdoff has expired).  This avoids flooding the ticker with
+            // spurious Gap events during CW keying gaps.  Gap clears last_info
+            // (so Di shows "waiting for signal") and sets in_gap=true (so Dt
+            // injects spaces at the scroll rate).
             self.decode_ticker
                 .push_result(DecodeResult::Gap { decoded: false });
         }

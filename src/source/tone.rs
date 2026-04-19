@@ -96,6 +96,7 @@ impl TestSignalGen {
     }
 
     /// Reset to initial state: zero phase, full amplitude, FSM at PauseHigh.
+    #[allow(dead_code)] // used by integration tests, not the binary
     pub fn restart(&mut self) {
         self.phase = 0.0;
         self.tone_amp = self.amp_max;

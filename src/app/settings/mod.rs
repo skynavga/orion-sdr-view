@@ -5,6 +5,7 @@ use crate::config::ViewConfig;
 use eframe::egui;
 
 mod amdsb;
+mod cw;
 mod display;
 mod field;
 mod ft8;
@@ -12,6 +13,7 @@ mod psk31;
 mod tone;
 
 use amdsb::AmDsbRows;
+use cw::CwRows;
 use display::DisplayRows;
 use field::{Row, RowDrawCtx, ToggleField, draw_num, draw_toggle};
 use ft8::Ft8Rows;
@@ -40,6 +42,7 @@ enum RowTarget {
     Selector,
     Display(usize),
     Tone(usize),
+    Cw(usize),
     AmDsb(usize),
     Psk31(usize),
     Ft8(usize),
@@ -52,6 +55,8 @@ pub struct HandleKeysResult {
     pub source_switched: bool,
     pub am_audio_changed: bool,
     pub wav_load_requested: bool,
+    /// True when the user pressed Enter to commit a new CW message.
+    pub cw_msg_accepted: bool,
     /// True when the user pressed Enter to commit a new PSK31 message.
     pub psk31_msg_accepted: bool,
     /// True when the user pressed Enter to commit a new FT8 free-text message.
@@ -67,11 +72,12 @@ pub struct SettingsState {
     active_tab: usize,
     focused_row: Option<usize>,
 
-    /// Source selector toggle: "Test Tone" / "AM DSB" / "PSK31".
+    /// Source selector toggle: "Test Tone" / "CW" / "AM DSB" / "PSK31" / "FT8".
     source_selector: Row,
 
     display: DisplayRows,
     tone: ToneRows,
+    cw: CwRows,
     amdsb: AmDsbRows,
     psk31: Psk31Rows,
     ft8: Ft8Rows,
@@ -96,12 +102,13 @@ impl SettingsState {
             focused_row: None,
             source_selector: Row::Toggle(ToggleField {
                 label: "Source",
-                options: &["Test Tone", "AM DSB", "PSK31", "FT8"],
+                options: &["Test Tone", "CW", "AM DSB", "PSK31", "FT8"],
                 index: 0,
                 default: 0,
             }),
             display: DisplayRows::new(db_min, db_max, spec_freq_delta_hz, spec_time_range_secs),
             tone: ToneRows::new(freq_hz, noise_amp, amp_max, ramp_secs, pause_secs),
+            cw: CwRows::new(),
             amdsb: AmDsbRows::new(),
             psk31: Psk31Rows::new(),
             ft8: Ft8Rows::new(),
@@ -124,6 +131,7 @@ impl SettingsState {
             cfg.pause_secs(),
         );
         s.display.patch_from_config(cfg);
+        s.cw.patch_from_config(cfg);
         s.amdsb.patch_from_config(cfg);
         s.psk31.patch_from_config(cfg);
         s.ft8.patch_from_config(cfg);
@@ -140,16 +148,20 @@ impl SettingsState {
         }
     }
 
-    fn source_is_am(&self) -> bool {
+    fn source_is_cw(&self) -> bool {
         self.source_index() == 1
     }
 
-    fn source_is_psk31(&self) -> bool {
+    fn source_is_am(&self) -> bool {
         self.source_index() == 2
     }
 
-    fn source_is_ft8(&self) -> bool {
+    fn source_is_psk31(&self) -> bool {
         self.source_index() == 3
+    }
+
+    fn source_is_ft8(&self) -> bool {
+        self.source_index() == 4
     }
 
     pub fn source_mode_idx(&self) -> usize {
@@ -179,7 +191,9 @@ impl SettingsState {
                 .collect(),
             _ => {
                 let mut v = vec![RowTarget::Selector];
-                if self.source_is_am() {
+                if self.source_is_cw() {
+                    v.extend(self.cw.visible_indices().into_iter().map(RowTarget::Cw));
+                } else if self.source_is_am() {
                     v.extend(
                         self.amdsb
                             .visible_indices()
@@ -207,12 +221,36 @@ impl SettingsState {
         self.active_rows().len()
     }
 
+    /// Reset all source-mode settings rows to their defaults.
+    /// Called on R-key (outside settings panel) and on source cycling.
+    pub fn reset_source_rows(&mut self) {
+        for row in &mut self.tone.rows {
+            row.reset();
+        }
+        for row in &mut self.cw.rows {
+            row.reset();
+        }
+        self.cw.pending_msg = None;
+        self.cw.editing_msg_row = None;
+        for row in &mut self.amdsb.rows {
+            row.reset();
+        }
+        for row in &mut self.psk31.rows {
+            row.reset();
+        }
+        self.psk31.pending_msg = None;
+        for row in &mut self.ft8.rows {
+            row.reset();
+        }
+    }
+
     /// Get a reference to the Row for a given RowTarget.
     fn row_ref(&self, target: RowTarget) -> &Row {
         match target {
             RowTarget::Selector => &self.source_selector,
             RowTarget::Display(i) => &self.display.rows[i],
             RowTarget::Tone(i) => &self.tone.rows[i],
+            RowTarget::Cw(i) => &self.cw.rows[i],
             RowTarget::AmDsb(i) => &self.amdsb.rows[i],
             RowTarget::Psk31(i) => &self.psk31.rows[i],
             RowTarget::Ft8(i) => &self.ft8.rows[i],
@@ -225,6 +263,7 @@ impl SettingsState {
             RowTarget::Selector => &mut self.source_selector,
             RowTarget::Display(i) => &mut self.display.rows[i],
             RowTarget::Tone(i) => &mut self.tone.rows[i],
+            RowTarget::Cw(i) => &mut self.cw.rows[i],
             RowTarget::AmDsb(i) => &mut self.amdsb.rows[i],
             RowTarget::Psk31(i) => &mut self.psk31.rows[i],
             RowTarget::Ft8(i) => &mut self.ft8.rows[i],
@@ -238,6 +277,7 @@ impl SettingsState {
             source_switched: false,
             am_audio_changed: false,
             wav_load_requested: false,
+            cw_msg_accepted: false,
             psk31_msg_accepted: false,
             ft8_text_accepted: false,
             text_editing: false,
@@ -251,6 +291,9 @@ impl SettingsState {
         let active = self.active_rows();
         let focused_target = self.focused_row.and_then(|r| active.get(r).copied());
 
+        let cw_custom_focused =
+            matches!(focused_target, Some(RowTarget::Cw(i)) if i == CwRows::CUSTOM_MSG_IDX);
+
         let wav_row_focused = matches!(focused_target, Some(RowTarget::AmDsb(i)) if i == AmDsbRows::WAV_FILE_IDX)
             && self.amdsb.wav_row_is_active();
 
@@ -263,6 +306,21 @@ impl SettingsState {
         let tz_row_focused = matches!(focused_target, Some(RowTarget::Display(i)) if i == DisplayRows::TIME_ZONE_IDX);
 
         ctx.input(|i| {
+            // CW custom message field handling
+            if cw_custom_focused && let Some(RowTarget::Cw(local_idx)) = focused_target {
+                let msg_result = self.cw.handle_msg_keys(&i.events, local_idx);
+                if msg_result.msg_accepted {
+                    result.cw_msg_accepted = true;
+                }
+                if msg_result.defocus {
+                    self.focused_row = None;
+                }
+                if msg_result.consumed {
+                    result.text_editing = true;
+                    return;
+                }
+            }
+
             // WAV text field handling
             if wav_row_focused {
                 let wav_result = self.amdsb.handle_wav_keys(&i.events);
@@ -325,6 +383,9 @@ impl SettingsState {
 
             // If a text row is no longer focused (user navigated away),
             // discard any in-progress pending edit.
+            if self.cw.pending_msg.is_some() {
+                self.cw.discard_pending();
+            }
             if self.psk31.pending_msg.is_some() {
                 self.psk31.discard_pending();
             }
@@ -582,6 +643,12 @@ impl SettingsState {
                 (_, Row::Toggle(f)) => {
                     draw_toggle(&draw_ctx, f, val_x, y, ROW_H, focused);
                 }
+                (RowTarget::Cw(idx), Row::Text(_)) if idx == CwRows::MSG_IDX => {
+                    self.cw.draw_canned_msg(&draw_ctx, val_x, y, ROW_H, focused);
+                }
+                (RowTarget::Cw(idx), Row::Text(_)) if idx == CwRows::CUSTOM_MSG_IDX => {
+                    self.cw.draw_custom_msg(&draw_ctx, val_x, y, ROW_H, focused);
+                }
                 (RowTarget::Psk31(idx), Row::Text(_)) if idx == Psk31Rows::MSG_IDX => {
                     self.psk31
                         .draw_canned_msg(&draw_ctx, val_x, y, ROW_H, focused);
@@ -618,6 +685,9 @@ impl SettingsState {
 
         let focused_target = self.focused_row.and_then(|r| vis_targets.get(r).copied());
 
+        let cw_custom_focused =
+            matches!(focused_target, Some(RowTarget::Cw(i)) if i == CwRows::CUSTOM_MSG_IDX);
+
         let wav_focused = matches!(focused_target, Some(RowTarget::AmDsb(i)) if i == AmDsbRows::WAV_FILE_IDX)
             && self.amdsb.wav_row_is_active();
 
@@ -633,7 +703,11 @@ impl SettingsState {
             && matches!(&self.display.rows[DisplayRows::TIME_ZONE_IDX],
             Row::TimeZone(f) if f.is_explicit());
 
-        let hint = if wav_focused && self.amdsb.pending_wav.is_some() {
+        let hint = if cw_custom_focused && self.cw.pending_msg.is_some() {
+            "type message   \u{21b5} accept   Esc cancel"
+        } else if cw_custom_focused {
+            "\u{21b5} edit message   \u{2191}\u{2193} navigate"
+        } else if wav_focused && self.amdsb.pending_wav.is_some() {
             "type path   ↵ load   Esc cancel"
         } else if wav_focused {
             "↵ edit path   ↑↓ navigate"

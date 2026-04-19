@@ -4,6 +4,7 @@
 use serde::Deserialize;
 
 mod amdsb;
+mod cw;
 mod defaults;
 mod display;
 mod ft8;
@@ -11,6 +12,7 @@ mod psk31;
 mod tone;
 
 pub use amdsb::AmDsbConfig;
+pub use cw::CwConfig;
 pub use defaults::Defaults;
 pub use display::{DisplayConfig, TzMode, format_offset_min};
 pub use ft8::Ft8Config;
@@ -20,6 +22,7 @@ pub use tone::TestToneConfig;
 #[derive(Debug, Deserialize)]
 pub struct SourcesConfig {
     pub test_tone: Option<TestToneConfig>,
+    pub cw: Option<CwConfig>,
     pub am_dsb: Option<AmDsbConfig>,
     pub psk31: Option<Psk31Config>,
     pub ft8: Option<Ft8Config>,
