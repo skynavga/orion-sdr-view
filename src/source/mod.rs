@@ -32,9 +32,10 @@ pub use psk31::{Psk31Mode, Psk31Source};
 /// ```
 pub trait SignalSource {
     fn next_samples(&mut self, n: usize) -> Vec<f32>;
-    #[allow(dead_code)]
+    #[allow(dead_code)] // used by integration tests, not the binary
     fn sample_rate(&self) -> f32;
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
     /// Reset playback to the beginning of the first loop cycle.
+    #[allow(dead_code)] // used by integration tests, not the binary
     fn restart(&mut self) {}
 }

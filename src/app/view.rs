@@ -216,11 +216,41 @@ impl ViewApp {
         app
     }
 
+    /// Compute the holdoff duration for the loop timer based on current mode.
+    /// CW mode needs holdoff to ride through keying gaps; other modes use 0.
+    pub(super) fn cw_holdoff_secs(&self) -> f32 {
+        if self.source_mode != SourceMode::Cw {
+            return 0.0;
+        }
+        let wpm = self.settings.cw_wpm();
+        if wpm < 1.0 {
+            return 0.0;
+        }
+        let unit_secs = 1.2 / wpm; // 1200 ms / wpm, in seconds
+        let word_gap_secs = unit_secs * self.settings.cw_word_space();
+        word_gap_secs * 2.0
+    }
+
     /// Full reset: restart source, reset timers, flush decode pipeline.
     /// Call on R key, mode/message/audio cycle — anything that changes the signal.
     pub(super) fn reset_playback(&mut self) {
-        self.source.restart();
+        self.settings.reset_source_rows();
+        self.sync_settings();
+        self.source = match self.source_mode {
+            SourceMode::TestTone => {
+                self.signal_gen = TestSignalGen::new(self.settings.freq_hz(), SAMPLE_RATE);
+                Box::new(TestToneSource::new(TestSignalGen::new(
+                    self.settings.freq_hz(),
+                    SAMPLE_RATE,
+                )))
+            }
+            SourceMode::Cw => Box::new(self.make_cw_source()),
+            SourceMode::AmDsb => Box::new(self.make_am_source()),
+            SourceMode::Psk31 => Box::new(self.make_psk31_source()),
+            SourceMode::Ft8 => Box::new(self.make_ft8_source()),
+        };
         self.loop_timer.reset();
+        self.loop_timer.set_holdoff(self.cw_holdoff_secs());
         self.decode_ticker.reset();
         self.last_block_was_signal = false;
         self.spectrogram.clear();
@@ -765,8 +795,9 @@ impl eframe::App for ViewApp {
 
         let block_is_signal = block_rms >= SIGNAL_THRESHOLD;
 
-        // Track FT8/FT4 signal onset for timestamp capture.
+        // Track signal onset for timestamp capture.
         let is_ft8_mode = self.source_mode == SourceMode::Ft8;
+        let is_cw_mode = self.source_mode == SourceMode::Cw;
         if is_ft8_mode {
             let was_signal = self.last_block_was_signal;
             if block_is_signal && !was_signal {
@@ -774,7 +805,19 @@ impl eframe::App for ViewApp {
                 self.ft_signal_onset = Some(std::time::SystemTime::now());
             }
         }
-
+        // CW uses holdoff-aware onset from the loop timer.
+        if is_cw_mode && self.loop_timer.signal_onset {
+            self.ft_signal_onset = Some(std::time::SystemTime::now());
+            // Inject opening frame delimiter: "|| HH:MM:SS.fff | "
+            let ts = format_time(self.ft_signal_onset.unwrap(), self.time_zone_offset_min);
+            let ts_str = if ts.is_empty() {
+                "--:--:--.---".to_owned()
+            } else {
+                ts
+            };
+            self.decode_ticker
+                .push_result(DecodeResult::Text(format!("|| {ts_str} | ")));
+        }
         self.last_block_was_signal = block_is_signal;
 
         // Drain decode results first so Info/Text from the decode thread are
@@ -821,13 +864,19 @@ impl eframe::App for ViewApp {
             }
         }
 
-        if !block_is_signal && self.decode_bar.is_visible() {
-            // Push Gap every silent frame so that late-arriving Info/Text from
-            // the decode thread's batch decode cannot pin the Di bar to stale
-            // data.  The decode thread no longer sends Gap, so this is the sole
-            // source; it keeps last_result=NoSignal throughout the gap.
-            // Gap also sets in_gap=true in the ticker, which drives SPACE
-            // injection during tick() at the nominal character scroll rate.
+        // CW closing delimiter: inject after draining all decode results so
+        // the last characters appear before the "||" separator.
+        if is_cw_mode && self.loop_timer.gap_onset {
+            self.decode_ticker
+                .push_result(DecodeResult::Text(" ||".to_owned()));
+        }
+
+        if !self.loop_timer.in_signal && self.decode_bar.is_visible() {
+            // Push Gap when the loop timer considers us in a real gap (after
+            // any holdoff has expired).  This avoids flooding the ticker with
+            // spurious Gap events during CW keying gaps.  Gap clears last_info
+            // (so Di shows "waiting for signal") and sets in_gap=true (so Dt
+            // injects spaces at the scroll rate).
             self.decode_ticker
                 .push_result(DecodeResult::Gap { decoded: false });
         }

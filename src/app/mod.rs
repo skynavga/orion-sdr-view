@@ -36,10 +36,25 @@ pub(crate) const DECODE_BAR_H: f32 = 28.0;
 use crate::decode::SIGNAL_THRESHOLD;
 
 /// Tracks signal/gap phase timing and loop iteration count for the decode bar.
+///
+/// For modes with keying gaps (CW), a holdoff prevents brief intra-message
+/// silences from being treated as transmission gaps.  Set `holdoff_secs` > 0
+/// to enable; silence must persist longer than the holdoff before the timer
+/// transitions to gap.
 pub(super) struct LoopTimer {
     pub(super) in_signal: bool,
     pub(super) phase_secs: f32,
     pub(super) loop_count: u32,
+    /// Consecutive seconds of silence (block RMS below threshold).
+    silence_secs: f32,
+    /// Holdoff duration: silence must exceed this to declare a gap.
+    /// Zero disables holdoff (immediate transition, suitable for PSK31/FT8/etc.).
+    holdoff_secs: f32,
+    /// Set to `true` for one frame on gap→signal transition, `false` otherwise.
+    pub(super) signal_onset: bool,
+    /// Set to `true` for one frame on signal→gap transition (after holdoff),
+    /// `false` otherwise.
+    pub(super) gap_onset: bool,
 }
 
 impl LoopTimer {
@@ -48,6 +63,10 @@ impl LoopTimer {
             in_signal: false,
             phase_secs: 0.0,
             loop_count: 0,
+            silence_secs: 0.0,
+            holdoff_secs: 0.0,
+            signal_onset: false,
+            gap_onset: false,
         }
     }
 
@@ -55,20 +74,49 @@ impl LoopTimer {
         self.in_signal = false;
         self.phase_secs = 0.0;
         self.loop_count = 0;
+        self.silence_secs = 0.0;
+        self.signal_onset = false;
+        self.gap_onset = false;
+    }
+
+    /// Set the holdoff duration.  Call when the source mode or CW parameters
+    /// change.  Pass 0.0 for modes without keying gaps.
+    pub(super) fn set_holdoff(&mut self, secs: f32) {
+        self.holdoff_secs = secs.max(0.0);
     }
 
     /// Call once per frame with the measured block RMS and the frame duration.
     pub(super) fn tick(&mut self, rms: f32, dt: f32) {
         let active = rms >= SIGNAL_THRESHOLD;
-        if active != self.in_signal {
-            // Transition: gap→signal increments loop count.
-            if active {
+        self.signal_onset = false;
+        self.gap_onset = false;
+
+        if active {
+            self.silence_secs = 0.0;
+            if !self.in_signal {
+                // Gap → signal transition.
                 self.loop_count = (self.loop_count + 1) % 1000;
+                self.in_signal = true;
+                self.signal_onset = true;
+                self.phase_secs = 0.0;
+            } else {
+                self.phase_secs += dt;
             }
-            self.in_signal = active;
-            self.phase_secs = 0.0;
         } else {
-            self.phase_secs += dt;
+            self.silence_secs += dt;
+            if self.in_signal {
+                if self.silence_secs > self.holdoff_secs {
+                    // Silence persisted beyond holdoff — real gap.
+                    self.in_signal = false;
+                    self.gap_onset = true;
+                    self.phase_secs = 0.0;
+                } else {
+                    // Within holdoff — still count as signal time.
+                    self.phase_secs += dt;
+                }
+            } else {
+                self.phase_secs += dt;
+            }
         }
     }
 

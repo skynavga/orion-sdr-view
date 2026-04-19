@@ -221,6 +221,29 @@ impl SettingsState {
         self.active_rows().len()
     }
 
+    /// Reset all source-mode settings rows to their defaults.
+    /// Called on R-key (outside settings panel) and on source cycling.
+    pub fn reset_source_rows(&mut self) {
+        for row in &mut self.tone.rows {
+            row.reset();
+        }
+        for row in &mut self.cw.rows {
+            row.reset();
+        }
+        self.cw.pending_msg = None;
+        self.cw.editing_msg_row = None;
+        for row in &mut self.amdsb.rows {
+            row.reset();
+        }
+        for row in &mut self.psk31.rows {
+            row.reset();
+        }
+        self.psk31.pending_msg = None;
+        for row in &mut self.ft8.rows {
+            row.reset();
+        }
+    }
+
     /// Get a reference to the Row for a given RowTarget.
     fn row_ref(&self, target: RowTarget) -> &Row {
         match target {

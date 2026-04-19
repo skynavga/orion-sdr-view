@@ -277,6 +277,10 @@ impl ViewApp {
                 cw.render();
             }
             cw.update_gap();
+            // Refresh loop timer holdoff when WPM or word_space changes.
+            if wpm_changed || word_sp_changed {
+                self.loop_timer.set_holdoff(self.cw_holdoff_secs());
+            }
         }
 
         if let Some(ft8) = self.source.as_any_mut().downcast_mut::<Ft8Source>() {
