@@ -12,7 +12,7 @@ and waterfall from a configurable signal source.
 ## Features
 
 - **Three display panes** — instantaneous spectrum, persistence density map, and a cycle-able waterfall pane (`W`) that toggles between a vertical waterfall and a horizontal spectrogram centered on the primary marker (±freq delta, configurable time range)
-- **Multiple signal sources** — synthetic test tone (sine + AWGN), AM DSB from looped audio, PSK31 (BPSK31/QPSK31), and FT8/FT4
+- **Multiple signal sources** — synthetic test tone (sine + AWGN), CW (Morse code), AM DSB from looped audio, PSK31 (BPSK31/QPSK31), and FT8/FT4
 - **Decode bar** — optional bottom bar (cycled by `D`) showing signal info
   (Di: modulation, carrier, BW, SNR) or decoded text (Dt: smooth-scrolling teletype ticker)
 - **Frequency pan and zoom** — keyboard-driven viewport with coarse/fine pan snap, coarse/fine zoom, and span steps
@@ -25,7 +25,7 @@ and waterfall from a configurable signal source.
 
 - Rust (edition 2024)
 - macOS or Linux (uses OpenGL via `eframe` glow backend)
-- [orion-sdr](https://crates.io/crates/orion-sdr) 0.0.32 (pulled automatically from crates.io)
+- [orion-sdr](https://crates.io/crates/orion-sdr) 0.0.33 (pulled automatically from crates.io)
 
 The GUI dependencies (`eframe`, `egui`) are behind an optional `gui` feature
 (enabled by default). Use `--no-default-features` to build and test the library
@@ -66,6 +66,20 @@ view:
       ramp_secs:  3.0
       pause_secs: 7.0   # dwell at both amplitude extremes (not a gap)
       noise_amp:  0.05
+    cw:
+      wpm:         13.0
+      jitter_pct:  5.0
+      dash_weight: 3.0
+      char_space:  3.0
+      word_space:  7.0
+      rise_ms:     5.0
+      fall_ms:     5.0
+      canned_text: "CQ CQ CQ DE N0GNR"
+      custom_text: "Custom message"
+      msg_repeat:  3
+      carrier_hz:  12000.0
+      gap_secs:    10.0
+      noise_amp:   0.05
     am_dsb:
       msg_repeat: 1
       carrier_hz: 12000.0
