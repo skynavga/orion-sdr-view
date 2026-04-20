@@ -9,6 +9,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.13] - 2026-04-19
+
+### Changed
+
+- Updated README with CW source documentation and orion-sdr 0.0.33
+
 ## [0.0.12] - 2026-04-19
 
 ### Added
