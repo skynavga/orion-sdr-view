@@ -17,7 +17,6 @@ use crate::decode::{DecodeConfig, DecodeResult, DecodeTicker, DecodeWorker, SIGN
 use crate::source::SignalSource;
 use crate::source::tone::TestSignalGen;
 use crate::source::tone::TestToneSource;
-use crate::utils::format::format_time;
 use crate::utils::timer::LoopTimer;
 
 use super::{
@@ -88,16 +87,9 @@ pub(crate) struct ViewApp {
     /// Wall-clock time of the previous frame, for real-time dt calculation.
     pub(super) last_frame_time: std::time::Instant,
 
-    // FT8/FT4 frame counters (reset on source switch, mode change, or R key).
-    pub(super) ft_frame_count: u32,
-    pub(super) ft_err_count: u32,
-    /// Timestamp string (HH:MM:SS UTC) of the most recently decoded frame's signal onset.
-    pub(super) ft_last_timestamp: String,
-    /// Wall-clock time when the current FT8/FT4 signal burst started (for timestamp capture).
-    pub(super) ft_signal_onset: Option<std::time::SystemTime>,
-    /// Cached FT8/FT4 sub-mode for use in draw functions (updated on mode cycle).
-    pub(super) ft_mode: crate::source::ft8::Ft8Mode,
-    pub(super) ft_msg_type: crate::source::ft8::Ft8MsgType,
+    /// Per-frame view-side state for FT8/FT4 (frame counts, pending onset,
+    /// cached mode/msg_type).  See [`Ft8ViewState`].
+    pub(super) ft8_view: crate::source::ft8::Ft8ViewState,
     /// Display timestamps offset from UTC by this many minutes (0 = UTC).
     pub(super) time_zone_offset_min: i32,
 }
@@ -188,12 +180,7 @@ impl ViewApp {
             last_block_was_signal: false,
             last_frame_time: std::time::Instant::now(),
 
-            ft_frame_count: 0,
-            ft_err_count: 0,
-            ft_last_timestamp: String::new(),
-            ft_signal_onset: None,
-            ft_mode: crate::source::ft8::Ft8Mode::Ft8,
-            ft_msg_type: crate::source::ft8::Ft8MsgType::Standard,
+            ft8_view: crate::source::ft8::Ft8ViewState::new(),
             time_zone_offset_min: 0,
         };
         app.time_zone_offset_min = cfg.time_zone_offset_min();
@@ -201,19 +188,14 @@ impl ViewApp {
         app
     }
 
-    /// Compute the holdoff duration for the loop timer based on current mode.
-    /// CW mode needs holdoff to ride through keying gaps; other modes use 0.
-    pub(super) fn cw_holdoff_secs(&self) -> f32 {
-        if self.source_mode != SourceMode::Cw {
-            return 0.0;
+    /// Loop-timer holdoff for the active source.  Only CW uses holdoff; all
+    /// other modes use immediate signal/gap transitions.
+    pub(super) fn loop_timer_holdoff_secs(&self) -> f32 {
+        if self.source_mode == SourceMode::Cw {
+            super::source::cw::holdoff_secs(&self.settings)
+        } else {
+            0.0
         }
-        let wpm = self.settings.cw_wpm();
-        if wpm < 1.0 {
-            return 0.0;
-        }
-        let unit_secs = 1.2 / wpm; // 1200 ms / wpm, in seconds
-        let word_gap_secs = unit_secs * self.settings.cw_word_space();
-        word_gap_secs * 2.0
     }
 
     /// Full reset: restart source, reset timers, flush decode pipeline.
@@ -226,14 +208,11 @@ impl ViewApp {
         }
         self.source = self.make_source();
         self.loop_timer.reset();
-        self.loop_timer.set_holdoff(self.cw_holdoff_secs());
+        self.loop_timer.set_holdoff(self.loop_timer_holdoff_secs());
         self.decode_ticker.reset();
         self.last_block_was_signal = false;
         self.spectrogram.clear();
-        self.ft_frame_count = 0;
-        self.ft_err_count = 0;
-        self.ft_last_timestamp = String::new();
-        self.ft_signal_onset = None;
+        self.ft8_view.reset();
         while self.decode_rx.try_recv().is_ok() {}
         let _ = self.decode_tx.try_send(Vec::new());
     }
@@ -259,8 +238,7 @@ impl ViewApp {
     pub(super) fn switch_source(&mut self, mode: SourceMode) {
         self.source_mode = mode;
         if mode == SourceMode::Ft8 {
-            self.ft_mode = crate::source::ft8::Ft8Mode::Ft8;
-            self.ft_msg_type = crate::source::ft8::Ft8MsgType::Standard;
+            self.ft8_view.reset_to_defaults();
         }
         self.source = if mode == SourceMode::TestTone {
             // Re-create from signal_gen's current settings, not settings.freq_hz()
@@ -774,21 +752,16 @@ impl eframe::App for ViewApp {
             let was_signal = self.last_block_was_signal;
             if block_is_signal && !was_signal {
                 // Rising edge: capture onset time for timestamp.
-                self.ft_signal_onset = Some(std::time::SystemTime::now());
+                self.ft8_view.on_signal_rising_edge();
             }
         }
         // CW uses holdoff-aware onset from the loop timer.
         if is_cw_mode && self.loop_timer.signal_onset {
-            self.ft_signal_onset = Some(std::time::SystemTime::now());
-            // Inject opening frame delimiter: "|| HH:MM:SS.fff | "
-            let ts = format_time(self.ft_signal_onset.unwrap(), self.time_zone_offset_min);
-            let ts_str = if ts.is_empty() {
-                "--:--:--.---".to_owned()
-            } else {
-                ts
-            };
-            self.decode_ticker
-                .push_result(DecodeResult::Text(format!("|| {ts_str} | ")));
+            let delim = super::source::cw::format_open_delimiter(
+                std::time::SystemTime::now(),
+                self.time_zone_offset_min,
+            );
+            self.decode_ticker.push_result(DecodeResult::Text(delim));
         }
         self.last_block_was_signal = block_is_signal;
 
@@ -799,12 +772,9 @@ impl eframe::App for ViewApp {
                 // For FT8/FT4: update frm/err counters; capture timestamp on success.
                 if is_ft8_mode {
                     if decoded {
-                        self.ft_frame_count = self.ft_frame_count.saturating_add(1).min(999);
-                        if let Some(onset) = self.ft_signal_onset.take() {
-                            self.ft_last_timestamp = format_time(onset, self.time_zone_offset_min);
-                        }
+                        self.ft8_view.on_decoded_frame(self.time_zone_offset_min);
                     } else {
-                        self.ft_err_count = self.ft_err_count.saturating_add(1).min(999);
+                        self.ft8_view.on_failed_frame();
                     }
                 }
                 self.decode_ticker
@@ -813,20 +783,13 @@ impl eframe::App for ViewApp {
                 // For FT8/FT4: wrap the decoded frame text as
                 // "|| HH:MM:SS.fff | <text> ||" so the leading/trailing "||"
                 // clearly demarcate the frame boundaries in the Dt ticker.
-                // The onset timestamp is still in ft_signal_onset at Text time
-                // (it's taken when the Gap{decoded:true} arrives just after).
+                // The onset timestamp is still in ft8_view.pending_onset at Text
+                // time (it's taken when the Gap{decoded:true} arrives just after).
                 let result = if let DecodeResult::Text(ref s) = result {
-                    let ts = if let Some(onset) = self.ft_signal_onset {
-                        format_time(onset, self.time_zone_offset_min)
-                    } else {
-                        self.ft_last_timestamp.clone()
-                    };
-                    let ts_str = if ts.is_empty() {
-                        "--:--:--.---".to_owned()
-                    } else {
-                        ts
-                    };
-                    DecodeResult::Text(format!("|| {ts_str} | {s} ||"))
+                    DecodeResult::Text(
+                        self.ft8_view
+                            .format_decoded_text(s, self.time_zone_offset_min),
+                    )
                 } else {
                     result
                 };

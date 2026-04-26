@@ -8,6 +8,21 @@ use orion_sdr::modulate::CwKeyedMod;
 
 use crate::source::{MAX_SIG_SECS, SignalSource};
 
+// ── CW timing helpers ────────────────────────────────────────────────────────
+
+/// Loop-timer holdoff for CW: ride through inter-character keying gaps without
+/// transitioning to "gap" state.  Two word-spaces wide so an entire word can
+/// arrive before the timer flips, which keeps the decode-bar steady during
+/// normal keying.  Returns 0 for nonsensical WPM (≤ 1).
+pub fn holdoff_secs(wpm: f32, word_space: f32) -> f32 {
+    if wpm < 1.0 {
+        return 0.0;
+    }
+    let unit_secs = 1.2 / wpm; // 1200 ms / wpm, in seconds
+    let word_gap_secs = unit_secs * word_space;
+    word_gap_secs * 2.0
+}
+
 // ── CW constants ─────────────────────────────────────────────────────────────
 
 pub const CW_DEFAULT_CARRIER_HZ: f32 = 12_000.0;

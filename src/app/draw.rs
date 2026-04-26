@@ -116,11 +116,11 @@ impl ViewApp {
                     format!("  mode {mode_ch}  msg {msg_ch}")
                 }
                 SourceMode::Ft8 => {
-                    let mode_ch = match self.ft_mode {
+                    let mode_ch = match self.ft8_view.mode {
                         Ft8Mode::Ft8 => "8",
                         Ft8Mode::Ft4 => "4",
                     };
-                    let msg_ch = match self.ft_msg_type {
+                    let msg_ch = match self.ft8_view.msg_type {
                         Ft8MsgType::Standard => "s",
                         Ft8MsgType::FreeText => "f",
                     };
@@ -257,7 +257,7 @@ impl ViewApp {
         let ft_label: Option<String> = if self.source_mode == SourceMode::Ft8 {
             Some(format!(
                 "frm {:03} err {:03} ",
-                self.ft_frame_count, self.ft_err_count
+                self.ft8_view.frame_count, self.ft8_view.err_count
             ))
         } else {
             None

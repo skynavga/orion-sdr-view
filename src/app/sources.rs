@@ -48,11 +48,11 @@ impl ViewApp {
         if let Some(flags) = cw::sync(self.source.as_mut(), &self.settings)
             && flags.wpm_or_word_space_changed
         {
-            self.loop_timer.set_holdoff(self.cw_holdoff_secs());
+            self.loop_timer.set_holdoff(self.loop_timer_holdoff_secs());
         }
         if let Some((mode, msg_type)) = ft8::sync(self.source.as_mut(), &self.settings) {
-            self.ft_mode = mode;
-            self.ft_msg_type = msg_type;
+            self.ft8_view.mode = mode;
+            self.ft8_view.msg_type = msg_type;
         }
 
         self.sync_decode_config();
@@ -106,7 +106,7 @@ impl ViewApp {
     /// Cycle the FT8 source between FT8 and FT4 modes (M key).
     pub(super) fn cycle_ft8_mode(&mut self) {
         if let Some(mode) = ft8::cycle_mode(self.source.as_mut()) {
-            self.ft_mode = mode;
+            self.ft8_view.mode = mode;
         }
         self.sync_decode_config();
         self.reset_playback();
@@ -115,7 +115,7 @@ impl ViewApp {
     /// Cycle the FT8 source message type (N key): Standard → FreeText → Standard.
     pub(super) fn cycle_ft8_msg_type(&mut self) {
         if let Some(msg_type) = ft8::cycle_msg_type(self.source.as_mut()) {
-            self.ft_msg_type = msg_type;
+            self.ft8_view.msg_type = msg_type;
         }
         self.reset_playback();
     }
@@ -148,7 +148,7 @@ impl ViewApp {
             SourceMode::Cw => DecodeMode::Cw,
             SourceMode::AmDsb => DecodeMode::AmDsb,
             SourceMode::TestTone => DecodeMode::TestTone,
-            SourceMode::Ft8 => match self.ft_mode {
+            SourceMode::Ft8 => match self.ft8_view.mode {
                 Ft8Mode::Ft8 => DecodeMode::Ft8,
                 Ft8Mode::Ft4 => DecodeMode::Ft4,
             },

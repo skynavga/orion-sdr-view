@@ -4,7 +4,7 @@
 use crate::app::SAMPLE_RATE;
 use crate::app::settings::SettingsState;
 use crate::source::SignalSource;
-use crate::source::cw::{CwSource, CwSyncFlags};
+use crate::source::cw::{self, CwSource, CwSyncFlags};
 
 /// Build a fresh `CwSource` from current settings.
 pub(in crate::app) fn make(settings: &SettingsState) -> CwSource {
@@ -54,4 +54,25 @@ pub(in crate::app) fn apply_message(source: &mut dyn SignalSource, settings: &Se
         cw.message = settings.cw_message().to_owned();
         cw.render();
     }
+}
+
+/// Loop-timer holdoff for the active CW settings (zero for non-CW callers).
+pub(in crate::app) fn holdoff_secs(settings: &SettingsState) -> f32 {
+    cw::holdoff_secs(settings.cw_wpm(), settings.cw_word_space())
+}
+
+/// Format the opening ticker delimiter injected on a CW signal-onset edge:
+/// `"|| HH:MM:SS.mmm | "`.  `onset` is the captured rising-edge time;
+/// `time_zone_offset_min` is the configured display offset.
+pub(in crate::app) fn format_open_delimiter(
+    onset: std::time::SystemTime,
+    time_zone_offset_min: i32,
+) -> String {
+    let ts = crate::utils::format::format_time(onset, time_zone_offset_min);
+    let ts_str = if ts.is_empty() {
+        "--:--:--.---".to_owned()
+    } else {
+        ts
+    };
+    format!("|| {ts_str} | ")
 }
