@@ -5,28 +5,19 @@
 //! construction, message commits, and FT8 mode cycling to the per-source app
 //! modules under `app::source::*`.
 
-use crate::decode::DecodeMode;
 use crate::source::SignalSource;
 use crate::source::amdsb::AmDsbSource;
-use crate::source::ft8::Ft8Mode;
 
-use super::settings::{AmDsbSettings, CwSettings, Ft8Settings, Psk31Settings, ToneSettings};
+use super::SourceMode;
+use super::common::source_mode_factory;
+use super::settings::{AmDsbSettings, CwSettings, ToneSettings};
 use super::source::{amdsb, cw, ft8, psk31, tone};
 use super::view::ViewApp;
-use super::{SAMPLE_RATE, SourceMode};
 
 impl ViewApp {
     /// Build a fresh source for the active `source_mode` from current settings.
     pub(super) fn make_source(&self) -> Box<dyn SignalSource> {
-        match self.source_mode {
-            SourceMode::TestTone => Box::new(crate::source::tone::TestToneSource::new(
-                crate::source::tone::TestSignalGen::new(self.settings.freq_hz(), SAMPLE_RATE),
-            )),
-            SourceMode::Cw => Box::new(cw::make(&self.settings)),
-            SourceMode::AmDsb => Box::new(amdsb::make(&self.settings)),
-            SourceMode::Psk31 => Box::new(psk31::make(&self.settings)),
-            SourceMode::Ft8 => Box::new(ft8::make(&self.settings)),
-        }
+        source_mode_factory(self.source_mode).make(&self.settings)
     }
 
     /// Push current settings values into live signal/display state.
@@ -139,32 +130,18 @@ impl ViewApp {
         self.reset_playback();
     }
 
-    /// Update the shared `DecodeConfig` to match the current source mode and carrier.
+    /// Update the shared `DecodeConfig` to match the current source mode and
+    /// carrier.  Source-specific dispatch goes through the per-source
+    /// `SourceFactory` impl; the only source-aware branch here is the CW
+    /// extra-fields block.
     pub(super) fn sync_decode_config(&mut self) {
-        let mode = match self.source_mode {
-            SourceMode::Psk31 => match self.settings.psk31_mode_str() {
-                "QPSK31" => DecodeMode::Qpsk31,
-                _ => DecodeMode::Bpsk31,
-            },
-            SourceMode::Cw => DecodeMode::Cw,
-            SourceMode::AmDsb => DecodeMode::AmDsb,
-            SourceMode::TestTone => DecodeMode::TestTone,
-            SourceMode::Ft8 => match self.ft8_view.mode {
-                Ft8Mode::Ft8 => DecodeMode::Ft8,
-                Ft8Mode::Ft4 => DecodeMode::Ft4,
-            },
-        };
-        let carrier_hz = match self.source_mode {
-            SourceMode::Psk31 => self.settings.psk31_carrier_hz(),
-            SourceMode::Cw => self.settings.cw_carrier_hz(),
-            SourceMode::AmDsb => self.settings.am_carrier_hz(),
-            SourceMode::TestTone => self.settings.freq_hz(),
-            SourceMode::Ft8 => self.settings.ft8_carrier_hz(),
-        };
+        let factory = source_mode_factory(self.source_mode);
+        let mode = factory.decode_mode(&self.settings, &self.ft8_view);
+        let carrier_hz = factory.decode_carrier_hz(&self.settings);
         if let Ok(mut cfg) = self.decode_config.lock() {
             cfg.mode = mode;
             cfg.carrier_hz = carrier_hz;
-            if mode == DecodeMode::Cw {
+            if self.source_mode == SourceMode::Cw {
                 cfg.cw_message = self.settings.cw_message().to_owned();
                 cfg.cw_wpm = self.settings.cw_wpm();
                 cfg.cw_dash_weight = self.settings.cw_dash_weight();

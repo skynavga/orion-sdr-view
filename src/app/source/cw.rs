@@ -3,8 +3,10 @@
 
 use crate::app::SAMPLE_RATE;
 use crate::app::settings::{CwSettings, SettingsState};
+use crate::decode::DecodeMode;
 use crate::source::SignalSource;
 use crate::source::cw::{self, CwSource, CwSyncFlags};
+use crate::source::ft8::Ft8ViewState;
 
 /// Build a fresh `CwSource` from current settings.
 pub(in crate::app) fn make(settings: &SettingsState) -> CwSource {
@@ -81,4 +83,20 @@ pub(in crate::app) fn format_open_delimiter(
 pub(in crate::app) fn hud_submode_str(settings: &SettingsState) -> String {
     let msg_is_custom = settings.cw_msg_mode_str() == "Custom";
     cw::hud_submode_str(msg_is_custom, settings.cw_wpm())
+}
+
+pub(super) struct Factory;
+impl super::SourceFactory for Factory {
+    fn make(&self, settings: &SettingsState) -> Box<dyn SignalSource> {
+        Box::new(make(settings))
+    }
+    fn decode_mode(&self, _: &SettingsState, _: &Ft8ViewState) -> DecodeMode {
+        DecodeMode::Cw
+    }
+    fn decode_carrier_hz(&self, settings: &SettingsState) -> f32 {
+        settings.cw_carrier_hz()
+    }
+    fn set_carrier_hz(&self, settings: &mut SettingsState, hz: f32) {
+        settings.set_cw_carrier_hz(hz);
+    }
 }

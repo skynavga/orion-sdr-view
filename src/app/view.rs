@@ -8,9 +8,7 @@ use eframe::egui;
 
 use super::freqview::{FreqMarker, FreqView};
 use super::persistence::PersistenceRenderer;
-use super::settings::{
-    AmDsbSettings, CwSettings, Ft8Settings, Psk31Settings, SettingsState, ToneSettings,
-};
+use super::settings::{AmDsbSettings, CwSettings, Psk31Settings, SettingsState, ToneSettings};
 use super::spectrogram::SpectrogramDisplay;
 use super::spectrum::{RingBuffer, SpectrumProcessor};
 use super::waterfall::WaterfallDisplay;
@@ -226,13 +224,7 @@ impl ViewApp {
             return;
         }
         let hz = FreqView::snap_hz(self.freq_view.center_hz, 10.0);
-        match self.source_mode {
-            SourceMode::TestTone => self.settings.set_freq_hz(hz),
-            SourceMode::Cw => self.settings.set_cw_carrier_hz(hz),
-            SourceMode::AmDsb => self.settings.set_am_carrier_hz(hz),
-            SourceMode::Psk31 => self.settings.set_psk31_carrier_hz(hz),
-            SourceMode::Ft8 => self.settings.set_ft8_carrier_hz(hz),
-        }
+        super::common::source_mode_factory(self.source_mode).set_carrier_hz(&mut self.settings, hz);
         self.sync_settings();
     }
 

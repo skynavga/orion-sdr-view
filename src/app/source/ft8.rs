@@ -3,6 +3,7 @@
 
 use crate::app::SAMPLE_RATE;
 use crate::app::settings::{Ft8Settings, SettingsState};
+use crate::decode::DecodeMode;
 use crate::source::SignalSource;
 use crate::source::ft8::{Ft8Mode, Ft8MsgType, Ft8Source, Ft8ViewState};
 
@@ -88,5 +89,27 @@ fn settings_msg_type(settings: &SettingsState) -> Ft8MsgType {
         Ft8MsgType::FreeText
     } else {
         Ft8MsgType::Standard
+    }
+}
+
+pub(super) struct Factory;
+impl super::SourceFactory for Factory {
+    fn make(&self, settings: &SettingsState) -> Box<dyn SignalSource> {
+        Box::new(make(settings))
+    }
+    /// FT8 splits into Ft8/Ft4 based on the live cached mode in `Ft8ViewState`,
+    /// not the settings — the user can cycle modes via the M key without
+    /// touching settings.
+    fn decode_mode(&self, _: &SettingsState, ft8_view: &Ft8ViewState) -> DecodeMode {
+        match ft8_view.mode {
+            Ft8Mode::Ft8 => DecodeMode::Ft8,
+            Ft8Mode::Ft4 => DecodeMode::Ft4,
+        }
+    }
+    fn decode_carrier_hz(&self, settings: &SettingsState) -> f32 {
+        settings.ft8_carrier_hz()
+    }
+    fn set_carrier_hz(&self, settings: &mut SettingsState, hz: f32) {
+        settings.set_ft8_carrier_hz(hz);
     }
 }

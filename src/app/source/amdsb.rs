@@ -5,8 +5,10 @@ use std::path::Path;
 
 use crate::app::SAMPLE_RATE;
 use crate::app::settings::{AmDsbSettings, SettingsState};
+use crate::decode::DecodeMode;
 use crate::source::SignalSource;
 use crate::source::amdsb::{self, AmDsbSource, BuiltinAudio, load_builtin, load_wav_file};
+use crate::source::ft8::Ft8ViewState;
 
 /// Build a fresh `AmDsbSource` from current settings.
 pub(in crate::app) fn make(settings: &SettingsState) -> AmDsbSource {
@@ -116,4 +118,20 @@ pub(in crate::app) fn clear_audio(source: &mut dyn SignalSource) {
 /// Submode line for the top HUD when AM DSB is the active source.
 pub(in crate::app) fn hud_submode_str(settings: &SettingsState) -> String {
     amdsb::hud_submode_str(settings.am_audio_str())
+}
+
+pub(super) struct Factory;
+impl super::SourceFactory for Factory {
+    fn make(&self, settings: &SettingsState) -> Box<dyn SignalSource> {
+        Box::new(make(settings))
+    }
+    fn decode_mode(&self, _: &SettingsState, _: &Ft8ViewState) -> DecodeMode {
+        DecodeMode::AmDsb
+    }
+    fn decode_carrier_hz(&self, settings: &SettingsState) -> f32 {
+        settings.am_carrier_hz()
+    }
+    fn set_carrier_hz(&self, settings: &mut SettingsState, hz: f32) {
+        settings.set_am_carrier_hz(hz);
+    }
 }

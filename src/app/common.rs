@@ -112,3 +112,12 @@ impl SourceMode {
         Self::ALL[idx]
     }
 }
+
+/// Borrow the static `SourceFactory` for a given source mode.  Adding a new
+/// source: extend `SourceMode` and push a `Factory` impl into
+/// `app::source::FACTORIES`.  No edit to this function.
+pub(super) fn source_mode_factory(
+    mode: SourceMode,
+) -> &'static (dyn super::source::SourceFactory + Sync) {
+    super::source::FACTORIES[mode.index()]
+}

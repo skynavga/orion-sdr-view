@@ -3,7 +3,9 @@
 
 use crate::app::SAMPLE_RATE;
 use crate::app::settings::{Psk31Settings, SettingsState};
+use crate::decode::DecodeMode;
 use crate::source::SignalSource;
+use crate::source::ft8::Ft8ViewState;
 use crate::source::psk31::{self, Psk31Mode, Psk31Source};
 
 /// Build a fresh `Psk31Source` from current settings.
@@ -50,5 +52,24 @@ fn settings_mode(settings: &SettingsState) -> Psk31Mode {
     match settings.psk31_mode_str() {
         "QPSK31" => Psk31Mode::Qpsk31,
         _ => Psk31Mode::Bpsk31,
+    }
+}
+
+pub(super) struct Factory;
+impl super::SourceFactory for Factory {
+    fn make(&self, settings: &SettingsState) -> Box<dyn SignalSource> {
+        Box::new(make(settings))
+    }
+    fn decode_mode(&self, settings: &SettingsState, _: &Ft8ViewState) -> DecodeMode {
+        match settings_mode(settings) {
+            Psk31Mode::Qpsk31 => DecodeMode::Qpsk31,
+            Psk31Mode::Bpsk31 => DecodeMode::Bpsk31,
+        }
+    }
+    fn decode_carrier_hz(&self, settings: &SettingsState) -> f32 {
+        settings.psk31_carrier_hz()
+    }
+    fn set_carrier_hz(&self, settings: &mut SettingsState, hz: f32) {
+        settings.set_psk31_carrier_hz(hz);
     }
 }
