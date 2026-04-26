@@ -28,22 +28,59 @@ const TAB_NAMES: [&str; N_TABS] = ["Source", "Display"];
 
 // ── SourceRows trait ───────────────────────────────────────────────────────
 //
-// Uniform interface implemented by each per-source `*Rows` struct so the
-// common dispatch can iterate, reset, and discard pending edits without a
-// per-source match.  Per-source-specific operations (text-field focus, key
-// handling, custom row drawing, footer hints) live as free functions in
-// each `app/settings/<S>.rs` module and are dispatched in one place via
-// `with_active_source` / `with_active_source_mut`.
+// Uniform interface implemented by each per-source `*Rows` struct.  The
+// settings dispatch in this file calls trait methods directly — there is
+// **no** per-source `match` for any operation that has a uniform shape
+// across sources.  Adding a new source means: implement this trait, push an
+// instance into `SettingsState::sources`.  No edits to `common.rs`.
+//
+// Methods after `discard_pending` have default impls so sources without
+// text fields / hints / special draw logic don't need to override them.
 
 pub(super) trait SourceRows {
+    // ── Required ─────────────────────────────────────────────────────────
     fn rows(&self) -> &[Row];
     fn rows_mut(&mut self) -> &mut [Row];
     fn visible_indices(&self) -> Vec<usize>;
+
+    // ── Optional ─────────────────────────────────────────────────────────
+
     /// Reset per-source extras (pending edits, edit-mode flags) beyond the
     /// row-level default reset that `Row::reset()` already does.
     fn reset_extras(&mut self) {}
+
     /// Discard any in-progress pending text edit.
     fn discard_pending(&mut self) {}
+
+    /// Identifies the source's text-editable row, if `local_idx` points at
+    /// one (and the row is currently editable).
+    fn focused_text_field(&self, _local_idx: usize) -> Option<TextFieldKind> {
+        None
+    }
+
+    /// Handle key events when the source's text-editable row is focused.
+    fn handle_text_keys(&mut self, _events: &[egui::Event], _local_idx: usize) -> TextOutcome {
+        TextOutcome::default()
+    }
+
+    /// Render a per-source-special text row.  Returns `true` if rendered;
+    /// `false` to fall through to generic Text-row drawing.
+    fn draw_text_row(
+        &self,
+        _ctx: &RowDrawCtx,
+        _local_idx: usize,
+        _val_x: f32,
+        _y: f32,
+        _row_h: f32,
+        _focused: bool,
+    ) -> bool {
+        false
+    }
+
+    /// Footer hint when one of this source's rows is focused.
+    fn footer_hint(&self, _focused_local: Option<usize>) -> Option<&'static str> {
+        None
+    }
 }
 
 // ── Per-source text-field plumbing ─────────────────────────────────────────
@@ -333,7 +370,9 @@ impl SettingsState {
             if let (Some(kind), Some(RowTarget::ActiveSource(local_idx))) =
                 (focused_text_kind, focused_target)
             {
-                let outcome = self.dispatch_text_keys(local_idx, &i.events);
+                let outcome = self
+                    .active_source_mut()
+                    .handle_text_keys(&i.events, local_idx);
                 if outcome.committed {
                     result.set_committed(kind);
                 }
@@ -450,36 +489,27 @@ impl SettingsState {
         let RowTarget::ActiveSource(local_idx) = focused_target? else {
             return None;
         };
-        match self.source_index() {
-            1 => super::cw::focused_text_field(&self.cw, local_idx),
-            2 => super::amdsb::focused_text_field(&self.amdsb, local_idx),
-            3 => super::psk31::focused_text_field(&self.psk31, local_idx),
-            4 => super::ft8::focused_text_field(&self.ft8, local_idx),
-            _ => super::tone::focused_text_field(&self.tone, local_idx),
-        }
-    }
-
-    /// Dispatch text-field key events to the active source's handler.
-    fn dispatch_text_keys(&mut self, local_idx: usize, events: &[egui::Event]) -> TextOutcome {
-        match self.source_index() {
-            1 => super::cw::handle_text_keys(&mut self.cw, events, local_idx),
-            2 => super::amdsb::handle_text_keys(&mut self.amdsb, events),
-            3 => super::psk31::handle_text_keys(&mut self.psk31, events, local_idx),
-            4 => super::ft8::handle_text_keys(&mut self.ft8, events),
-            _ => super::tone::handle_text_keys(&mut self.tone, events, local_idx),
-        }
+        self.active_source().focused_text_field(local_idx)
     }
 
     /// Discard any in-progress pending text edit on every source.
     fn discard_all_pending(&mut self) {
-        for source in [
-            &mut self.tone as &mut dyn SourceRows,
+        self.for_each_source_mut(|s| s.discard_pending());
+    }
+
+    /// Run a closure against every per-source `*Rows` (used for cross-source
+    /// reset / discard-pending dispatch).  When a new source is registered,
+    /// extend this iterator and the trait dispatch picks it up automatically.
+    fn for_each_source_mut(&mut self, mut f: impl FnMut(&mut dyn SourceRows)) {
+        let sources: [&mut dyn SourceRows; 5] = [
+            &mut self.tone,
             &mut self.cw,
             &mut self.amdsb,
             &mut self.psk31,
             &mut self.ft8,
-        ] {
-            source.discard_pending();
+        ];
+        for s in sources {
+            f(s);
         }
     }
 
@@ -647,7 +677,8 @@ impl SettingsState {
                     draw_toggle(&draw_ctx, f, val_x, y, ROW_H, focused);
                 }
                 (RowTarget::ActiveSource(local), Row::Text(_)) => {
-                    self.dispatch_draw_text_row(local, &draw_ctx, val_x, y, ROW_H, focused);
+                    self.active_source()
+                        .draw_text_row(&draw_ctx, local, val_x, y, ROW_H, focused);
                 }
                 _ => {}
             }
@@ -675,41 +706,15 @@ impl SettingsState {
         );
     }
 
-    /// Dispatch text-row drawing to the active source's `draw_text_row` helper.
-    fn dispatch_draw_text_row(
-        &self,
-        local_idx: usize,
-        ctx: &RowDrawCtx,
-        val_x: f32,
-        y: f32,
-        row_h: f32,
-        focused: bool,
-    ) {
-        match self.source_index() {
-            1 => super::cw::draw_text_row(&self.cw, ctx, local_idx, val_x, y, row_h, focused),
-            2 => super::amdsb::draw_text_row(&self.amdsb, ctx, local_idx, val_x, y, row_h, focused),
-            3 => super::psk31::draw_text_row(&self.psk31, ctx, local_idx, val_x, y, row_h, focused),
-            4 => super::ft8::draw_text_row(&self.ft8, ctx, local_idx, val_x, y, row_h, focused),
-            _ => super::tone::draw_text_row(&self.tone, ctx, local_idx, val_x, y, row_h, focused),
-        };
-    }
-
     /// Footer hint for the current focus state.  Per-source hints come from
-    /// each `app::settings::<S>::footer_hint`; the time-zone row hint and the
-    /// generic fallbacks live here.
+    /// each source's `SourceRows::footer_hint`; the time-zone row hint and
+    /// the generic fallbacks live here.
     fn compute_footer_hint(&self, focused_target: Option<RowTarget>) -> &'static str {
         // Per-source per-row hint, if any.
-        if let Some(RowTarget::ActiveSource(local)) = focused_target {
-            let per_source = match self.source_index() {
-                1 => super::cw::footer_hint(&self.cw, Some(local)),
-                2 => super::amdsb::footer_hint(&self.amdsb, Some(local)),
-                3 => super::psk31::footer_hint(&self.psk31, Some(local)),
-                4 => super::ft8::footer_hint(&self.ft8, Some(local)),
-                _ => super::tone::footer_hint(&self.tone, Some(local)),
-            };
-            if let Some(h) = per_source {
-                return h;
-            }
+        if let Some(RowTarget::ActiveSource(local)) = focused_target
+            && let Some(h) = self.active_source().footer_hint(Some(local))
+        {
+            return h;
         }
         // Time-zone row hint (display tab).
         let tz_focused = matches!(

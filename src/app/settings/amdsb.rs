@@ -202,11 +202,6 @@ impl AmDsbRows {
         result
     }
 
-    /// Discard any in-progress pending WAV edit.
-    pub fn discard_pending(&mut self) {
-        self.pending_wav = None;
-    }
-
     /// Draw the WAV file text field value.
     pub fn draw_wav_field(&self, ctx: &RowDrawCtx, val_x: f32, y: f32, row_h: f32, focused: bool) {
         if let Row::Text(f) = &self.rows[WAV_FILE] {
@@ -314,66 +309,55 @@ impl super::common::SourceRows for AmDsbRows {
         self.visible_indices()
     }
     fn discard_pending(&mut self) {
-        self.discard_pending();
+        self.pending_wav = None;
     }
-}
 
-// ── Settings dispatch helpers ──────────────────────────────────────────────
-
-/// Identifies the AM DSB text-editable row, if any.
-pub(super) fn focused_text_field(
-    rows: &AmDsbRows,
-    local_idx: usize,
-) -> Option<super::common::TextFieldKind> {
-    if local_idx == AmDsbRows::WAV_FILE_IDX && rows.wav_row_is_active() {
-        Some(super::common::TextFieldKind::AmDsbWavFile)
-    } else {
-        None
+    fn focused_text_field(&self, local_idx: usize) -> Option<super::common::TextFieldKind> {
+        (local_idx == AmDsbRows::WAV_FILE_IDX && self.wav_row_is_active())
+            .then_some(super::common::TextFieldKind::AmDsbWavFile)
     }
-}
 
-/// Handle keys when the AM DSB WAV-file text row is focused.
-pub(super) fn handle_text_keys(
-    rows: &mut AmDsbRows,
-    events: &[egui::Event],
-) -> super::common::TextOutcome {
-    let r = rows.handle_wav_keys(events);
-    super::common::TextOutcome {
-        consumed: r.consumed,
-        defocus: r.defocus,
-        committed: r.load_requested,
+    fn handle_text_keys(
+        &mut self,
+        events: &[egui::Event],
+        _local_idx: usize,
+    ) -> super::common::TextOutcome {
+        let r = self.handle_wav_keys(events);
+        super::common::TextOutcome {
+            consumed: r.consumed,
+            defocus: r.defocus,
+            committed: r.load_requested,
+        }
     }
-}
 
-/// Render an AM DSB special text row.  Returns `true` if rendered.
-pub(super) fn draw_text_row(
-    rows: &AmDsbRows,
-    ctx: &RowDrawCtx,
-    local_idx: usize,
-    val_x: f32,
-    y: f32,
-    row_h: f32,
-    focused: bool,
-) -> bool {
-    if local_idx == AmDsbRows::WAV_FILE_IDX {
-        rows.draw_wav_field(ctx, val_x, y, row_h, focused);
-        true
-    } else {
-        false
-    }
-}
-
-/// Footer hint for AM DSB-focused rows.
-pub(super) fn footer_hint(rows: &AmDsbRows, focused_local: Option<usize>) -> Option<&'static str> {
-    let local = focused_local?;
-    if local == AmDsbRows::WAV_FILE_IDX && rows.wav_row_is_active() {
-        Some(if rows.pending_wav.is_some() {
-            "type path   ↵ load   Esc cancel"
+    fn draw_text_row(
+        &self,
+        ctx: &RowDrawCtx,
+        local_idx: usize,
+        val_x: f32,
+        y: f32,
+        row_h: f32,
+        focused: bool,
+    ) -> bool {
+        if local_idx == AmDsbRows::WAV_FILE_IDX {
+            self.draw_wav_field(ctx, val_x, y, row_h, focused);
+            true
         } else {
-            "↵ edit path   ↑↓ navigate"
-        })
-    } else {
-        None
+            false
+        }
+    }
+
+    fn footer_hint(&self, focused_local: Option<usize>) -> Option<&'static str> {
+        let local = focused_local?;
+        if local == AmDsbRows::WAV_FILE_IDX && self.wav_row_is_active() {
+            Some(if self.pending_wav.is_some() {
+                "type path   ↵ load   Esc cancel"
+            } else {
+                "↵ edit path   ↑↓ navigate"
+            })
+        } else {
+            None
+        }
     }
 }
 

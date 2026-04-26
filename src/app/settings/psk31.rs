@@ -253,12 +253,6 @@ impl Psk31Rows {
         result
     }
 
-    /// Discard any in-progress pending edit (called when focus moves away).
-    pub fn discard_pending(&mut self) {
-        self.pending_msg = None;
-        self.editing_msg_row = None;
-    }
-
     /// Draw the canned PSK31 message text field (read-only).
     pub fn draw_canned_msg(&self, ctx: &RowDrawCtx, val_x: f32, y: f32, row_h: f32, focused: bool) {
         if let Row::Text(f) = &self.rows[MSG] {
@@ -362,71 +356,59 @@ impl super::common::SourceRows for Psk31Rows {
         self.visible_indices()
     }
     fn discard_pending(&mut self) {
-        self.discard_pending();
+        self.pending_msg = None;
+        self.editing_msg_row = None;
     }
-}
 
-// ── Settings dispatch helpers ──────────────────────────────────────────────
-
-/// Identifies a PSK31 text-editable row, if any.  The custom-message row is
-/// always editable when focused; the canned-message row is read-only.
-pub(super) fn focused_text_field(
-    _rows: &Psk31Rows,
-    local_idx: usize,
-) -> Option<super::common::TextFieldKind> {
-    if local_idx == Psk31Rows::CUSTOM_MSG_IDX {
-        Some(super::common::TextFieldKind::Psk31CustomMsg)
-    } else {
-        None
+    fn focused_text_field(&self, local_idx: usize) -> Option<super::common::TextFieldKind> {
+        (local_idx == Psk31Rows::CUSTOM_MSG_IDX)
+            .then_some(super::common::TextFieldKind::Psk31CustomMsg)
     }
-}
 
-/// Handle keys when the PSK31 custom-message text row is focused.
-pub(super) fn handle_text_keys(
-    rows: &mut Psk31Rows,
-    events: &[egui::Event],
-    local_idx: usize,
-) -> super::common::TextOutcome {
-    let r = rows.handle_msg_keys(events, local_idx);
-    super::common::TextOutcome {
-        consumed: r.consumed,
-        defocus: r.defocus,
-        committed: r.msg_accepted,
+    fn handle_text_keys(
+        &mut self,
+        events: &[egui::Event],
+        local_idx: usize,
+    ) -> super::common::TextOutcome {
+        let r = self.handle_msg_keys(events, local_idx);
+        super::common::TextOutcome {
+            consumed: r.consumed,
+            defocus: r.defocus,
+            committed: r.msg_accepted,
+        }
     }
-}
 
-/// Render a PSK31 special text row.  Returns `true` if rendered.
-pub(super) fn draw_text_row(
-    rows: &Psk31Rows,
-    ctx: &RowDrawCtx,
-    local_idx: usize,
-    val_x: f32,
-    y: f32,
-    row_h: f32,
-    focused: bool,
-) -> bool {
-    if local_idx == Psk31Rows::MSG_IDX {
-        rows.draw_canned_msg(ctx, val_x, y, row_h, focused);
-        true
-    } else if local_idx == Psk31Rows::CUSTOM_MSG_IDX {
-        rows.draw_custom_msg(ctx, val_x, y, row_h, focused);
-        true
-    } else {
-        false
-    }
-}
-
-/// Footer hint for PSK31-focused rows.
-pub(super) fn footer_hint(rows: &Psk31Rows, focused_local: Option<usize>) -> Option<&'static str> {
-    let local = focused_local?;
-    if local == Psk31Rows::CUSTOM_MSG_IDX {
-        Some(if rows.pending_msg.is_some() {
-            "type message   ↵ accept   Esc cancel"
+    fn draw_text_row(
+        &self,
+        ctx: &RowDrawCtx,
+        local_idx: usize,
+        val_x: f32,
+        y: f32,
+        row_h: f32,
+        focused: bool,
+    ) -> bool {
+        if local_idx == Psk31Rows::MSG_IDX {
+            self.draw_canned_msg(ctx, val_x, y, row_h, focused);
+            true
+        } else if local_idx == Psk31Rows::CUSTOM_MSG_IDX {
+            self.draw_custom_msg(ctx, val_x, y, row_h, focused);
+            true
         } else {
-            "↵ edit message   ↑↓ navigate"
-        })
-    } else {
-        None
+            false
+        }
+    }
+
+    fn footer_hint(&self, focused_local: Option<usize>) -> Option<&'static str> {
+        let local = focused_local?;
+        if local == Psk31Rows::CUSTOM_MSG_IDX {
+            Some(if self.pending_msg.is_some() {
+                "type message   ↵ accept   Esc cancel"
+            } else {
+                "↵ edit message   ↑↓ navigate"
+            })
+        } else {
+            None
+        }
     }
 }
 

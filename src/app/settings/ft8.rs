@@ -151,7 +151,7 @@ impl Ft8Rows {
     }
 
     /// Handle keyboard input when the free-text row is focused.
-    pub fn handle_text_keys(&mut self, events: &[egui::Event]) -> TextKeysResult {
+    pub fn handle_free_text_keys(&mut self, events: &[egui::Event]) -> TextKeysResult {
         let mut result = TextKeysResult {
             accepted: false,
             defocus: false,
@@ -233,10 +233,6 @@ impl Ft8Rows {
             result.consumed = true;
         }
         result
-    }
-
-    pub fn discard_pending(&mut self) {
-        self.pending_text = None;
     }
 
     /// Draw the free-text field (editable).
@@ -339,71 +335,60 @@ impl super::common::SourceRows for Ft8Rows {
         self.visible_indices()
     }
     fn discard_pending(&mut self) {
-        self.discard_pending();
+        self.pending_text = None;
     }
-}
 
-// ── Settings dispatch helpers ──────────────────────────────────────────────
-
-/// Identifies the FT8 free-text row, if any.  Editable only when message
-/// type is "FreeText".
-pub(super) fn focused_text_field(
-    rows: &Ft8Rows,
-    local_idx: usize,
-) -> Option<super::common::TextFieldKind> {
-    if local_idx == Ft8Rows::FREE_TEXT_IDX && rows.msg_is_free_text() {
-        Some(super::common::TextFieldKind::Ft8FreeText)
-    } else {
-        None
+    fn focused_text_field(&self, local_idx: usize) -> Option<super::common::TextFieldKind> {
+        (local_idx == Ft8Rows::FREE_TEXT_IDX && self.msg_is_free_text())
+            .then_some(super::common::TextFieldKind::Ft8FreeText)
     }
-}
 
-/// Handle keys when the FT8 free-text row is focused.
-pub(super) fn handle_text_keys(
-    rows: &mut Ft8Rows,
-    events: &[egui::Event],
-) -> super::common::TextOutcome {
-    let r = rows.handle_text_keys(events);
-    super::common::TextOutcome {
-        consumed: r.consumed,
-        defocus: r.defocus,
-        committed: r.accepted,
+    fn handle_text_keys(
+        &mut self,
+        events: &[egui::Event],
+        _local_idx: usize,
+    ) -> super::common::TextOutcome {
+        let r = self.handle_free_text_keys(events);
+        super::common::TextOutcome {
+            consumed: r.consumed,
+            defocus: r.defocus,
+            committed: r.accepted,
+        }
     }
-}
 
-/// Render an FT8 special text row.  Returns `true` if rendered.  All Text
-/// rows in FT8 are special (free-text editable, others read-only).
-pub(super) fn draw_text_row(
-    rows: &Ft8Rows,
-    ctx: &RowDrawCtx,
-    local_idx: usize,
-    val_x: f32,
-    y: f32,
-    row_h: f32,
-    focused: bool,
-) -> bool {
-    if local_idx == Ft8Rows::FREE_TEXT_IDX {
-        rows.draw_free_text(ctx, val_x, y, row_h, focused);
-        true
-    } else if matches!(&rows.rows[local_idx], Row::Text(_)) {
-        rows.draw_readonly_text(local_idx, ctx, val_x, y, row_h, focused);
-        true
-    } else {
-        false
-    }
-}
-
-/// Footer hint for FT8-focused rows.
-pub(super) fn footer_hint(rows: &Ft8Rows, focused_local: Option<usize>) -> Option<&'static str> {
-    let local = focused_local?;
-    if local == Ft8Rows::FREE_TEXT_IDX && rows.msg_is_free_text() {
-        Some(if rows.pending_text.is_some() {
-            "type message   ↵ accept   Esc cancel"
+    /// All Text rows in FT8 are rendered specially: free-text is editable,
+    /// the rest are read-only.
+    fn draw_text_row(
+        &self,
+        ctx: &RowDrawCtx,
+        local_idx: usize,
+        val_x: f32,
+        y: f32,
+        row_h: f32,
+        focused: bool,
+    ) -> bool {
+        if local_idx == Ft8Rows::FREE_TEXT_IDX {
+            self.draw_free_text(ctx, val_x, y, row_h, focused);
+            true
+        } else if matches!(&self.rows[local_idx], Row::Text(_)) {
+            self.draw_readonly_text(local_idx, ctx, val_x, y, row_h, focused);
+            true
         } else {
-            "↵ edit message   ↑↓ navigate"
-        })
-    } else {
-        None
+            false
+        }
+    }
+
+    fn footer_hint(&self, focused_local: Option<usize>) -> Option<&'static str> {
+        let local = focused_local?;
+        if local == Ft8Rows::FREE_TEXT_IDX && self.msg_is_free_text() {
+            Some(if self.pending_text.is_some() {
+                "type message   ↵ accept   Esc cancel"
+            } else {
+                "↵ edit message   ↑↓ navigate"
+            })
+        } else {
+            None
+        }
     }
 }
 
