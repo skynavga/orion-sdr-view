@@ -3,6 +3,7 @@
 
 mod common;
 mod draw;
+mod source;
 mod sources;
 mod view;
 

@@ -221,19 +221,10 @@ impl ViewApp {
     pub(super) fn reset_playback(&mut self) {
         self.settings.reset_source_rows();
         self.sync_settings();
-        self.source = match self.source_mode {
-            SourceMode::TestTone => {
-                self.signal_gen = TestSignalGen::new(self.settings.freq_hz(), SAMPLE_RATE);
-                Box::new(TestToneSource::new(TestSignalGen::new(
-                    self.settings.freq_hz(),
-                    SAMPLE_RATE,
-                )))
-            }
-            SourceMode::Cw => Box::new(self.make_cw_source()),
-            SourceMode::AmDsb => Box::new(self.make_am_source()),
-            SourceMode::Psk31 => Box::new(self.make_psk31_source()),
-            SourceMode::Ft8 => Box::new(self.make_ft8_source()),
-        };
+        if self.source_mode == SourceMode::TestTone {
+            self.signal_gen = TestSignalGen::new(self.settings.freq_hz(), SAMPLE_RATE);
+        }
+        self.source = self.make_source();
         self.loop_timer.reset();
         self.loop_timer.set_holdoff(self.cw_holdoff_secs());
         self.decode_ticker.reset();
@@ -267,22 +258,18 @@ impl ViewApp {
     /// Switch the active source to `mode`, constructing a new source box.
     pub(super) fn switch_source(&mut self, mode: SourceMode) {
         self.source_mode = mode;
-        self.source = match mode {
-            SourceMode::TestTone => {
-                // Re-create from signal_gen's current settings
-                Box::new(TestToneSource::new(TestSignalGen::new(
-                    self.signal_gen.freq_hz,
-                    SAMPLE_RATE,
-                )))
-            }
-            SourceMode::Cw => Box::new(self.make_cw_source()),
-            SourceMode::AmDsb => Box::new(self.make_am_source()),
-            SourceMode::Psk31 => Box::new(self.make_psk31_source()),
-            SourceMode::Ft8 => {
-                self.ft_mode = crate::source::ft8::Ft8Mode::Ft8;
-                self.ft_msg_type = crate::source::ft8::Ft8MsgType::Standard;
-                Box::new(self.make_ft8_source())
-            }
+        if mode == SourceMode::Ft8 {
+            self.ft_mode = crate::source::ft8::Ft8Mode::Ft8;
+            self.ft_msg_type = crate::source::ft8::Ft8MsgType::Standard;
+        }
+        self.source = if mode == SourceMode::TestTone {
+            // Re-create from signal_gen's current settings, not settings.freq_hz()
+            Box::new(TestToneSource::new(TestSignalGen::new(
+                self.signal_gen.freq_hz,
+                SAMPLE_RATE,
+            )))
+        } else {
+            self.make_source()
         };
         self.settings.set_source_mode(mode as usize);
         self.sync_decode_config();

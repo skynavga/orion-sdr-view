@@ -105,6 +105,33 @@ impl Psk31Source {
         self.gap_samples = (self.gap_secs * self.mod_rate) as usize;
     }
 
+    /// Apply a fresh set of carrier/mode/timing parameters, re-rendering the
+    /// frame if anything that affects waveform content changed.  `message` is
+    /// intentionally NOT updated here — committed only on explicit text accept.
+    pub fn apply_params(
+        &mut self,
+        carrier_hz: f32,
+        gap_secs: f32,
+        noise_amp: f32,
+        mode: Psk31Mode,
+        msg_repeat: usize,
+    ) {
+        let carrier_changed = (self.carrier_hz - carrier_hz).abs() > 0.01;
+        let mode_changed = self.mode != mode;
+        let repeat_changed = self.msg_repeat != msg_repeat;
+
+        self.carrier_hz = carrier_hz;
+        self.noise_amp = noise_amp;
+        self.gap_secs = gap_secs;
+        self.mode = mode;
+        self.msg_repeat = msg_repeat.max(1);
+
+        if carrier_changed || mode_changed || repeat_changed {
+            self.render();
+        }
+        self.update_gap();
+    }
+
     fn xorshift(&mut self) -> f32 {
         self.rng ^= self.rng << 13;
         self.rng ^= self.rng >> 7;

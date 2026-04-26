@@ -197,6 +197,32 @@ impl AmDsbSource {
         self.gap_samples = (self.gap_secs * self.mod_rate) as usize;
     }
 
+    /// Apply a fresh set of carrier/modulation/timing parameters, rebuilding the
+    /// modulator and gap counters as needed.
+    pub fn apply_params(
+        &mut self,
+        carrier_hz: f32,
+        mod_index: f32,
+        gap_secs: f32,
+        noise_amp: f32,
+        msg_repeat: usize,
+    ) {
+        let carrier_changed = (self.carrier_hz - carrier_hz).abs() > 0.5;
+        let index_changed = (self.mod_index - mod_index).abs() > 0.001;
+        self.carrier_hz = carrier_hz;
+        self.mod_index = mod_index;
+        if carrier_changed || index_changed {
+            self.rebuild_mod();
+        }
+        let gap_changed = (self.gap_secs - gap_secs).abs() > 0.01;
+        if gap_changed {
+            self.gap_secs = gap_secs;
+            self.update_gap();
+        }
+        self.noise_amp = noise_amp;
+        self.msg_repeat = msg_repeat.max(1);
+    }
+
     /// Interpolate one audio sample at the current fractional position,
     /// then advance the position. Returns (sample, wrapped) where `wrapped`
     /// is true when the position just looped back to zero.

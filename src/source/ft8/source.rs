@@ -32,12 +32,32 @@ pub enum Ft8Mode {
     Ft4,
 }
 
+impl Ft8Mode {
+    /// Cycle to the next mode (FT8 ↔ FT4).
+    pub fn cycle(self) -> Self {
+        match self {
+            Ft8Mode::Ft8 => Ft8Mode::Ft4,
+            Ft8Mode::Ft4 => Ft8Mode::Ft8,
+        }
+    }
+}
+
 // ── Ft8MsgType ────────────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Ft8MsgType {
     Standard,
     FreeText,
+}
+
+impl Ft8MsgType {
+    /// Cycle to the next message type (Standard ↔ FreeText).
+    pub fn cycle(self) -> Self {
+        match self {
+            Ft8MsgType::Standard => Ft8MsgType::FreeText,
+            Ft8MsgType::FreeText => Ft8MsgType::Standard,
+        }
+    }
 }
 
 // ── Ft8Source ─────────────────────────────────────────────────────────────────
@@ -212,6 +232,36 @@ impl Ft8Source {
     #[allow(dead_code)]
     pub fn update_gap(&mut self) {
         self.gap_samples = (self.gap_secs * self.mod_rate) as usize;
+    }
+
+    /// Apply a fresh set of carrier/mode/timing parameters and re-render the
+    /// frame if any waveform-affecting field changed.  Free-text/call/grid are
+    /// intentionally NOT updated here — committed only on explicit text accept.
+    pub fn apply_params(
+        &mut self,
+        carrier_hz: f32,
+        gap_secs: f32,
+        noise_amp: f32,
+        ft8_mode: Ft8Mode,
+        msg_type: Ft8MsgType,
+        msg_repeat: usize,
+    ) {
+        let carrier_changed = (self.carrier_hz - carrier_hz).abs() > 0.01;
+        let mode_changed = self.ft8_mode != ft8_mode;
+        let msg_type_changed = self.msg_type != msg_type;
+        let repeat_changed = self.msg_repeat != msg_repeat;
+
+        self.carrier_hz = carrier_hz;
+        self.noise_amp = noise_amp;
+        self.gap_secs = gap_secs;
+        self.ft8_mode = ft8_mode;
+        self.msg_type = msg_type;
+        self.msg_repeat = msg_repeat.max(1);
+
+        if carrier_changed || mode_changed || msg_type_changed || repeat_changed {
+            self.render();
+        }
+        self.update_gap();
     }
 
     fn build_message(&self) -> Ft8Message {
