@@ -415,6 +415,87 @@ pub(super) struct MsgKeysResult {
     pub consumed: bool,
 }
 
+// ── SourceRows ─────────────────────────────────────────────────────────────
+
+impl super::common::SourceRows for CwRows {
+    fn rows(&self) -> &[Row] {
+        &self.rows
+    }
+    fn rows_mut(&mut self) -> &mut [Row] {
+        &mut self.rows
+    }
+    fn visible_indices(&self) -> Vec<usize> {
+        self.visible_indices()
+    }
+    fn discard_pending(&mut self) {
+        self.discard_pending();
+    }
+}
+
+// ── Settings dispatch helpers ──────────────────────────────────────────────
+
+/// Identifies a CW text-editable row, if any.  The custom-message row is
+/// always editable when focused; the canned-message row is read-only.
+pub(super) fn focused_text_field(
+    _rows: &CwRows,
+    local_idx: usize,
+) -> Option<super::common::TextFieldKind> {
+    if local_idx == CwRows::CUSTOM_MSG_IDX {
+        Some(super::common::TextFieldKind::CwCustomMsg)
+    } else {
+        None
+    }
+}
+
+/// Handle keys when the CW custom-message text row is focused.
+pub(super) fn handle_text_keys(
+    rows: &mut CwRows,
+    events: &[egui::Event],
+    local_idx: usize,
+) -> super::common::TextOutcome {
+    let r = rows.handle_msg_keys(events, local_idx);
+    super::common::TextOutcome {
+        consumed: r.consumed,
+        defocus: r.defocus,
+        committed: r.msg_accepted,
+    }
+}
+
+/// Render a CW special text row.  Returns `true` if rendered.
+pub(super) fn draw_text_row(
+    rows: &CwRows,
+    ctx: &RowDrawCtx,
+    local_idx: usize,
+    val_x: f32,
+    y: f32,
+    row_h: f32,
+    focused: bool,
+) -> bool {
+    if local_idx == CwRows::MSG_IDX {
+        rows.draw_canned_msg(ctx, val_x, y, row_h, focused);
+        true
+    } else if local_idx == CwRows::CUSTOM_MSG_IDX {
+        rows.draw_custom_msg(ctx, val_x, y, row_h, focused);
+        true
+    } else {
+        false
+    }
+}
+
+/// Footer hint for CW-focused rows.
+pub(super) fn footer_hint(rows: &CwRows, focused_local: Option<usize>) -> Option<&'static str> {
+    let local = focused_local?;
+    if local == CwRows::CUSTOM_MSG_IDX {
+        Some(if rows.pending_msg.is_some() {
+            "type message   \u{21b5} accept   Esc cancel"
+        } else {
+            "\u{21b5} edit message   \u{2191}\u{2193} navigate"
+        })
+    } else {
+        None
+    }
+}
+
 // ── SettingsState accessors ───────────────────────────────────────────────
 
 impl super::SettingsState {

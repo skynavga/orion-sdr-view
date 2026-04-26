@@ -1,6 +1,8 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use eframe::egui;
+
 use super::field::{NumField, Row};
 
 // ── Row indices (local) ───────────────────────────────────────────────────
@@ -78,6 +80,55 @@ impl ToneRows {
         // Frequency, Tone amp max, Ramp, Pause, Noise amp (bottom)
         vec![FREQ, AMP_MAX, RAMP, PAUSE, NOISE]
     }
+}
+
+impl super::common::SourceRows for ToneRows {
+    fn rows(&self) -> &[Row] {
+        &self.rows
+    }
+    fn rows_mut(&mut self) -> &mut [Row] {
+        &mut self.rows
+    }
+    fn visible_indices(&self) -> Vec<usize> {
+        self.visible_indices()
+    }
+}
+
+// ── Settings dispatch helpers ──────────────────────────────────────────────
+//
+// Test Tone has no text fields, no special row drawing, and no per-row
+// footer hints — all four helpers are no-ops, kept to give common.rs a
+// uniform per-source dispatch surface.
+
+pub(super) fn focused_text_field(
+    _rows: &ToneRows,
+    _local_idx: usize,
+) -> Option<super::common::TextFieldKind> {
+    None
+}
+
+pub(super) fn handle_text_keys(
+    _rows: &mut ToneRows,
+    _events: &[egui::Event],
+    _local_idx: usize,
+) -> super::common::TextOutcome {
+    super::common::TextOutcome::default()
+}
+
+pub(super) fn draw_text_row(
+    _rows: &ToneRows,
+    _ctx: &super::field::RowDrawCtx,
+    _local_idx: usize,
+    _val_x: f32,
+    _y: f32,
+    _row_h: f32,
+    _focused: bool,
+) -> bool {
+    false
+}
+
+pub(super) fn footer_hint(_rows: &ToneRows, _focused_local: Option<usize>) -> Option<&'static str> {
+    None
 }
 
 // ── SettingsState accessors ───────────────────────────────────────────────

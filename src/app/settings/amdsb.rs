@@ -301,6 +301,82 @@ pub(super) struct WavKeysResult {
     pub consumed: bool,
 }
 
+// ── SourceRows ─────────────────────────────────────────────────────────────
+
+impl super::common::SourceRows for AmDsbRows {
+    fn rows(&self) -> &[Row] {
+        &self.rows
+    }
+    fn rows_mut(&mut self) -> &mut [Row] {
+        &mut self.rows
+    }
+    fn visible_indices(&self) -> Vec<usize> {
+        self.visible_indices()
+    }
+    fn discard_pending(&mut self) {
+        self.discard_pending();
+    }
+}
+
+// ── Settings dispatch helpers ──────────────────────────────────────────────
+
+/// Identifies the AM DSB text-editable row, if any.
+pub(super) fn focused_text_field(
+    rows: &AmDsbRows,
+    local_idx: usize,
+) -> Option<super::common::TextFieldKind> {
+    if local_idx == AmDsbRows::WAV_FILE_IDX && rows.wav_row_is_active() {
+        Some(super::common::TextFieldKind::AmDsbWavFile)
+    } else {
+        None
+    }
+}
+
+/// Handle keys when the AM DSB WAV-file text row is focused.
+pub(super) fn handle_text_keys(
+    rows: &mut AmDsbRows,
+    events: &[egui::Event],
+) -> super::common::TextOutcome {
+    let r = rows.handle_wav_keys(events);
+    super::common::TextOutcome {
+        consumed: r.consumed,
+        defocus: r.defocus,
+        committed: r.load_requested,
+    }
+}
+
+/// Render an AM DSB special text row.  Returns `true` if rendered.
+pub(super) fn draw_text_row(
+    rows: &AmDsbRows,
+    ctx: &RowDrawCtx,
+    local_idx: usize,
+    val_x: f32,
+    y: f32,
+    row_h: f32,
+    focused: bool,
+) -> bool {
+    if local_idx == AmDsbRows::WAV_FILE_IDX {
+        rows.draw_wav_field(ctx, val_x, y, row_h, focused);
+        true
+    } else {
+        false
+    }
+}
+
+/// Footer hint for AM DSB-focused rows.
+pub(super) fn footer_hint(rows: &AmDsbRows, focused_local: Option<usize>) -> Option<&'static str> {
+    let local = focused_local?;
+    if local == AmDsbRows::WAV_FILE_IDX && rows.wav_row_is_active() {
+        Some(if rows.pending_wav.is_some() {
+            "type path   ↵ load   Esc cancel"
+        } else {
+            "↵ edit path   ↑↓ navigate"
+        })
+    } else {
+        None
+    }
+}
+
 // ── SettingsState accessors ───────────────────────────────────────────────
 
 impl super::SettingsState {

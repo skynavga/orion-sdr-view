@@ -26,18 +26,67 @@ const TAB_DISPLAY: usize = 1;
 const N_TABS: usize = 2;
 const TAB_NAMES: [&str; N_TABS] = ["Source", "Display"];
 
+// ── SourceRows trait ───────────────────────────────────────────────────────
+//
+// Uniform interface implemented by each per-source `*Rows` struct so the
+// common dispatch can iterate, reset, and discard pending edits without a
+// per-source match.  Per-source-specific operations (text-field focus, key
+// handling, custom row drawing, footer hints) live as free functions in
+// each `app/settings/<S>.rs` module and are dispatched in one place via
+// `with_active_source` / `with_active_source_mut`.
+
+pub(super) trait SourceRows {
+    fn rows(&self) -> &[Row];
+    fn rows_mut(&mut self) -> &mut [Row];
+    fn visible_indices(&self) -> Vec<usize>;
+    /// Reset per-source extras (pending edits, edit-mode flags) beyond the
+    /// row-level default reset that `Row::reset()` already does.
+    fn reset_extras(&mut self) {}
+    /// Discard any in-progress pending text edit.
+    fn discard_pending(&mut self) {}
+}
+
+// ── Per-source text-field plumbing ─────────────────────────────────────────
+
+/// Identifies a source's currently-focused text-editable row, so the common
+/// dispatcher knows which `HandleKeysResult` flag to set on commit and which
+/// hint string to show.
+#[derive(Clone, Copy)]
+pub(super) enum TextFieldKind {
+    CwCustomMsg,
+    AmDsbWavFile,
+    Psk31CustomMsg,
+    Ft8FreeText,
+}
+
+/// Uniform per-source text-key outcome.
+#[derive(Default)]
+pub(super) struct TextOutcome {
+    /// True if at least one event was consumed (text input in progress).
+    pub consumed: bool,
+    /// True if the focused row should be deselected (Escape).
+    pub defocus: bool,
+    /// True if Enter was pressed to commit the pending edit.
+    pub committed: bool,
+}
+
 // ── Row routing ────────────────────────────────────────────────────────────
 
 /// Routes a visual row position to the correct sub-struct and local index.
+/// `ActiveSource(local)` means "the local-th visible row of the source that
+/// `source_mode_idx()` selects" — the per-source variant is implicit, since
+/// `active_rows()` only ever includes one source's rows at a time.
 #[derive(Clone, Copy)]
 enum RowTarget {
     Selector,
     Display(usize),
-    Tone(usize),
-    Cw(usize),
-    AmDsb(usize),
-    Psk31(usize),
-    Ft8(usize),
+    ActiveSource(usize),
+}
+
+#[derive(Clone, Copy)]
+enum NudgeDir {
+    Left,
+    Right,
 }
 
 // ── HandleKeysResult ──────────────────────────────────────────────────────
@@ -55,6 +104,19 @@ pub struct HandleKeysResult {
     pub ft8_text_accepted: bool,
     /// True when a text field is actively consuming all keyboard input.
     pub text_editing: bool,
+}
+
+impl HandleKeysResult {
+    /// Set the appropriate per-source "accepted" / "load_requested" flag
+    /// for the given text-field kind.
+    fn set_committed(&mut self, kind: TextFieldKind) {
+        match kind {
+            TextFieldKind::CwCustomMsg => self.cw_msg_accepted = true,
+            TextFieldKind::AmDsbWavFile => self.wav_load_requested = true,
+            TextFieldKind::Psk31CustomMsg => self.psk31_msg_accepted = true,
+            TextFieldKind::Ft8FreeText => self.ft8_text_accepted = true,
+        }
+    }
 }
 
 // ── SettingsState ──────────────────────────────────────────────────────────
@@ -140,22 +202,6 @@ impl SettingsState {
         }
     }
 
-    fn source_is_cw(&self) -> bool {
-        self.source_index() == 1
-    }
-
-    fn source_is_am(&self) -> bool {
-        self.source_index() == 2
-    }
-
-    fn source_is_psk31(&self) -> bool {
-        self.source_index() == 3
-    }
-
-    fn source_is_ft8(&self) -> bool {
-        self.source_index() == 4
-    }
-
     pub fn source_mode_idx(&self) -> usize {
         self.source_index()
     }
@@ -171,6 +217,28 @@ impl SettingsState {
         }
     }
 
+    /// Borrow the currently-active source's `*Rows` as `&dyn SourceRows`.
+    fn active_source(&self) -> &dyn SourceRows {
+        match self.source_index() {
+            1 => &self.cw,
+            2 => &self.amdsb,
+            3 => &self.psk31,
+            4 => &self.ft8,
+            _ => &self.tone,
+        }
+    }
+
+    /// Borrow the currently-active source's `*Rows` as `&mut dyn SourceRows`.
+    fn active_source_mut(&mut self) -> &mut dyn SourceRows {
+        match self.source_index() {
+            1 => &mut self.cw,
+            2 => &mut self.amdsb,
+            3 => &mut self.psk31,
+            4 => &mut self.ft8,
+            _ => &mut self.tone,
+        }
+    }
+
     // ── Row routing ──────────────────────────────────────────────────────
 
     fn active_rows(&self) -> Vec<RowTarget> {
@@ -183,27 +251,12 @@ impl SettingsState {
                 .collect(),
             _ => {
                 let mut v = vec![RowTarget::Selector];
-                if self.source_is_cw() {
-                    v.extend(self.cw.visible_indices().into_iter().map(RowTarget::Cw));
-                } else if self.source_is_am() {
-                    v.extend(
-                        self.amdsb
-                            .visible_indices()
-                            .into_iter()
-                            .map(RowTarget::AmDsb),
-                    );
-                } else if self.source_is_psk31() {
-                    v.extend(
-                        self.psk31
-                            .visible_indices()
-                            .into_iter()
-                            .map(RowTarget::Psk31),
-                    );
-                } else if self.source_is_ft8() {
-                    v.extend(self.ft8.visible_indices().into_iter().map(RowTarget::Ft8));
-                } else {
-                    v.extend(self.tone.visible_indices().into_iter().map(RowTarget::Tone));
-                }
+                v.extend(
+                    self.active_source()
+                        .visible_indices()
+                        .into_iter()
+                        .map(RowTarget::ActiveSource),
+                );
                 v
             }
         }
@@ -216,23 +269,18 @@ impl SettingsState {
     /// Reset all source-mode settings rows to their defaults.
     /// Called on R-key (outside settings panel) and on source cycling.
     pub fn reset_source_rows(&mut self) {
-        for row in &mut self.tone.rows {
-            row.reset();
-        }
-        for row in &mut self.cw.rows {
-            row.reset();
-        }
-        self.cw.pending_msg = None;
-        self.cw.editing_msg_row = None;
-        for row in &mut self.amdsb.rows {
-            row.reset();
-        }
-        for row in &mut self.psk31.rows {
-            row.reset();
-        }
-        self.psk31.pending_msg = None;
-        for row in &mut self.ft8.rows {
-            row.reset();
+        for source in [
+            &mut self.tone as &mut dyn SourceRows,
+            &mut self.cw,
+            &mut self.amdsb,
+            &mut self.psk31,
+            &mut self.ft8,
+        ] {
+            for row in source.rows_mut() {
+                row.reset();
+            }
+            source.discard_pending();
+            source.reset_extras();
         }
     }
 
@@ -241,11 +289,7 @@ impl SettingsState {
         match target {
             RowTarget::Selector => &self.source_selector,
             RowTarget::Display(i) => &self.display.rows[i],
-            RowTarget::Tone(i) => &self.tone.rows[i],
-            RowTarget::Cw(i) => &self.cw.rows[i],
-            RowTarget::AmDsb(i) => &self.amdsb.rows[i],
-            RowTarget::Psk31(i) => &self.psk31.rows[i],
-            RowTarget::Ft8(i) => &self.ft8.rows[i],
+            RowTarget::ActiveSource(i) => &self.active_source().rows()[i],
         }
     }
 
@@ -254,11 +298,7 @@ impl SettingsState {
         match target {
             RowTarget::Selector => &mut self.source_selector,
             RowTarget::Display(i) => &mut self.display.rows[i],
-            RowTarget::Tone(i) => &mut self.tone.rows[i],
-            RowTarget::Cw(i) => &mut self.cw.rows[i],
-            RowTarget::AmDsb(i) => &mut self.amdsb.rows[i],
-            RowTarget::Psk31(i) => &mut self.psk31.rows[i],
-            RowTarget::Ft8(i) => &mut self.ft8.rows[i],
+            RowTarget::ActiveSource(i) => &mut self.active_source_mut().rows_mut()[i],
         }
     }
 
@@ -279,86 +319,32 @@ impl SettingsState {
             return result;
         }
 
-        // Determine if focused row is a special text field.
         let active = self.active_rows();
         let focused_target = self.focused_row.and_then(|r| active.get(r).copied());
 
-        let cw_custom_focused =
-            matches!(focused_target, Some(RowTarget::Cw(i)) if i == CwRows::CUSTOM_MSG_IDX);
-
-        let wav_row_focused = matches!(focused_target, Some(RowTarget::AmDsb(i)) if i == AmDsbRows::WAV_FILE_IDX)
-            && self.amdsb.wav_row_is_active();
-
-        let psk31_custom_focused =
-            matches!(focused_target, Some(RowTarget::Psk31(i)) if i == Psk31Rows::CUSTOM_MSG_IDX);
-
-        let ft8_free_text_focused = matches!(focused_target, Some(RowTarget::Ft8(i)) if i == Ft8Rows::FREE_TEXT_IDX)
-            && self.ft8.msg_is_free_text();
-
-        let tz_row_focused = matches!(focused_target, Some(RowTarget::Display(i)) if i == DisplayRows::TIME_ZONE_IDX);
+        let focused_text_kind = self.focused_text_field_kind(focused_target);
+        let tz_row_focused = matches!(
+            focused_target,
+            Some(RowTarget::Display(i)) if i == DisplayRows::TIME_ZONE_IDX
+        );
 
         ctx.input(|i| {
-            // CW custom message field handling
-            if cw_custom_focused && let Some(RowTarget::Cw(local_idx)) = focused_target {
-                let msg_result = self.cw.handle_msg_keys(&i.events, local_idx);
-                if msg_result.msg_accepted {
-                    result.cw_msg_accepted = true;
+            // Per-source text field handling (one branch covers all sources).
+            if let (Some(kind), Some(RowTarget::ActiveSource(local_idx))) =
+                (focused_text_kind, focused_target)
+            {
+                let outcome = self.dispatch_text_keys(local_idx, &i.events);
+                if outcome.committed {
+                    result.set_committed(kind);
                 }
-                if msg_result.defocus {
+                if outcome.defocus {
                     self.focused_row = None;
                 }
-                if msg_result.consumed {
+                if outcome.consumed {
                     result.text_editing = true;
                     return;
                 }
-            }
-
-            // WAV text field handling
-            if wav_row_focused {
-                let wav_result = self.amdsb.handle_wav_keys(&i.events);
-                if wav_result.load_requested {
-                    result.wav_load_requested = true;
-                }
-                if wav_result.defocus {
-                    self.focused_row = None;
-                }
-                if wav_result.consumed {
-                    result.text_editing = true;
-                    return;
-                }
-                // Not consumed — fall through to navigation
-            }
-
-            // PSK31 custom message field handling
-            if psk31_custom_focused && let Some(RowTarget::Psk31(local_idx)) = focused_target {
-                let msg_result = self.psk31.handle_msg_keys(&i.events, local_idx);
-                if msg_result.msg_accepted {
-                    result.psk31_msg_accepted = true;
-                }
-                if msg_result.defocus {
-                    self.focused_row = None;
-                }
-                if msg_result.consumed {
-                    result.text_editing = true;
-                    return;
-                }
-                // Not consumed — fall through to navigation
-            }
-
-            // FT8 free-text field handling
-            if ft8_free_text_focused {
-                let text_result = self.ft8.handle_text_keys(&i.events);
-                if text_result.accepted {
-                    result.ft8_text_accepted = true;
-                }
-                if text_result.defocus {
-                    self.focused_row = None;
-                }
-                if text_result.consumed {
-                    result.text_editing = true;
-                    return;
-                }
-                // Not consumed — fall through to navigation
+                // Not consumed — fall through to navigation.
             }
 
             // Time zone row: intercept Enter to open/commit the explicit
@@ -370,23 +356,11 @@ impl SettingsState {
                     result.text_editing = true;
                     return;
                 }
-                // Not consumed — fall through to navigation
             }
 
             // If a text row is no longer focused (user navigated away),
-            // discard any in-progress pending edit.
-            if self.cw.pending_msg.is_some() {
-                self.cw.discard_pending();
-            }
-            if self.psk31.pending_msg.is_some() {
-                self.psk31.discard_pending();
-            }
-            if self.amdsb.pending_wav.is_some() {
-                self.amdsb.discard_pending();
-            }
-            if self.ft8.pending_text.is_some() {
-                self.ft8.discard_pending();
-            }
+            // discard any in-progress pending edit on every source.
+            self.discard_all_pending();
             if !tz_row_focused && self.display.tz_is_editing() {
                 self.display.discard_tz_pending();
             }
@@ -436,23 +410,7 @@ impl SettingsState {
             // Left/Right: nudge focused field or switch tabs
             if i.key_pressed(egui::Key::ArrowLeft) {
                 if let Some(row_vis) = self.focused_row {
-                    let prev_source = self.source_is_am();
-                    let prev_audio = self.am_audio_idx();
-                    let target = self.active_rows()[row_vis];
-                    self.row_mut(target).nudge_left();
-                    if matches!(target, RowTarget::Selector) && self.source_is_am() != prev_source {
-                        result.source_switched = true;
-                    }
-                    if matches!(target, RowTarget::AmDsb(0)) && self.am_audio_idx() != prev_audio {
-                        result.am_audio_changed = true;
-                    }
-                    // Clamp focused_row to new visible count after any toggle change
-                    let new_n = self.n_visible_rows();
-                    if let Some(r) = self.focused_row
-                        && r >= new_n
-                    {
-                        self.focused_row = Some(new_n.saturating_sub(1));
-                    }
+                    self.nudge_focused_row(row_vis, NudgeDir::Left, &mut result);
                 } else {
                     self.active_tab = (self.active_tab + N_TABS - 1) % N_TABS;
                     self.focused_row = None;
@@ -461,23 +419,7 @@ impl SettingsState {
             }
             if i.key_pressed(egui::Key::ArrowRight) {
                 if let Some(row_vis) = self.focused_row {
-                    let prev_source = self.source_is_am();
-                    let prev_audio = self.am_audio_idx();
-                    let target = self.active_rows()[row_vis];
-                    self.row_mut(target).nudge_right();
-                    if matches!(target, RowTarget::Selector) && self.source_is_am() != prev_source {
-                        result.source_switched = true;
-                    }
-                    if matches!(target, RowTarget::AmDsb(0)) && self.am_audio_idx() != prev_audio {
-                        result.am_audio_changed = true;
-                    }
-                    // Clamp focused_row to new visible count after any toggle change
-                    let new_n = self.n_visible_rows();
-                    if let Some(r) = self.focused_row
-                        && r >= new_n
-                    {
-                        self.focused_row = Some(new_n.saturating_sub(1));
-                    }
+                    self.nudge_focused_row(row_vis, NudgeDir::Right, &mut result);
                 } else {
                     self.active_tab = (self.active_tab + 1) % N_TABS;
                     self.focused_row = None;
@@ -500,6 +442,75 @@ impl SettingsState {
         });
 
         result
+    }
+
+    /// Resolve the active source's `TextFieldKind` for the focused row, if it
+    /// is a per-source text-editable row.
+    fn focused_text_field_kind(&self, focused_target: Option<RowTarget>) -> Option<TextFieldKind> {
+        let RowTarget::ActiveSource(local_idx) = focused_target? else {
+            return None;
+        };
+        match self.source_index() {
+            1 => super::cw::focused_text_field(&self.cw, local_idx),
+            2 => super::amdsb::focused_text_field(&self.amdsb, local_idx),
+            3 => super::psk31::focused_text_field(&self.psk31, local_idx),
+            4 => super::ft8::focused_text_field(&self.ft8, local_idx),
+            _ => super::tone::focused_text_field(&self.tone, local_idx),
+        }
+    }
+
+    /// Dispatch text-field key events to the active source's handler.
+    fn dispatch_text_keys(&mut self, local_idx: usize, events: &[egui::Event]) -> TextOutcome {
+        match self.source_index() {
+            1 => super::cw::handle_text_keys(&mut self.cw, events, local_idx),
+            2 => super::amdsb::handle_text_keys(&mut self.amdsb, events),
+            3 => super::psk31::handle_text_keys(&mut self.psk31, events, local_idx),
+            4 => super::ft8::handle_text_keys(&mut self.ft8, events),
+            _ => super::tone::handle_text_keys(&mut self.tone, events, local_idx),
+        }
+    }
+
+    /// Discard any in-progress pending text edit on every source.
+    fn discard_all_pending(&mut self) {
+        for source in [
+            &mut self.tone as &mut dyn SourceRows,
+            &mut self.cw,
+            &mut self.amdsb,
+            &mut self.psk31,
+            &mut self.ft8,
+        ] {
+            source.discard_pending();
+        }
+    }
+
+    /// Nudge the focused row left or right, handling the AM-source-switch and
+    /// AM-audio-toggle side-effects and clamping focused_row to the new
+    /// visible-row count if a toggle changed visibility.
+    fn nudge_focused_row(&mut self, row_vis: usize, dir: NudgeDir, result: &mut HandleKeysResult) {
+        let target = self.active_rows()[row_vis];
+        let prev_source_idx = self.source_index();
+        let prev_audio = self.am_audio_idx();
+        match dir {
+            NudgeDir::Left => self.row_mut(target).nudge_left(),
+            NudgeDir::Right => self.row_mut(target).nudge_right(),
+        }
+        if matches!(target, RowTarget::Selector) && self.source_index() != prev_source_idx {
+            result.source_switched = true;
+        }
+        // AmDsb's audio toggle is at local index 0.
+        if matches!(target, RowTarget::ActiveSource(0))
+            && self.source_index() == 2
+            && self.am_audio_idx() != prev_audio
+        {
+            result.am_audio_changed = true;
+        }
+        // Clamp focused_row to new visible count after any toggle change.
+        let new_n = self.n_visible_rows();
+        if let Some(r) = self.focused_row
+            && r >= new_n
+        {
+            self.focused_row = Some(new_n.saturating_sub(1));
+        }
     }
 
     // ── Drawing ────────────────────────────────────────────────────────────
@@ -635,30 +646,8 @@ impl SettingsState {
                 (_, Row::Toggle(f)) => {
                     draw_toggle(&draw_ctx, f, val_x, y, ROW_H, focused);
                 }
-                (RowTarget::Cw(idx), Row::Text(_)) if idx == CwRows::MSG_IDX => {
-                    self.cw.draw_canned_msg(&draw_ctx, val_x, y, ROW_H, focused);
-                }
-                (RowTarget::Cw(idx), Row::Text(_)) if idx == CwRows::CUSTOM_MSG_IDX => {
-                    self.cw.draw_custom_msg(&draw_ctx, val_x, y, ROW_H, focused);
-                }
-                (RowTarget::Psk31(idx), Row::Text(_)) if idx == Psk31Rows::MSG_IDX => {
-                    self.psk31
-                        .draw_canned_msg(&draw_ctx, val_x, y, ROW_H, focused);
-                }
-                (RowTarget::Psk31(idx), Row::Text(_)) if idx == Psk31Rows::CUSTOM_MSG_IDX => {
-                    self.psk31
-                        .draw_custom_msg(&draw_ctx, val_x, y, ROW_H, focused);
-                }
-                (RowTarget::AmDsb(idx), Row::Text(_)) if idx == AmDsbRows::WAV_FILE_IDX => {
-                    self.amdsb
-                        .draw_wav_field(&draw_ctx, val_x, y, ROW_H, focused);
-                }
-                (RowTarget::Ft8(idx), Row::Text(_)) if idx == Ft8Rows::FREE_TEXT_IDX => {
-                    self.ft8.draw_free_text(&draw_ctx, val_x, y, ROW_H, focused);
-                }
-                (RowTarget::Ft8(idx), Row::Text(_)) => {
-                    self.ft8
-                        .draw_readonly_text(idx, &draw_ctx, val_x, y, ROW_H, focused);
+                (RowTarget::ActiveSource(local), Row::Text(_)) => {
+                    self.dispatch_draw_text_row(local, &draw_ctx, val_x, y, ROW_H, focused);
                 }
                 _ => {}
             }
@@ -676,50 +665,7 @@ impl SettingsState {
         y += 6.0;
 
         let focused_target = self.focused_row.and_then(|r| vis_targets.get(r).copied());
-
-        let cw_custom_focused =
-            matches!(focused_target, Some(RowTarget::Cw(i)) if i == CwRows::CUSTOM_MSG_IDX);
-
-        let wav_focused = matches!(focused_target, Some(RowTarget::AmDsb(i)) if i == AmDsbRows::WAV_FILE_IDX)
-            && self.amdsb.wav_row_is_active();
-
-        let psk31_custom_focused =
-            matches!(focused_target, Some(RowTarget::Psk31(i)) if i == Psk31Rows::CUSTOM_MSG_IDX);
-
-        let ft8_free_text_focused = matches!(focused_target, Some(RowTarget::Ft8(i)) if i == Ft8Rows::FREE_TEXT_IDX)
-            && self.ft8.msg_is_free_text();
-
-        let tz_focused = matches!(focused_target, Some(RowTarget::Display(i)) if i == DisplayRows::TIME_ZONE_IDX);
-        let tz_editing = tz_focused && self.display.tz_is_editing();
-        let tz_explicit = tz_focused
-            && matches!(&self.display.rows[DisplayRows::TIME_ZONE_IDX],
-            Row::TimeZone(f) if f.is_explicit());
-
-        let hint = if cw_custom_focused && self.cw.pending_msg.is_some() {
-            "type message   \u{21b5} accept   Esc cancel"
-        } else if cw_custom_focused {
-            "\u{21b5} edit message   \u{2191}\u{2193} navigate"
-        } else if wav_focused && self.amdsb.pending_wav.is_some() {
-            "type path   ↵ load   Esc cancel"
-        } else if wav_focused {
-            "↵ edit path   ↑↓ navigate"
-        } else if psk31_custom_focused && self.psk31.pending_msg.is_some() {
-            "type message   ↵ accept   Esc cancel"
-        } else if psk31_custom_focused {
-            "↵ edit message   ↑↓ navigate"
-        } else if ft8_free_text_focused && self.ft8.pending_text.is_some() {
-            "type message   ↵ accept   Esc cancel"
-        } else if ft8_free_text_focused {
-            "↵ edit message   ↑↓ navigate"
-        } else if tz_editing {
-            "◀▶ ±15 min   ↵ accept   Esc cancel"
-        } else if tz_explicit {
-            "◀▶ cycle mode   ↵ edit offset   ↑↓ navigate"
-        } else if self.focused_row.is_some() {
-            "↑↓ navigate   ◀▶ adjust   R reset field   Esc deselect"
-        } else {
-            "↑↓ select field   Tab switch tab   R reset all   Esc close"
-        };
+        let hint = self.compute_footer_hint(focused_target);
         painter.text(
             egui::pos2(rect.left() + 12.0, y),
             egui::Align2::LEFT_TOP,
@@ -727,5 +673,67 @@ impl SettingsState {
             small,
             egui::Color32::from_gray(110),
         );
+    }
+
+    /// Dispatch text-row drawing to the active source's `draw_text_row` helper.
+    fn dispatch_draw_text_row(
+        &self,
+        local_idx: usize,
+        ctx: &RowDrawCtx,
+        val_x: f32,
+        y: f32,
+        row_h: f32,
+        focused: bool,
+    ) {
+        match self.source_index() {
+            1 => super::cw::draw_text_row(&self.cw, ctx, local_idx, val_x, y, row_h, focused),
+            2 => super::amdsb::draw_text_row(&self.amdsb, ctx, local_idx, val_x, y, row_h, focused),
+            3 => super::psk31::draw_text_row(&self.psk31, ctx, local_idx, val_x, y, row_h, focused),
+            4 => super::ft8::draw_text_row(&self.ft8, ctx, local_idx, val_x, y, row_h, focused),
+            _ => super::tone::draw_text_row(&self.tone, ctx, local_idx, val_x, y, row_h, focused),
+        };
+    }
+
+    /// Footer hint for the current focus state.  Per-source hints come from
+    /// each `app::settings::<S>::footer_hint`; the time-zone row hint and the
+    /// generic fallbacks live here.
+    fn compute_footer_hint(&self, focused_target: Option<RowTarget>) -> &'static str {
+        // Per-source per-row hint, if any.
+        if let Some(RowTarget::ActiveSource(local)) = focused_target {
+            let per_source = match self.source_index() {
+                1 => super::cw::footer_hint(&self.cw, Some(local)),
+                2 => super::amdsb::footer_hint(&self.amdsb, Some(local)),
+                3 => super::psk31::footer_hint(&self.psk31, Some(local)),
+                4 => super::ft8::footer_hint(&self.ft8, Some(local)),
+                _ => super::tone::footer_hint(&self.tone, Some(local)),
+            };
+            if let Some(h) = per_source {
+                return h;
+            }
+        }
+        // Time-zone row hint (display tab).
+        let tz_focused = matches!(
+            focused_target,
+            Some(RowTarget::Display(i)) if i == DisplayRows::TIME_ZONE_IDX
+        );
+        if tz_focused {
+            let tz_editing = self.display.tz_is_editing();
+            let tz_explicit = matches!(
+                &self.display.rows[DisplayRows::TIME_ZONE_IDX],
+                Row::TimeZone(f) if f.is_explicit()
+            );
+            if tz_editing {
+                return "◀▶ ±15 min   ↵ accept   Esc cancel";
+            }
+            if tz_explicit {
+                return "◀▶ cycle mode   ↵ edit offset   ↑↓ navigate";
+            }
+        }
+        // Generic fallbacks.
+        if self.focused_row.is_some() {
+            "↑↓ navigate   ◀▶ adjust   R reset field   Esc deselect"
+        } else {
+            "↑↓ select field   Tab switch tab   R reset all   Esc close"
+        }
     }
 }
