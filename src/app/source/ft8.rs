@@ -4,7 +4,7 @@
 use crate::app::SAMPLE_RATE;
 use crate::app::settings::SettingsState;
 use crate::source::SignalSource;
-use crate::source::ft8::{Ft8Mode, Ft8MsgType, Ft8Source};
+use crate::source::ft8::{Ft8Mode, Ft8MsgType, Ft8Source, Ft8ViewState};
 
 /// Build a fresh `Ft8Source` from current settings.
 pub(in crate::app) fn make(settings: &SettingsState) -> Ft8Source {
@@ -64,6 +64,16 @@ pub(in crate::app) fn cycle_msg_type(source: &mut dyn SignalSource) -> Option<Ft
     ft8.msg_type = ft8.msg_type.cycle();
     ft8.render();
     Some(ft8.msg_type)
+}
+
+/// Submode line for the top HUD when FT8 is the active source.
+pub(in crate::app) fn hud_submode_str(view: &Ft8ViewState) -> String {
+    view.hud_submode_str()
+}
+
+/// Frame counter line shown to the left of the loop timer in the decode bar.
+pub(in crate::app) fn hud_frame_counter_str(view: &Ft8ViewState) -> String {
+    view.hud_frame_counter_str()
 }
 
 fn settings_mode(settings: &SettingsState) -> Ft8Mode {

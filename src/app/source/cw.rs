@@ -76,3 +76,9 @@ pub(in crate::app) fn format_open_delimiter(
     };
     format!("|| {ts_str} | ")
 }
+
+/// Submode line for the top HUD when CW is the active source.
+pub(in crate::app) fn hud_submode_str(settings: &SettingsState) -> String {
+    let msg_is_custom = settings.cw_msg_mode_str() == "Custom";
+    cw::hud_submode_str(msg_is_custom, settings.cw_wpm())
+}

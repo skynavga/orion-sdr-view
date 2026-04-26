@@ -91,6 +91,27 @@ impl Ft8ViewState {
         self.err_count = self.err_count.saturating_add(1).min(FRAME_COUNT_MAX);
     }
 
+    /// Format the FT8 submode string shown in the top HUD line:
+    /// `"  mode 8|4  msg s|f"`.
+    pub fn hud_submode_str(&self) -> String {
+        let mode_ch = match self.mode {
+            Ft8Mode::Ft8 => "8",
+            Ft8Mode::Ft4 => "4",
+        };
+        let msg_ch = match self.msg_type {
+            Ft8MsgType::Standard => "s",
+            Ft8MsgType::FreeText => "f",
+        };
+        format!("  mode {mode_ch}  msg {msg_ch}")
+    }
+
+    /// Format the FT8/FT4 frame counter shown to the left of the loop timer:
+    /// `"frm 042 err 003 "`.  Width is fixed (3 digits per counter, trailing
+    /// space) so the layout doesn't shift as counts change.
+    pub fn hud_frame_counter_str(&self) -> String {
+        format!("frm {:03} err {:03} ", self.frame_count, self.err_count)
+    }
+
     /// Wrap a decoded frame's text with timestamp delimiters for the ticker:
     /// `"|| HH:MM:SS.mmm | <text> ||"`.  Uses `pending_onset` if available,
     /// falling back to `last_timestamp`.

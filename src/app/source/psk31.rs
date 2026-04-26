@@ -4,7 +4,7 @@
 use crate::app::SAMPLE_RATE;
 use crate::app::settings::SettingsState;
 use crate::source::SignalSource;
-use crate::source::psk31::{Psk31Mode, Psk31Source};
+use crate::source::psk31::{self, Psk31Mode, Psk31Source};
 
 /// Build a fresh `Psk31Source` from current settings.
 pub(in crate::app) fn make(settings: &SettingsState) -> Psk31Source {
@@ -38,6 +38,12 @@ pub(in crate::app) fn apply_message(source: &mut dyn SignalSource, settings: &Se
         psk31.message = settings.psk31_message().to_owned();
         psk31.render();
     }
+}
+
+/// Submode line for the top HUD when PSK31 is the active source.
+pub(in crate::app) fn hud_submode_str(settings: &SettingsState) -> String {
+    let msg_is_custom = settings.psk31_msg_mode_str() == "Custom";
+    psk31::hud_submode_str(settings_mode(settings), msg_is_custom)
 }
 
 fn settings_mode(settings: &SettingsState) -> Psk31Mode {

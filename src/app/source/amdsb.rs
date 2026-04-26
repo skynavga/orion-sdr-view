@@ -6,7 +6,7 @@ use std::path::Path;
 use crate::app::SAMPLE_RATE;
 use crate::app::settings::SettingsState;
 use crate::source::SignalSource;
-use crate::source::amdsb::{AmDsbSource, BuiltinAudio, load_builtin, load_wav_file};
+use crate::source::amdsb::{self, AmDsbSource, BuiltinAudio, load_builtin, load_wav_file};
 
 /// Build a fresh `AmDsbSource` from current settings.
 pub(in crate::app) fn make(settings: &SettingsState) -> AmDsbSource {
@@ -111,4 +111,9 @@ pub(in crate::app) fn clear_audio(source: &mut dyn SignalSource) {
     if let Some(am) = source.as_any_mut().downcast_mut::<AmDsbSource>() {
         am.set_audio(Vec::new(), SAMPLE_RATE);
     }
+}
+
+/// Submode line for the top HUD when AM DSB is the active source.
+pub(in crate::app) fn hud_submode_str(settings: &SettingsState) -> String {
+    amdsb::hud_submode_str(settings.am_audio_str())
 }

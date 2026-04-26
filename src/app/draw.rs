@@ -3,11 +3,11 @@
 
 use eframe::egui;
 
+use super::source::{amdsb, cw, ft8, psk31};
 use super::utils::dashed_hline;
 use super::view::ViewApp;
 use super::{DecodeBarMode, PANE_BG, SourceMode, WaterfallMode};
 use crate::decode::DecodeResult;
-use crate::source::ft8::{Ft8Mode, Ft8MsgType};
 
 impl ViewApp {
     pub(super) fn draw_hud(&self, ctx: &egui::Context) {
@@ -92,41 +92,11 @@ impl ViewApp {
                 }
             };
             let submode_str: String = match self.source_mode {
-                SourceMode::Cw => {
-                    let msg_ch = match self.settings.cw_msg_mode_str() {
-                        "Custom" => "c",
-                        _ => "n",
-                    };
-                    format!("  msg {msg_ch}  {}wpm", self.settings.cw_wpm() as u32)
-                }
-                SourceMode::AmDsb => match self.settings.am_audio_str() {
-                    "Voice" => "  aud v".to_owned(),
-                    "Custom" => "  aud c".to_owned(),
-                    _ => "  aud m".to_owned(),
-                },
-                SourceMode::Psk31 => {
-                    let mode_ch = match self.settings.psk31_mode_str() {
-                        "QPSK31" => "q",
-                        _ => "b",
-                    };
-                    let msg_ch = match self.settings.psk31_msg_mode_str() {
-                        "Custom" => "c",
-                        _ => "n",
-                    };
-                    format!("  mode {mode_ch}  msg {msg_ch}")
-                }
-                SourceMode::Ft8 => {
-                    let mode_ch = match self.ft8_view.mode {
-                        Ft8Mode::Ft8 => "8",
-                        Ft8Mode::Ft4 => "4",
-                    };
-                    let msg_ch = match self.ft8_view.msg_type {
-                        Ft8MsgType::Standard => "s",
-                        Ft8MsgType::FreeText => "f",
-                    };
-                    format!("  mode {mode_ch}  msg {msg_ch}")
-                }
-                _ => String::new(),
+                SourceMode::AmDsb => amdsb::hud_submode_str(&self.settings),
+                SourceMode::Cw => cw::hud_submode_str(&self.settings),
+                SourceMode::Psk31 => psk31::hud_submode_str(&self.settings),
+                SourceMode::Ft8 => ft8::hud_submode_str(&self.ft8_view),
+                SourceMode::TestTone => String::new(),
             };
             let status = format!(
                 "{}{}{}  ctr {}  span {}  zoom {}  ref {:.0}dB{}",
@@ -255,10 +225,7 @@ impl ViewApp {
 
         // For FT8/FT4 sources, show "frm xxx err yyy" to the left of the loop timer.
         let ft_label: Option<String> = if self.source_mode == SourceMode::Ft8 {
-            Some(format!(
-                "frm {:03} err {:03} ",
-                self.ft8_view.frame_count, self.ft8_view.err_count
-            ))
+            Some(ft8::hud_frame_counter_str(&self.ft8_view))
         } else {
             None
         };
