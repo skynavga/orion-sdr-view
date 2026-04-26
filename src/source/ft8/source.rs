@@ -6,7 +6,7 @@ use orion_sdr::codec::{Ft4Codec, Ft8Codec};
 use orion_sdr::message::{CallsignHashTable, Ft8Message, GridField, pack77};
 use orion_sdr::modulate::{Ft4Mod, Ft8Mod};
 
-use super::{MAX_SIG_SECS, SignalSource};
+use crate::source::{MAX_SIG_SECS, SignalSource};
 
 // ── FT8 constants ─────────────────────────────────────────────────────────────
 

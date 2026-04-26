@@ -5,8 +5,8 @@
 
 use std::sync::mpsc::SyncSender;
 
-use super::DecodeResult;
-use super::spectral::{SpectralState, power_spectrum};
+use crate::decode::DecodeResult;
+use crate::decode::spectral::{SpectralState, power_spectrum};
 
 pub struct ToneState(pub SpectralState);
 

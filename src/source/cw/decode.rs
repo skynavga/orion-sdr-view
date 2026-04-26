@@ -7,10 +7,9 @@ use std::sync::mpsc::SyncSender;
 
 use num_complex::Complex32 as C32;
 
+use crate::decode::{DecodeResult, SPECTRUM_WINDOW_SAMPLES};
 use crate::source::MAX_SIG_SECS;
-
-use super::psk31::INFO_INTERVAL;
-use super::{DecodeResult, SPECTRUM_WINDOW_SAMPLES};
+use crate::source::psk31::INFO_INTERVAL;
 pub use orion_sdr::util::{spectrum_bw_hz, spectrum_snr_db};
 
 // ── CW character timing ─────────────────────────────────────────────────────

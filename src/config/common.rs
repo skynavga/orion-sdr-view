@@ -3,12 +3,12 @@
 
 use serde::Deserialize;
 
-use super::amdsb::AmDsbConfig;
-use super::cw::CwConfig;
 use super::display::DisplayConfig;
-use super::ft8::Ft8Config;
-use super::psk31::Psk31Config;
-use super::tone::TestToneConfig;
+use crate::source::amdsb::AmDsbConfig;
+use crate::source::cw::CwConfig;
+use crate::source::ft8::Ft8Config;
+use crate::source::psk31::Psk31Config;
+use crate::source::tone::TestToneConfig;
 
 #[derive(Debug, Deserialize)]
 pub struct SourcesConfig {

@@ -5,8 +5,8 @@
 
 use std::sync::mpsc::SyncSender;
 
-use super::DecodeResult;
-use super::spectral::{SpectralState, spectrum_bw_hz};
+use crate::decode::DecodeResult;
+use crate::decode::spectral::{SpectralState, spectrum_bw_hz};
 
 pub struct AmDsbState(pub SpectralState);
 

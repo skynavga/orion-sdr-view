@@ -26,7 +26,7 @@ use std::sync::{Arc, Mutex};
 use orion_sdr::util::SIGNAL_THRESHOLD;
 use orion_sdr::util::rms;
 
-use super::{amdsb, cw, ft8, psk31, tone};
+use crate::source::{amdsb, cw, ft8, psk31, tone};
 
 // ── Public types ──────────────────────────────────────────────────────────────
 

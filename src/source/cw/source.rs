@@ -1,38 +1,48 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use orion_sdr::modulate::{Bpsk31Mod, Qpsk31Mod};
+use num_complex::Complex32 as C32;
+use orion_sdr::codec::MorseEncoder;
+use orion_sdr::core::Block;
+use orion_sdr::modulate::CwKeyedMod;
 
-use super::{MAX_SIG_SECS, SignalSource};
+use crate::source::{MAX_SIG_SECS, SignalSource};
 
-// ── PSK31 constants ───────────────────────────────────────────────────────────
+// ── CW constants ─────────────────────────────────────────────────────────────
 
-pub const PSK31_DEFAULT_CANNED_TEXT: &str = "CQ CQ CQ DE N0GNR";
-pub const PSK31_DEFAULT_CUSTOM_TEXT: &str = "Custom message";
-pub const PSK31_DEFAULT_REPEAT: usize = 3;
-pub const PSK31_DEFAULT_GAP_SECS: f32 = 15.0;
+pub const CW_DEFAULT_CARRIER_HZ: f32 = 12_000.0;
+pub const CW_DEFAULT_GAP_SECS: f32 = 10.0;
+pub const CW_DEFAULT_WPM: f32 = 13.0;
+pub const CW_DEFAULT_JITTER_PCT: f32 = 5.0;
+pub const CW_DEFAULT_DASH_WEIGHT: f32 = 3.0;
+pub const CW_DEFAULT_CHAR_SPACE: f32 = 3.0;
+pub const CW_DEFAULT_WORD_SPACE: f32 = 7.0;
+pub const CW_DEFAULT_RISE_MS: f32 = 5.0;
+pub const CW_DEFAULT_FALL_MS: f32 = 5.0;
+pub const CW_DEFAULT_NOISE_AMP: f32 = 0.05;
+pub const CW_DEFAULT_REPEAT: usize = 3;
+pub const CW_DEFAULT_CANNED_TEXT: &str = "CQ CQ CQ DE N0GNR";
+pub const CW_DEFAULT_CUSTOM_TEXT: &str = "Custom message";
 
-// ── Psk31Mode ─────────────────────────────────────────────────────────────────
+// ── CwSource ─────────────────────────────────────────────────────────────────
 
-#[derive(Clone, Copy, PartialEq)]
-pub enum Psk31Mode {
-    Bpsk31,
-    Qpsk31,
-}
-
-// ── Psk31Source ───────────────────────────────────────────────────────────────
-
-/// PSK31 signal source (BPSK31 or QPSK31).
+/// CW (Morse code) signal source.
 ///
-/// Pre-renders a complete modulated frame (preamble + text + postamble) once
-/// at construction. The frame plays once, followed by a configurable silence
-/// gap, then repeats indefinitely without reallocation.
-pub struct Psk31Source {
+/// Pre-renders a complete keyed-carrier frame (MorseEncoder → CwKeyedMod)
+/// at construction.  The frame plays once, followed by a configurable
+/// silence gap, then repeats indefinitely without reallocation.
+pub struct CwSource {
     pub carrier_hz: f32,
     pub gap_secs: f32,
     pub noise_amp: f32,
-    pub mode: Psk31Mode,
-    /// Text to transmit (ASCII). Repeated `msg_repeat` times per loop.
+    pub wpm: f32,
+    pub jitter_pct: f32,
+    pub dash_weight: f32,
+    pub char_space: f32,
+    pub word_space: f32,
+    pub rise_ms: f32,
+    pub fall_ms: f32,
+    /// Text to transmit (ASCII).  Repeated `msg_repeat` times per loop.
     pub message: String,
     /// Number of times to repeat `message` before the silence gap.
     pub msg_repeat: usize,
@@ -44,12 +54,19 @@ pub struct Psk31Source {
     rng: u64,
 }
 
-impl Psk31Source {
+impl CwSource {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         carrier_hz: f32,
         gap_secs: f32,
         noise_amp: f32,
-        mode: Psk31Mode,
+        wpm: f32,
+        jitter_pct: f32,
+        dash_weight: f32,
+        char_space: f32,
+        word_space: f32,
+        rise_ms: f32,
+        fall_ms: f32,
         message: String,
         msg_repeat: usize,
         mod_rate: f32,
@@ -59,7 +76,13 @@ impl Psk31Source {
             carrier_hz,
             gap_secs,
             noise_amp,
-            mode,
+            wpm,
+            jitter_pct,
+            dash_weight,
+            char_space,
+            word_space,
+            rise_ms,
+            fall_ms,
             message,
             msg_repeat: msg_repeat.max(1),
             mod_rate,
@@ -73,29 +96,41 @@ impl Psk31Source {
         src
     }
 
-    /// (Re-)render the modulated frame. Called at construction and whenever
-    /// carrier, mode, message, or repeat count changes.
+    /// (Re-)render the modulated frame.  Called at construction and whenever
+    /// carrier, wpm, jitter, weighting, spacing, rise/fall, message, or
+    /// repeat count changes.
     ///
-    /// The text fed to the modulator is `message` repeated `msg_repeat` times,
-    /// separated by a single space, all within one preamble/postamble envelope.
+    /// Pipeline: MorseEncoder → keying envelope → CwKeyedMod → IQ → .re
     pub fn render(&mut self) {
-        // Build the repeated text: "msg msg msg" (space-separated).
+        // Build repeated text: "msg msg msg" (space-separated).
         let repeated: Vec<u8> = std::iter::repeat_n(self.message.as_bytes(), self.msg_repeat)
             .collect::<Vec<_>>()
             .join(b" ".as_ref());
+        let text = String::from_utf8_lossy(&repeated);
 
-        self.samples = match self.mode {
-            Psk31Mode::Bpsk31 => {
-                let iq = Bpsk31Mod::new(self.mod_rate, self.carrier_hz, 1.0)
-                    .modulate_text(&repeated, 64, 32);
-                iq.into_iter().map(|c| c.re).collect()
-            }
-            Psk31Mode::Qpsk31 => {
-                let iq = Qpsk31Mod::new(self.mod_rate, self.carrier_hz, 1.0)
-                    .modulate_text(&repeated, 64, 32);
-                iq.into_iter().map(|c| c.re).collect()
-            }
-        };
+        // Stage 1: Morse text → keying envelope (0.0 / 1.0).
+        let envelope = MorseEncoder::new(self.mod_rate, self.wpm)
+            .with_jitter(self.jitter_pct)
+            .with_dash_weight(self.dash_weight)
+            .with_char_space(self.char_space)
+            .with_word_space(self.word_space)
+            .encode_text(&text);
+
+        if envelope.is_empty() {
+            self.samples = Vec::new();
+            self.pos = 0;
+            self.gap_remaining = 0;
+            return;
+        }
+
+        // Stage 2: Keying envelope → IQ via CwKeyedMod.
+        let mut modulator =
+            CwKeyedMod::new(self.mod_rate, self.carrier_hz, self.rise_ms, self.fall_ms);
+        let mut iq = vec![C32::new(0.0, 0.0); envelope.len()];
+        modulator.process(&envelope, &mut iq);
+
+        // Take real part as output signal.
+        self.samples = iq.into_iter().map(|c| c.re).collect();
         self.pos = 0;
         self.gap_remaining = 0;
     }
@@ -113,7 +148,7 @@ impl Psk31Source {
     }
 }
 
-impl SignalSource for Psk31Source {
+impl SignalSource for CwSource {
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
     }
@@ -124,8 +159,6 @@ impl SignalSource for Psk31Source {
 
     fn next_samples(&mut self, n: usize) -> Vec<f32> {
         let max_sig_samples = (MAX_SIG_SECS * self.mod_rate) as usize;
-        // Truncate the effective playback length so the signal burst never
-        // exceeds MAX_SIG_SECS (keeps the decode-bar timer within bounds).
         let effective_len = self.samples.len().min(max_sig_samples);
         let mut out = Vec::with_capacity(n);
         let mut i = 0;

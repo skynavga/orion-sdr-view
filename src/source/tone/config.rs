@@ -1,7 +1,7 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::Defaults;
+use crate::config::Defaults;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -13,7 +13,7 @@ pub struct TestToneConfig {
     pub pause_secs: Option<f32>,
 }
 
-impl super::ViewConfig {
+impl crate::config::ViewConfig {
     pub fn freq_hz(&self) -> f32 {
         self.sources
             .as_ref()

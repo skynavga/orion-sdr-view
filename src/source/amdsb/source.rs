@@ -7,7 +7,7 @@ use std::path::Path;
 use orion_sdr::core::AudioToIqChain;
 use orion_sdr::modulate::AmDsbMod;
 
-use super::{MAX_SIG_SECS, SignalSource};
+use crate::source::{MAX_SIG_SECS, SignalSource};
 
 // ── BuiltinAudio ─────────────────────────────────────────────────────────────
 
@@ -28,8 +28,8 @@ impl BuiltinAudio {
     }
 }
 
-static CQ_MORSE_WAV: &[u8] = include_bytes!("../../assets/audio/cq_morse.wav");
-static CQ_VOICE_WAV: &[u8] = include_bytes!("../../assets/audio/cq_voice.wav");
+static CQ_MORSE_WAV: &[u8] = include_bytes!("../../../assets/audio/cq_morse.wav");
+static CQ_VOICE_WAV: &[u8] = include_bytes!("../../../assets/audio/cq_voice.wav");
 
 fn decode_wav_bytes(bytes: &[u8]) -> (Vec<f32>, f32) {
     let cursor = Cursor::new(bytes);

@@ -1,7 +1,7 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::Defaults;
+use crate::config::Defaults;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -16,7 +16,7 @@ pub struct Ft8Config {
     pub free_text: Option<String>,
 }
 
-impl super::ViewConfig {
+impl crate::config::ViewConfig {
     pub fn ft8_mode(&self) -> &str {
         self.sources
             .as_ref()

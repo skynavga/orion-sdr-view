@@ -9,7 +9,7 @@ use num_complex::Complex32 as C32;
 use orion_sdr::modulate::psk31::{PSK31_BAUD, psk31_sps};
 use orion_sdr::sync::psk31_sync::psk31_sync;
 
-use super::{DecodeMode, DecodeResult, Psk31Stream, SPECTRUM_WINDOW_SAMPLES};
+use crate::decode::{DecodeMode, DecodeResult, Psk31Stream, SPECTRUM_WINDOW_SAMPLES};
 pub use orion_sdr::util::{PSK31_BW_HZ, best_sync, spectrum_snr_db};
 
 /// Maximum PSK31 accumulation buffer: caps memory and limits decode latency.

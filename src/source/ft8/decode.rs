@@ -9,8 +9,8 @@ use num_complex::Complex32 as C32;
 use orion_sdr::codec::Ft8StreamDecoder;
 use orion_sdr::message::{Ft8Message, gridfield_to_str};
 
-use super::psk31::INFO_INTERVAL;
-use super::{DecodeMode, DecodeResult};
+use crate::decode::{DecodeMode, DecodeResult};
+use crate::source::psk31::INFO_INTERVAL;
 pub use orion_sdr::util::spectrum_snr_db;
 
 /// FT8 signal bandwidth: 8 tones × 6.25 Hz spacing = 50 Hz.
