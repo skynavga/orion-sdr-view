@@ -80,8 +80,9 @@ impl ToneRows {
     }
 }
 
-// Test Tone has no text fields, no special row drawing, and no per-row
-// footer hints — the trait's default impls cover all of those.
+// Test Tone has no text fields, no special row drawing, no per-row footer
+// hints, no YAML config, and no pending edits — the trait's default impls
+// cover all of those.
 impl super::common::SourceRows for ToneRows {
     fn rows(&self) -> &[Row] {
         &self.rows
@@ -92,48 +93,64 @@ impl super::common::SourceRows for ToneRows {
     fn visible_indices(&self) -> Vec<usize> {
         self.visible_indices()
     }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
 }
 
 // ── SettingsState accessors ───────────────────────────────────────────────
 
+use crate::app::SourceMode;
+
+/// Borrow this source's rows from `SettingsState`.
+fn rows(state: &super::SettingsState) -> &ToneRows {
+    state.source_as::<ToneRows>(SourceMode::TestTone as usize)
+}
+fn rows_mut(state: &mut super::SettingsState) -> &mut ToneRows {
+    state.source_as_mut::<ToneRows>(SourceMode::TestTone as usize)
+}
+
 impl super::SettingsState {
     pub fn freq_hz(&self) -> f32 {
-        if let Row::Num(f) = &self.tone.rows[FREQ] {
+        if let Row::Num(f) = &rows(self).rows[FREQ] {
             f.value
         } else {
             3000.0
         }
     }
     pub fn noise_amp(&self) -> f32 {
-        if let Row::Num(f) = &self.tone.rows[NOISE] {
+        if let Row::Num(f) = &rows(self).rows[NOISE] {
             f.value
         } else {
             0.05
         }
     }
     pub fn amp_max(&self) -> f32 {
-        if let Row::Num(f) = &self.tone.rows[AMP_MAX] {
+        if let Row::Num(f) = &rows(self).rows[AMP_MAX] {
             f.value
         } else {
             0.65
         }
     }
     pub fn ramp_secs(&self) -> f32 {
-        if let Row::Num(f) = &self.tone.rows[RAMP] {
+        if let Row::Num(f) = &rows(self).rows[RAMP] {
             f.value
         } else {
             3.0
         }
     }
     pub fn pause_secs(&self) -> f32 {
-        if let Row::Num(f) = &self.tone.rows[PAUSE] {
+        if let Row::Num(f) = &rows(self).rows[PAUSE] {
             f.value
         } else {
             7.0
         }
     }
     pub fn set_freq_hz(&mut self, v: f32) {
-        if let Row::Num(f) = &mut self.tone.rows[FREQ] {
+        if let Row::Num(f) = &mut rows_mut(self).rows[FREQ] {
             f.value = v.clamp(f.min, f.max);
         }
     }

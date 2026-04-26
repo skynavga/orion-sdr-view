@@ -157,34 +157,6 @@ impl CwRows {
         }
     }
 
-    pub fn patch_from_config(&mut self, cfg: &ViewConfig) {
-        self.rows[WPM].patch_num(cfg.cw_wpm());
-        self.rows[JITTER].patch_num(cfg.cw_jitter_pct());
-        self.rows[DASH_WEIGHT].patch_num(cfg.cw_dash_weight());
-        self.rows[CHAR_SPACE].patch_num(cfg.cw_char_space());
-        self.rows[WORD_SPACE].patch_num(cfg.cw_word_space());
-        self.rows[RISE].patch_num(cfg.cw_rise_ms());
-        self.rows[FALL].patch_num(cfg.cw_fall_ms());
-        self.rows[CARRIER].patch_num(cfg.cw_carrier_hz());
-        self.rows[GAP].patch_num(cfg.cw_gap_secs());
-        self.rows[NOISE].patch_num(cfg.cw_noise_amp());
-        self.rows[REPEAT].patch_num(cfg.cw_msg_repeat() as f32);
-
-        // Patch canned message text
-        if let Row::Text(f) = &mut self.rows[MSG] {
-            let msg = cfg.cw_canned_text().to_owned();
-            f.value = msg.clone();
-            f.default_value = msg;
-        }
-
-        // Patch custom message text
-        if let Row::Text(f) = &mut self.rows[CUSTOM_MSG] {
-            let msg = cfg.cw_custom_text().to_owned();
-            f.value = msg.clone();
-            f.default_value = msg;
-        }
-    }
-
     pub fn msg_is_custom(&self) -> bool {
         if let Row::Toggle(f) = &self.rows[MSG_MODE] {
             f.index == 1
@@ -421,9 +393,42 @@ impl super::common::SourceRows for CwRows {
     fn visible_indices(&self) -> Vec<usize> {
         self.visible_indices()
     }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
     fn discard_pending(&mut self) {
         self.pending_msg = None;
         self.editing_msg_row = None;
+    }
+    fn patch_from_config(&mut self, cfg: &ViewConfig) {
+        self.rows[WPM].patch_num(cfg.cw_wpm());
+        self.rows[JITTER].patch_num(cfg.cw_jitter_pct());
+        self.rows[DASH_WEIGHT].patch_num(cfg.cw_dash_weight());
+        self.rows[CHAR_SPACE].patch_num(cfg.cw_char_space());
+        self.rows[WORD_SPACE].patch_num(cfg.cw_word_space());
+        self.rows[RISE].patch_num(cfg.cw_rise_ms());
+        self.rows[FALL].patch_num(cfg.cw_fall_ms());
+        self.rows[CARRIER].patch_num(cfg.cw_carrier_hz());
+        self.rows[GAP].patch_num(cfg.cw_gap_secs());
+        self.rows[NOISE].patch_num(cfg.cw_noise_amp());
+        self.rows[REPEAT].patch_num(cfg.cw_msg_repeat() as f32);
+
+        // Patch canned message text
+        if let Row::Text(f) = &mut self.rows[MSG] {
+            let msg = cfg.cw_canned_text().to_owned();
+            f.value = msg.clone();
+            f.default_value = msg;
+        }
+
+        // Patch custom message text
+        if let Row::Text(f) = &mut self.rows[CUSTOM_MSG] {
+            let msg = cfg.cw_custom_text().to_owned();
+            f.value = msg.clone();
+            f.default_value = msg;
+        }
     }
 
     fn focused_text_field(&self, local_idx: usize) -> Option<super::common::TextFieldKind> {
@@ -479,84 +484,94 @@ impl super::common::SourceRows for CwRows {
 
 // ── SettingsState accessors ───────────────────────────────────────────────
 
+use crate::app::SourceMode;
+
+/// Borrow this source's rows from `SettingsState`.
+fn rows(state: &super::SettingsState) -> &CwRows {
+    state.source_as::<CwRows>(SourceMode::Cw as usize)
+}
+fn rows_mut(state: &mut super::SettingsState) -> &mut CwRows {
+    state.source_as_mut::<CwRows>(SourceMode::Cw as usize)
+}
+
 impl super::SettingsState {
     pub fn cw_wpm(&self) -> f32 {
-        if let Row::Num(f) = &self.cw.rows[WPM] {
+        if let Row::Num(f) = &rows(self).rows[WPM] {
             f.value
         } else {
             crate::source::cw::CW_DEFAULT_WPM
         }
     }
     pub fn cw_jitter_pct(&self) -> f32 {
-        if let Row::Num(f) = &self.cw.rows[JITTER] {
+        if let Row::Num(f) = &rows(self).rows[JITTER] {
             f.value
         } else {
             crate::source::cw::CW_DEFAULT_JITTER_PCT
         }
     }
     pub fn cw_dash_weight(&self) -> f32 {
-        if let Row::Num(f) = &self.cw.rows[DASH_WEIGHT] {
+        if let Row::Num(f) = &rows(self).rows[DASH_WEIGHT] {
             f.value
         } else {
             crate::source::cw::CW_DEFAULT_DASH_WEIGHT
         }
     }
     pub fn cw_char_space(&self) -> f32 {
-        if let Row::Num(f) = &self.cw.rows[CHAR_SPACE] {
+        if let Row::Num(f) = &rows(self).rows[CHAR_SPACE] {
             f.value
         } else {
             crate::source::cw::CW_DEFAULT_CHAR_SPACE
         }
     }
     pub fn cw_word_space(&self) -> f32 {
-        if let Row::Num(f) = &self.cw.rows[WORD_SPACE] {
+        if let Row::Num(f) = &rows(self).rows[WORD_SPACE] {
             f.value
         } else {
             crate::source::cw::CW_DEFAULT_WORD_SPACE
         }
     }
     pub fn cw_rise_ms(&self) -> f32 {
-        if let Row::Num(f) = &self.cw.rows[RISE] {
+        if let Row::Num(f) = &rows(self).rows[RISE] {
             f.value
         } else {
             crate::source::cw::CW_DEFAULT_RISE_MS
         }
     }
     pub fn cw_fall_ms(&self) -> f32 {
-        if let Row::Num(f) = &self.cw.rows[FALL] {
+        if let Row::Num(f) = &rows(self).rows[FALL] {
             f.value
         } else {
             crate::source::cw::CW_DEFAULT_FALL_MS
         }
     }
     pub fn cw_carrier_hz(&self) -> f32 {
-        if let Row::Num(f) = &self.cw.rows[CARRIER] {
+        if let Row::Num(f) = &rows(self).rows[CARRIER] {
             f.value
         } else {
             crate::source::cw::CW_DEFAULT_CARRIER_HZ
         }
     }
     pub fn set_cw_carrier_hz(&mut self, v: f32) {
-        if let Row::Num(f) = &mut self.cw.rows[CARRIER] {
+        if let Row::Num(f) = &mut rows_mut(self).rows[CARRIER] {
             f.value = v.clamp(f.min, f.max);
         }
     }
     pub fn cw_gap_secs(&self) -> f32 {
-        if let Row::Num(f) = &self.cw.rows[GAP] {
+        if let Row::Num(f) = &rows(self).rows[GAP] {
             f.value
         } else {
             crate::source::cw::CW_DEFAULT_GAP_SECS
         }
     }
     pub fn cw_noise_amp(&self) -> f32 {
-        if let Row::Num(f) = &self.cw.rows[NOISE] {
+        if let Row::Num(f) = &rows(self).rows[NOISE] {
             f.value
         } else {
             crate::source::cw::CW_DEFAULT_NOISE_AMP
         }
     }
     pub fn cw_msg_repeat(&self) -> usize {
-        if let Row::Num(f) = &self.cw.rows[REPEAT] {
+        if let Row::Num(f) = &rows(self).rows[REPEAT] {
             f.value as usize
         } else {
             crate::source::cw::CW_DEFAULT_REPEAT
@@ -564,27 +579,28 @@ impl super::SettingsState {
     }
     /// Returns the active message (Canned or Custom, depending on toggle).
     pub fn cw_message(&self) -> &str {
-        if self.cw.msg_is_custom() {
-            if let Row::Text(f) = &self.cw.rows[CUSTOM_MSG] {
+        let r = rows(self);
+        if r.msg_is_custom() {
+            if let Row::Text(f) = &r.rows[CUSTOM_MSG] {
                 &f.value
             } else {
                 ""
             }
-        } else if let Row::Text(f) = &self.cw.rows[MSG] {
+        } else if let Row::Text(f) = &r.rows[MSG] {
             &f.value
         } else {
             ""
         }
     }
     pub fn cw_msg_mode_str(&self) -> &str {
-        if let Row::Toggle(f) = &self.cw.rows[MSG_MODE] {
+        if let Row::Toggle(f) = &rows(self).rows[MSG_MODE] {
             f.value_str()
         } else {
             "Canned"
         }
     }
     pub fn cycle_cw_msg_mode(&mut self) {
-        if let Row::Toggle(f) = &mut self.cw.rows[MSG_MODE] {
+        if let Row::Toggle(f) = &mut rows_mut(self).rows[MSG_MODE] {
             f.next();
         }
     }

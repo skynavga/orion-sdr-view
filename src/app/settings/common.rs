@@ -37,11 +37,14 @@ const TAB_NAMES: [&str; N_TABS] = ["Source", "Display"];
 // Methods after `discard_pending` have default impls so sources without
 // text fields / hints / special draw logic don't need to override them.
 
-pub(super) trait SourceRows {
+pub(super) trait SourceRows: std::any::Any {
     // ── Required ─────────────────────────────────────────────────────────
     fn rows(&self) -> &[Row];
     fn rows_mut(&mut self) -> &mut [Row];
     fn visible_indices(&self) -> Vec<usize>;
+    /// Boilerplate to enable downcasting via `SettingsState::source_as`.
+    fn as_any(&self) -> &dyn std::any::Any;
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
 
     // ── Optional ─────────────────────────────────────────────────────────
 
@@ -51,6 +54,10 @@ pub(super) trait SourceRows {
 
     /// Discard any in-progress pending text edit.
     fn discard_pending(&mut self) {}
+
+    /// Patch row values + defaults from a loaded `ViewConfig`.  Sources that
+    /// are not represented in the YAML schema can rely on the default no-op.
+    fn patch_from_config(&mut self, _cfg: &ViewConfig) {}
 
     /// Identifies the source's text-editable row, if `local_idx` points at
     /// one (and the row is currently editable).
@@ -167,11 +174,12 @@ pub struct SettingsState {
     source_selector: Row,
 
     pub(super) display: DisplayRows,
-    pub(super) tone: ToneRows,
-    pub(super) cw: CwRows,
-    pub(super) amdsb: AmDsbRows,
-    pub(super) psk31: Psk31Rows,
-    pub(super) ft8: Ft8Rows,
+
+    /// Per-source row containers, indexed by `SourceMode as usize`.  Adding a
+    /// new source means: implement `SourceRows` for `<S>Rows`, add the variant
+    /// to `SourceMode`, push `Box::new(<S>Rows::new())` here.  `common.rs`
+    /// stays untouched.
+    sources: Vec<Box<dyn SourceRows>>,
 }
 
 impl SettingsState {
@@ -187,6 +195,16 @@ impl SettingsState {
         ramp_secs: f32,
         pause_secs: f32,
     ) -> Self {
+        // Order matches the SourceMode enum: TestTone, Cw, AmDsb, Psk31, Ft8.
+        let sources: Vec<Box<dyn SourceRows>> = vec![
+            Box::new(ToneRows::new(
+                freq_hz, noise_amp, amp_max, ramp_secs, pause_secs,
+            )),
+            Box::new(CwRows::new()),
+            Box::new(AmDsbRows::new()),
+            Box::new(Psk31Rows::new()),
+            Box::new(Ft8Rows::new()),
+        ];
         Self {
             visible: false,
             active_tab: TAB_SOURCE,
@@ -198,11 +216,7 @@ impl SettingsState {
                 default: 0,
             }),
             display: DisplayRows::new(db_min, db_max, spec_freq_delta_hz, spec_time_range_secs),
-            tone: ToneRows::new(freq_hz, noise_amp, amp_max, ramp_secs, pause_secs),
-            cw: CwRows::new(),
-            amdsb: AmDsbRows::new(),
-            psk31: Psk31Rows::new(),
-            ft8: Ft8Rows::new(),
+            sources,
         }
     }
 
@@ -222,11 +236,29 @@ impl SettingsState {
             cfg.pause_secs(),
         );
         s.display.patch_from_config(cfg);
-        s.cw.patch_from_config(cfg);
-        s.amdsb.patch_from_config(cfg);
-        s.psk31.patch_from_config(cfg);
-        s.ft8.patch_from_config(cfg);
+        for source in s.sources.iter_mut() {
+            source.patch_from_config(cfg);
+        }
         s
+    }
+
+    /// Borrow source `idx` as its concrete type `T`.  Panics on type mismatch
+    /// — always loud, never silent.  Used by per-source typed accessors.
+    #[track_caller]
+    pub(super) fn source_as<T: 'static>(&self, idx: usize) -> &T {
+        self.sources[idx]
+            .as_any()
+            .downcast_ref::<T>()
+            .expect("source type mismatch")
+    }
+
+    /// Mutable counterpart of `source_as`.
+    #[track_caller]
+    pub(super) fn source_as_mut<T: 'static>(&mut self, idx: usize) -> &mut T {
+        self.sources[idx]
+            .as_any_mut()
+            .downcast_mut::<T>()
+            .expect("source type mismatch")
     }
 
     // ── Source-mode helpers ───────────────────────────────────────────────
@@ -256,24 +288,13 @@ impl SettingsState {
 
     /// Borrow the currently-active source's `*Rows` as `&dyn SourceRows`.
     fn active_source(&self) -> &dyn SourceRows {
-        match self.source_index() {
-            1 => &self.cw,
-            2 => &self.amdsb,
-            3 => &self.psk31,
-            4 => &self.ft8,
-            _ => &self.tone,
-        }
+        self.sources[self.source_index()].as_ref()
     }
 
     /// Borrow the currently-active source's `*Rows` as `&mut dyn SourceRows`.
     fn active_source_mut(&mut self) -> &mut dyn SourceRows {
-        match self.source_index() {
-            1 => &mut self.cw,
-            2 => &mut self.amdsb,
-            3 => &mut self.psk31,
-            4 => &mut self.ft8,
-            _ => &mut self.tone,
-        }
+        let idx = self.source_index();
+        self.sources[idx].as_mut()
     }
 
     // ── Row routing ──────────────────────────────────────────────────────
@@ -306,13 +327,7 @@ impl SettingsState {
     /// Reset all source-mode settings rows to their defaults.
     /// Called on R-key (outside settings panel) and on source cycling.
     pub fn reset_source_rows(&mut self) {
-        for source in [
-            &mut self.tone as &mut dyn SourceRows,
-            &mut self.cw,
-            &mut self.amdsb,
-            &mut self.psk31,
-            &mut self.ft8,
-        ] {
+        for source in self.sources.iter_mut() {
             for row in source.rows_mut() {
                 row.reset();
             }
@@ -494,22 +509,8 @@ impl SettingsState {
 
     /// Discard any in-progress pending text edit on every source.
     fn discard_all_pending(&mut self) {
-        self.for_each_source_mut(|s| s.discard_pending());
-    }
-
-    /// Run a closure against every per-source `*Rows` (used for cross-source
-    /// reset / discard-pending dispatch).  When a new source is registered,
-    /// extend this iterator and the trait dispatch picks it up automatically.
-    fn for_each_source_mut(&mut self, mut f: impl FnMut(&mut dyn SourceRows)) {
-        let sources: [&mut dyn SourceRows; 5] = [
-            &mut self.tone,
-            &mut self.cw,
-            &mut self.amdsb,
-            &mut self.psk31,
-            &mut self.ft8,
-        ];
-        for s in sources {
-            f(s);
+        for source in self.sources.iter_mut() {
+            source.discard_pending();
         }
     }
 
