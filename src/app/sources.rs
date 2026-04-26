@@ -10,6 +10,7 @@ use crate::source::SignalSource;
 use crate::source::amdsb::AmDsbSource;
 use crate::source::ft8::Ft8Mode;
 
+use super::settings::{AmDsbSettings, CwSettings, Ft8Settings, Psk31Settings, ToneSettings};
 use super::source::{amdsb, cw, ft8, psk31, tone};
 use super::view::ViewApp;
 use super::{SAMPLE_RATE, SourceMode};

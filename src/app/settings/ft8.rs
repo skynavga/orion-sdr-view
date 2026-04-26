@@ -409,72 +409,90 @@ fn rows_mut(state: &mut super::SettingsState) -> &mut Ft8Rows {
     state.source_as_mut::<Ft8Rows>(SourceMode::Ft8 as usize)
 }
 
-impl super::SettingsState {
-    pub fn ft8_mode_str(&self) -> &str {
+/// Typed accessors for FT8/FT4 settings.  Implemented for `SettingsState`;
+/// callers `use crate::app::settings::Ft8Settings` to bring these methods in
+/// scope.
+pub(in crate::app) trait Ft8Settings {
+    fn ft8_mode_str(&self) -> &str;
+    fn ft8_carrier_hz(&self) -> f32;
+    fn ft8_gap_secs(&self) -> f32;
+    fn ft8_noise_amp(&self) -> f32;
+    fn ft8_msg_repeat(&self) -> usize;
+    fn ft8_call_to(&self) -> &str;
+    fn ft8_call_de(&self) -> &str;
+    fn ft8_grid(&self) -> &str;
+    fn ft8_free_text(&self) -> &str;
+    fn ft8_msg_is_free_text(&self) -> bool;
+
+    fn set_ft8_carrier_hz(&mut self, v: f32);
+}
+
+impl Ft8Settings for super::SettingsState {
+    fn ft8_mode_str(&self) -> &str {
         if let Row::Toggle(f) = &rows(self).rows[MODE] {
             f.value_str()
         } else {
             "FT8"
         }
     }
-    pub fn ft8_carrier_hz(&self) -> f32 {
+    fn ft8_carrier_hz(&self) -> f32 {
         if let Row::Num(f) = &rows(self).rows[CARRIER] {
             f.value
         } else {
             crate::source::ft8::FT8_DEFAULT_CARRIER_HZ
         }
     }
-    pub fn set_ft8_carrier_hz(&mut self, v: f32) {
+    fn set_ft8_carrier_hz(&mut self, v: f32) {
         if let Row::Num(f) = &mut rows_mut(self).rows[CARRIER] {
             f.value = v.clamp(f.min, f.max);
         }
     }
-    pub fn ft8_gap_secs(&self) -> f32 {
+    fn ft8_gap_secs(&self) -> f32 {
         if let Row::Num(f) = &rows(self).rows[GAP] {
             f.value
         } else {
             crate::source::ft8::FT8_DEFAULT_GAP_SECS
         }
     }
-    pub fn ft8_noise_amp(&self) -> f32 {
+    fn ft8_noise_amp(&self) -> f32 {
         if let Row::Num(f) = &rows(self).rows[NOISE] {
             f.value
         } else {
             0.0
         }
     }
-    pub fn ft8_msg_repeat(&self) -> usize {
+    fn ft8_msg_repeat(&self) -> usize {
         1
     }
-    pub fn ft8_call_to(&self) -> &str {
+    fn ft8_call_to(&self) -> &str {
         if let Row::Text(f) = &rows(self).rows[CALL_TO] {
             &f.value
         } else {
             crate::source::ft8::FT8_DEFAULT_CALL_TO
         }
     }
-    pub fn ft8_call_de(&self) -> &str {
+    fn ft8_call_de(&self) -> &str {
         if let Row::Text(f) = &rows(self).rows[CALL_DE] {
             &f.value
         } else {
             crate::source::ft8::FT8_DEFAULT_CALL_DE
         }
     }
-    pub fn ft8_grid(&self) -> &str {
+    fn ft8_grid(&self) -> &str {
         if let Row::Text(f) = &rows(self).rows[GRID] {
             &f.value
         } else {
             crate::source::ft8::FT8_DEFAULT_GRID
         }
     }
-    pub fn ft8_free_text(&self) -> &str {
+    fn ft8_free_text(&self) -> &str {
         if let Row::Text(f) = &rows(self).rows[FREE_TEXT] {
             &f.value
         } else {
             crate::source::ft8::FT8_DEFAULT_FREE_TEXT
         }
     }
-    pub fn ft8_msg_is_free_text(&self) -> bool {
+    fn ft8_msg_is_free_text(&self) -> bool {
         rows(self).msg_is_free_text()
     }
 }

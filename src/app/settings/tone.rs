@@ -113,43 +113,55 @@ fn rows_mut(state: &mut super::SettingsState) -> &mut ToneRows {
     state.source_as_mut::<ToneRows>(SourceMode::TestTone as usize)
 }
 
-impl super::SettingsState {
-    pub fn freq_hz(&self) -> f32 {
+/// Typed accessors for Test Tone settings.  Implemented for `SettingsState`;
+/// callers `use crate::app::settings::ToneSettings` to bring these methods in
+/// scope.
+pub(in crate::app) trait ToneSettings {
+    fn freq_hz(&self) -> f32;
+    fn noise_amp(&self) -> f32;
+    fn amp_max(&self) -> f32;
+    fn ramp_secs(&self) -> f32;
+    fn pause_secs(&self) -> f32;
+    fn set_freq_hz(&mut self, v: f32);
+}
+
+impl ToneSettings for super::SettingsState {
+    fn freq_hz(&self) -> f32 {
         if let Row::Num(f) = &rows(self).rows[FREQ] {
             f.value
         } else {
             3000.0
         }
     }
-    pub fn noise_amp(&self) -> f32 {
+    fn noise_amp(&self) -> f32 {
         if let Row::Num(f) = &rows(self).rows[NOISE] {
             f.value
         } else {
             0.05
         }
     }
-    pub fn amp_max(&self) -> f32 {
+    fn amp_max(&self) -> f32 {
         if let Row::Num(f) = &rows(self).rows[AMP_MAX] {
             f.value
         } else {
             0.65
         }
     }
-    pub fn ramp_secs(&self) -> f32 {
+    fn ramp_secs(&self) -> f32 {
         if let Row::Num(f) = &rows(self).rows[RAMP] {
             f.value
         } else {
             3.0
         }
     }
-    pub fn pause_secs(&self) -> f32 {
+    fn pause_secs(&self) -> f32 {
         if let Row::Num(f) = &rows(self).rows[PAUSE] {
             f.value
         } else {
             7.0
         }
     }
-    pub fn set_freq_hz(&mut self, v: f32) {
+    fn set_freq_hz(&mut self, v: f32) {
         if let Row::Num(f) = &mut rows_mut(self).rows[FREQ] {
             f.value = v.clamp(f.min, f.max);
         }

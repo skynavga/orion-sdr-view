@@ -4,7 +4,7 @@
 use std::path::Path;
 
 use crate::app::SAMPLE_RATE;
-use crate::app::settings::SettingsState;
+use crate::app::settings::{AmDsbSettings, SettingsState};
 use crate::source::SignalSource;
 use crate::source::amdsb::{self, AmDsbSource, BuiltinAudio, load_builtin, load_wav_file};
 

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use crate::app::SAMPLE_RATE;
-use crate::app::settings::SettingsState;
+use crate::app::settings::{CwSettings, SettingsState};
 use crate::source::SignalSource;
 use crate::source::cw::{self, CwSource, CwSyncFlags};
 

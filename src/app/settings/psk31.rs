@@ -429,42 +429,59 @@ fn rows_mut(state: &mut super::SettingsState) -> &mut Psk31Rows {
     state.source_as_mut::<Psk31Rows>(SourceMode::Psk31 as usize)
 }
 
-impl super::SettingsState {
-    pub fn psk31_mode_str(&self) -> &str {
+/// Typed accessors for PSK31 settings.  Implemented for `SettingsState`;
+/// callers `use crate::app::settings::Psk31Settings` to bring these methods
+/// in scope.
+pub(in crate::app) trait Psk31Settings {
+    fn psk31_mode_str(&self) -> &str;
+    fn psk31_carrier_hz(&self) -> f32;
+    fn psk31_gap_secs(&self) -> f32;
+    fn psk31_noise_amp(&self) -> f32;
+    /// Returns the active message (Canned or Custom, depending on toggle).
+    fn psk31_message(&self) -> &str;
+    fn psk31_msg_mode_str(&self) -> &str;
+    fn psk31_msg_repeat(&self) -> usize;
+
+    fn set_psk31_carrier_hz(&mut self, v: f32);
+    fn cycle_psk31_mode(&mut self);
+    fn cycle_psk31_msg_mode(&mut self);
+}
+
+impl Psk31Settings for super::SettingsState {
+    fn psk31_mode_str(&self) -> &str {
         if let Row::Toggle(f) = &rows(self).rows[MODE] {
             f.value_str()
         } else {
             "BPSK31"
         }
     }
-    pub fn psk31_carrier_hz(&self) -> f32 {
+    fn psk31_carrier_hz(&self) -> f32 {
         if let Row::Num(f) = &rows(self).rows[CARRIER] {
             f.value
         } else {
             10000.0
         }
     }
-    pub fn set_psk31_carrier_hz(&mut self, v: f32) {
+    fn set_psk31_carrier_hz(&mut self, v: f32) {
         if let Row::Num(f) = &mut rows_mut(self).rows[CARRIER] {
             f.value = v.clamp(f.min, f.max);
         }
     }
-    pub fn psk31_gap_secs(&self) -> f32 {
+    fn psk31_gap_secs(&self) -> f32 {
         if let Row::Num(f) = &rows(self).rows[GAP] {
             f.value
         } else {
             crate::source::psk31::PSK31_DEFAULT_GAP_SECS
         }
     }
-    pub fn psk31_noise_amp(&self) -> f32 {
+    fn psk31_noise_amp(&self) -> f32 {
         if let Row::Num(f) = &rows(self).rows[NOISE] {
             f.value
         } else {
             0.05
         }
     }
-    /// Returns the active message (Canned or Custom, depending on toggle).
-    pub fn psk31_message(&self) -> &str {
+    fn psk31_message(&self) -> &str {
         let r = rows(self);
         if r.msg_is_custom() {
             if let Row::Text(f) = &r.rows[CUSTOM_MSG] {
@@ -478,24 +495,24 @@ impl super::SettingsState {
             ""
         }
     }
-    pub fn psk31_msg_mode_str(&self) -> &str {
+    fn psk31_msg_mode_str(&self) -> &str {
         if let Row::Toggle(f) = &rows(self).rows[MSG_MODE] {
             f.value_str()
         } else {
             "Canned"
         }
     }
-    pub fn cycle_psk31_mode(&mut self) {
+    fn cycle_psk31_mode(&mut self) {
         if let Row::Toggle(f) = &mut rows_mut(self).rows[MODE] {
             f.next();
         }
     }
-    pub fn cycle_psk31_msg_mode(&mut self) {
+    fn cycle_psk31_msg_mode(&mut self) {
         if let Row::Toggle(f) = &mut rows_mut(self).rows[MSG_MODE] {
             f.next();
         }
     }
-    pub fn psk31_msg_repeat(&self) -> usize {
+    fn psk31_msg_repeat(&self) -> usize {
         if let Row::Num(f) = &rows(self).rows[REPEAT] {
             f.value as usize
         } else {

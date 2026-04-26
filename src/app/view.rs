@@ -8,7 +8,9 @@ use eframe::egui;
 
 use super::freqview::{FreqMarker, FreqView};
 use super::persistence::PersistenceRenderer;
-use super::settings::SettingsState;
+use super::settings::{
+    AmDsbSettings, CwSettings, Ft8Settings, Psk31Settings, SettingsState, ToneSettings,
+};
 use super::spectrogram::SpectrogramDisplay;
 use super::spectrum::{RingBuffer, SpectrumProcessor};
 use super::waterfall::WaterfallDisplay;

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use crate::app::SAMPLE_RATE;
-use crate::app::settings::SettingsState;
+use crate::app::settings::{Psk31Settings, SettingsState};
 use crate::source::SignalSource;
 use crate::source::psk31::{self, Psk31Mode, Psk31Source};
 

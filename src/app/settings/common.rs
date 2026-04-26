@@ -4,7 +4,7 @@
 use crate::config::ViewConfig;
 use eframe::egui;
 
-use super::amdsb::AmDsbRows;
+use super::amdsb::{AmDsbRows, AmDsbSettings};
 use super::cw::CwRows;
 use super::display::{self, DisplayRows};
 use super::field::{Row, RowDrawCtx, ToggleField, draw_num, draw_toggle};
