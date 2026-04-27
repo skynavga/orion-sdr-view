@@ -299,8 +299,14 @@ impl SignalSource for AmDsbSource {
                     self.sig_samples = 0;
                 }
             } else {
-                // PTT keyed — accumulate audio samples until gap or end of n
+                // PTT keyed — accumulate audio samples until gap or end of n.
+                // When audio is empty (no source loaded), emit a continuous
+                // carrier with no artificial gap: the 99.99s burst cap is
+                // skipped because there's no playthrough boundary to anchor
+                // the gap to.  The bin-side display shows "no signal" in
+                // this state to make it visible to the user.
                 audio_chunk.clear();
+                let has_audio = !self.audio.is_empty();
                 while i < n && self.gap_remaining == 0 {
                     let (s, wrapped) = self.read_audio_sample();
                     audio_chunk.push(s);
@@ -313,7 +319,7 @@ impl SignalSource for AmDsbSource {
                             self.gap_remaining = self.gap_samples;
                         }
                     }
-                    if self.sig_samples >= max_sig_samples && self.gap_remaining == 0 {
+                    if has_audio && self.sig_samples >= max_sig_samples && self.gap_remaining == 0 {
                         // Hit signal-duration cap — truncate burst and enter gap.
                         self.play_count = 0;
                         self.audio_pos = 0.0;

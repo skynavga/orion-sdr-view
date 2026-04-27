@@ -391,6 +391,10 @@ pub(in crate::app) trait AmDsbSettings {
     fn am_noise_amp(&self) -> f32;
     fn am_msg_repeat(&self) -> usize;
     fn wav_path(&self) -> &str;
+    /// True if the AM source is currently producing audio: either a built-in
+    /// (Morse/Voice) is selected, or Custom is selected and the WAV file
+    /// last loaded successfully.
+    fn am_has_audio(&self) -> bool;
 
     fn set_am_carrier_hz(&mut self, v: f32);
     fn set_wav_status(&mut self, ok: bool);
@@ -481,6 +485,18 @@ impl AmDsbSettings for super::SettingsState {
     fn cycle_am_audio(&mut self) {
         if let Row::Toggle(f) = &mut rows_mut(self).rows[AUDIO] {
             f.next();
+        }
+    }
+    fn am_has_audio(&self) -> bool {
+        // Built-in audio (Morse / Voice) is always available.
+        if !self.am_audio_is_custom() {
+            return true;
+        }
+        // Custom: only true when a WAV load has succeeded.
+        if let Row::Text(f) = &rows(self).rows[WAV_FILE] {
+            f.status == Some(true)
+        } else {
+            false
         }
     }
 }

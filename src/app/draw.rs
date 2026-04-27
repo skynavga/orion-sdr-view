@@ -3,6 +3,7 @@
 
 use eframe::egui;
 
+use super::settings::AmDsbSettings;
 use super::source::{amdsb, cw, ft8, psk31};
 use super::utils::dashed_hline;
 use super::view::ViewApp;
@@ -212,25 +213,34 @@ impl ViewApp {
             .x;
         let content_x = rect.left() + 6.0 + label_w + 12.0; // 12 px right margin
 
-        // Loop timer label: only meaningful when the source has sig/gap
-        // structure.  For TestTone, that means cycling is on; the continuous
-        // tone case has no gaps, so the "sig N.NN  loop NNN" counter would
-        // just climb to 99.99 and stay there.  Other sources (CW, PSK31,
-        // FT8, AmDsb) all have natural sig/gap structure.
-        let show_timer = self.source_mode != SourceMode::TestTone || self.signal_gen.cycling;
-        let timer_label = if show_timer {
-            self.loop_timer.label()
-        } else {
-            String::new()
+        // Right-aligned status block.  Three cases:
+        //   - Loop timer ("sig N.NN  loop NNN") — the normal case for sources
+        //     that have sig/gap structure.
+        //   - "no audio" placeholder — AmDsb in Custom-with-no-WAV state.
+        //     The carrier is still emitted (PTT is keyed) but no audio
+        //     source is connected, so there's no modulation and no gap;
+        //     the loop timer would falsely climb forever.
+        //   - Hidden — TestTone without cycling: continuous tone, no gaps,
+        //     timer would just climb to 99.99 and clamp.
+        let right_status: Option<(String, egui::Color32)> = match self.source_mode {
+            SourceMode::TestTone => {
+                if self.signal_gen.cycling {
+                    Some((self.loop_timer.label(), TEXT_COL))
+                } else {
+                    None
+                }
+            }
+            SourceMode::AmDsb if !self.settings.am_has_audio() => {
+                Some(("no audio".to_owned(), DIM_COL))
+            }
+            _ => Some((self.loop_timer.label(), TEXT_COL)),
         };
-        let timer_w = if show_timer {
+        let timer_w = right_status.as_ref().map_or(0.0, |(s, _)| {
             painter
-                .layout_no_wrap(timer_label.clone(), font.clone(), TEXT_COL)
+                .layout_no_wrap(s.clone(), font.clone(), TEXT_COL)
                 .size()
                 .x
-        } else {
-            0.0
-        };
+        });
         let em_w = painter
             .layout_no_wrap("M".to_owned(), font.clone(), TEXT_COL)
             .size()
@@ -332,13 +342,13 @@ impl ViewApp {
                 TEXT_COL,
             );
         }
-        if show_timer {
+        if let Some((label, color)) = right_status {
             painter.text(
                 egui::pos2(timer_x, text_y),
                 egui::Align2::RIGHT_CENTER,
-                timer_label,
+                label,
                 font,
-                TEXT_COL,
+                color,
             );
         }
     }
