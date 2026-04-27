@@ -12,8 +12,13 @@ pub const MAX_SIG_SECS: f32 = 99.99;
 /// existing `RingBuffer` and spectrum display pipeline.
 ///
 /// `as_any_mut` enables downcasting a `Box<dyn SignalSource>` to a concrete type:
-/// ```ignore
-/// if let Some(am) = source.as_any_mut().downcast_mut::<am_dsb::AmDsbSource>() { ... }
+/// ```no_run
+/// use orion_sdr_view::source::{SignalSource, amdsb::AmDsbSource};
+/// fn poke_am(source: &mut dyn SignalSource) {
+///     if let Some(_am) = source.as_any_mut().downcast_mut::<AmDsbSource>() {
+///         // ... mutate the AM source ...
+///     }
+/// }
 /// ```
 pub trait SignalSource {
     fn next_samples(&mut self, n: usize) -> Vec<f32>;
