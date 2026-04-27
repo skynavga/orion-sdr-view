@@ -230,9 +230,10 @@ impl ViewApp {
                     None
                 }
             }
-            SourceMode::AmDsb if !self.settings.am_has_audio() => {
-                Some(("no audio".to_owned(), DIM_COL))
-            }
+            SourceMode::AmDsb if !self.settings.am_has_audio() => Some((
+                "no audio".to_owned(),
+                egui::Color32::from_rgb(0xff, 0x00, 0x00),
+            )),
             _ => Some((self.loop_timer.label(), TEXT_COL)),
         };
         let timer_w = right_status.as_ref().map_or(0.0, |(s, _)| {

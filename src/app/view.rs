@@ -761,6 +761,11 @@ impl eframe::App for ViewApp {
         // Track signal onset for timestamp capture.
         let is_ft8_mode = self.source_mode == SourceMode::Ft8;
         let is_cw_mode = self.source_mode == SourceMode::Cw;
+        let is_psk31_mode = self.source_mode == SourceMode::Psk31;
+        // CW and PSK31 both decode incrementally — frame each burst with
+        // matching open/close delimiters so the Dt ticker shows
+        // "|| HH:MM:SS.mmm | <text> ||" per burst, mirroring FT8.
+        let is_burst_text_mode = is_cw_mode || is_psk31_mode;
         if is_ft8_mode {
             let was_signal = self.last_block_was_signal;
             if block_is_signal && !was_signal {
@@ -768,9 +773,8 @@ impl eframe::App for ViewApp {
                 self.ft8_view.on_signal_rising_edge();
             }
         }
-        // CW uses holdoff-aware onset from the loop timer.
-        if is_cw_mode && self.loop_timer.signal_onset {
-            let delim = super::source::cw::format_open_delimiter(
+        if is_burst_text_mode && self.loop_timer.signal_onset {
+            let delim = super::source::format_burst_open_delimiter(
                 std::time::SystemTime::now(),
                 self.time_zone_offset_min,
             );
@@ -812,11 +816,12 @@ impl eframe::App for ViewApp {
             }
         }
 
-        // CW closing delimiter: inject after draining all decode results so
-        // the last characters appear before the "||" separator.
-        if is_cw_mode && self.loop_timer.gap_onset {
-            self.decode_ticker
-                .push_result(DecodeResult::Text(" ||".to_owned()));
+        // CW / PSK31 closing delimiter: inject after draining all decode
+        // results so the last characters appear before the "||" separator.
+        if is_burst_text_mode && self.loop_timer.gap_onset {
+            self.decode_ticker.push_result(DecodeResult::Text(
+                super::source::BURST_CLOSE_DELIMITER.to_owned(),
+            ));
         }
 
         if !self.loop_timer.in_signal && self.decode_bar.is_visible() {

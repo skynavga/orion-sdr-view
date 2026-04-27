@@ -63,22 +63,6 @@ pub(in crate::app) fn holdoff_secs(settings: &SettingsState) -> f32 {
     cw::holdoff_secs(settings.cw_wpm(), settings.cw_word_space())
 }
 
-/// Format the opening ticker delimiter injected on a CW signal-onset edge:
-/// `"|| HH:MM:SS.mmm | "`.  `onset` is the captured rising-edge time;
-/// `time_zone_offset_min` is the configured display offset.
-pub(in crate::app) fn format_open_delimiter(
-    onset: std::time::SystemTime,
-    time_zone_offset_min: i32,
-) -> String {
-    let ts = crate::utils::format::format_time(onset, time_zone_offset_min);
-    let ts_str = if ts.is_empty() {
-        "--:--:--.---".to_owned()
-    } else {
-        ts
-    };
-    format!("|| {ts_str} | ")
-}
-
 /// Submode line for the top HUD when CW is the active source.
 pub(in crate::app) fn hud_submode_str(settings: &SettingsState) -> String {
     let msg_is_custom = settings.cw_msg_mode_str() == "Custom";
