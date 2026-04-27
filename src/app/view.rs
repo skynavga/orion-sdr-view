@@ -383,20 +383,26 @@ impl ViewApp {
                 toggle_source = true;
             }
             if i.key_pressed(egui::Key::C) {
-                if self.signal_gen.cycling {
-                    self.signal_gen.stop_cycling();
-                } else {
+                // Toggle cycling on the persistent generator AND the active
+                // source's generator, keeping them in sync.  Don't call
+                // reset_playback here — that would reconstruct the active
+                // source's TestSignalGen and discard the cycling toggle we
+                // just set.  Resetting the loop timer is enough to restart
+                // the sig/gap accounting cleanly.
+                let now_cycling = !self.signal_gen.cycling;
+                if now_cycling {
                     self.signal_gen.start_cycling();
+                } else {
+                    self.signal_gen.stop_cycling();
                 }
-                // Propagate to active TestToneSource if applicable
                 if let Some(tts) = self.source.as_any_mut().downcast_mut::<TestToneSource>() {
-                    if tts.signal_gen.cycling {
-                        tts.signal_gen.stop_cycling();
-                    } else {
+                    if now_cycling {
                         tts.signal_gen.start_cycling();
+                    } else {
+                        tts.signal_gen.stop_cycling();
                     }
                 }
-                self.reset_playback();
+                self.loop_timer.reset();
             }
             if i.key_pressed(egui::Key::D) {
                 let has_text = matches!(

@@ -212,12 +212,25 @@ impl ViewApp {
             .x;
         let content_x = rect.left() + 6.0 + label_w + 12.0; // 12 px right margin
 
-        // Measure loop timer label so we know where the scrolling text must stop.
-        let timer_label = self.loop_timer.label();
-        let timer_w = painter
-            .layout_no_wrap(timer_label.clone(), font.clone(), TEXT_COL)
-            .size()
-            .x;
+        // Loop timer label: only meaningful when the source has sig/gap
+        // structure.  For TestTone, that means cycling is on; the continuous
+        // tone case has no gaps, so the "sig N.NN  loop NNN" counter would
+        // just climb to 99.99 and stay there.  Other sources (CW, PSK31,
+        // FT8, AmDsb) all have natural sig/gap structure.
+        let show_timer = self.source_mode != SourceMode::TestTone || self.signal_gen.cycling;
+        let timer_label = if show_timer {
+            self.loop_timer.label()
+        } else {
+            String::new()
+        };
+        let timer_w = if show_timer {
+            painter
+                .layout_no_wrap(timer_label.clone(), font.clone(), TEXT_COL)
+                .size()
+                .x
+        } else {
+            0.0
+        };
         let em_w = painter
             .layout_no_wrap("M".to_owned(), font.clone(), TEXT_COL)
             .size()
@@ -319,13 +332,15 @@ impl ViewApp {
                 TEXT_COL,
             );
         }
-        painter.text(
-            egui::pos2(timer_x, text_y),
-            egui::Align2::RIGHT_CENTER,
-            timer_label,
-            font,
-            TEXT_COL,
-        );
+        if show_timer {
+            painter.text(
+                egui::pos2(timer_x, text_y),
+                egui::Align2::RIGHT_CENTER,
+                timer_label,
+                font,
+                TEXT_COL,
+            );
+        }
     }
 
     pub(super) fn draw_spectrum(&self, painter: &egui::Painter, rect: egui::Rect) {
