@@ -205,6 +205,29 @@ impl SettingsState {
             Box::new(Psk31Rows::new()),
             Box::new(Ft8Rows::new()),
         ];
+        // Belt-and-suspenders: panic loudly at startup if the per-source
+        // `Vec` order ever drifts from the `SourceMode` enum.  If this fires,
+        // every `source_as::<T>(...)` typed accessor would silently read the
+        // wrong source's rows; failing here is much easier to diagnose than
+        // failing later inside a key handler or HUD update.
+        use crate::app::SourceMode;
+        debug_assert!(
+            sources[SourceMode::TestTone as usize]
+                .as_any()
+                .is::<ToneRows>()
+        );
+        debug_assert!(sources[SourceMode::Cw as usize].as_any().is::<CwRows>());
+        debug_assert!(
+            sources[SourceMode::AmDsb as usize]
+                .as_any()
+                .is::<AmDsbRows>()
+        );
+        debug_assert!(
+            sources[SourceMode::Psk31 as usize]
+                .as_any()
+                .is::<Psk31Rows>()
+        );
+        debug_assert!(sources[SourceMode::Ft8 as usize].as_any().is::<Ft8Rows>());
         Self {
             visible: false,
             active_tab: TAB_SOURCE,

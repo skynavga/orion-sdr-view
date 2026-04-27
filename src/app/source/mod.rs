@@ -52,3 +52,43 @@ pub(super) static FACTORIES: &[&'static (dyn SourceFactory + Sync)] = &[
     &psk31::Factory,
     &ft8::Factory,
 ];
+
+/// Belt-and-suspenders: panic loudly at startup if `FACTORIES` ever drifts
+/// from the `SourceMode` enum.  If this fires, every `source_mode_factory()`
+/// call would silently dispatch to the wrong source's `make`/`decode_mode`/
+/// `set_carrier_hz`, producing the wrong source type or carrier setter.
+/// Failing here is much easier to diagnose than failing later inside an
+/// M-key handler or the source-locked carrier tracker.
+///
+/// Called from `ViewApp::new` once at startup; runs in debug builds only.
+pub(super) fn debug_assert_factory_order(settings: &SettingsState) {
+    use crate::app::SourceMode;
+    let view = Ft8ViewState::new();
+    debug_assert_eq!(
+        FACTORIES[SourceMode::TestTone as usize].decode_mode(settings, &view),
+        DecodeMode::TestTone,
+        "FACTORIES order mismatch at TestTone"
+    );
+    debug_assert_eq!(
+        FACTORIES[SourceMode::Cw as usize].decode_mode(settings, &view),
+        DecodeMode::Cw,
+        "FACTORIES order mismatch at Cw"
+    );
+    debug_assert_eq!(
+        FACTORIES[SourceMode::AmDsb as usize].decode_mode(settings, &view),
+        DecodeMode::AmDsb,
+        "FACTORIES order mismatch at AmDsb"
+    );
+    // PSK31's decode_mode depends on the BPSK31/QPSK31 toggle; default is BPSK31.
+    debug_assert_eq!(
+        FACTORIES[SourceMode::Psk31 as usize].decode_mode(settings, &view),
+        DecodeMode::Bpsk31,
+        "FACTORIES order mismatch at Psk31"
+    );
+    // FT8's decode_mode reads from Ft8ViewState; default `view.mode` is Ft8.
+    debug_assert_eq!(
+        FACTORIES[SourceMode::Ft8 as usize].decode_mode(settings, &view),
+        DecodeMode::Ft8,
+        "FACTORIES order mismatch at Ft8"
+    );
+}

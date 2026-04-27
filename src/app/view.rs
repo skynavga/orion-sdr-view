@@ -185,6 +185,7 @@ impl ViewApp {
         };
         app.time_zone_offset_min = cfg.time_zone_offset_min();
         app.sync_decode_config();
+        super::source::debug_assert_factory_order(&app.settings);
         app
     }
 
