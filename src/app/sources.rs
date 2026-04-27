@@ -67,7 +67,7 @@ impl ViewApp {
             }
             None => amdsb::clear_audio(self.source.as_mut()),
         }
-        self.reset_playback();
+        self.restart_source();
     }
 
     /// Attempt to load the WAV path from settings into the AM DSB source.
@@ -91,7 +91,7 @@ impl ViewApp {
                 }
             }
         }
-        self.reset_playback();
+        self.restart_source();
         success
     }
 
@@ -101,7 +101,7 @@ impl ViewApp {
             self.ft8_view.mode = mode;
         }
         self.sync_decode_config();
-        self.reset_playback();
+        self.restart_source();
     }
 
     /// Cycle the FT8 source message type (N key): Standard → FreeText → Standard.
@@ -109,25 +109,25 @@ impl ViewApp {
         if let Some(msg_type) = ft8::cycle_msg_type(self.source.as_mut()) {
             self.ft8_view.msg_type = msg_type;
         }
-        self.reset_playback();
+        self.restart_source();
     }
 
     /// Apply the committed PSK31 message to the live source and re-render.
     pub(super) fn apply_psk31_message(&mut self) {
         psk31::apply_message(self.source.as_mut(), &self.settings);
-        self.reset_playback();
+        self.restart_source();
     }
 
     /// Apply the committed CW message to the live source and re-render.
     pub(super) fn apply_cw_message(&mut self) {
         cw::apply_message(self.source.as_mut(), &self.settings);
-        self.reset_playback();
+        self.restart_source();
     }
 
     /// Apply the committed FT8 free-text message to the live source and re-render.
     pub(super) fn apply_ft8_free_text(&mut self) {
         ft8::apply_free_text(self.source.as_mut(), &self.settings);
-        self.reset_playback();
+        self.restart_source();
     }
 
     /// Update the shared `DecodeConfig` to match the current source mode and

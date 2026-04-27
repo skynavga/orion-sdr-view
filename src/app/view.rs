@@ -199,10 +199,24 @@ impl ViewApp {
         }
     }
 
-    /// Full reset: restart source, reset timers, flush decode pipeline.
-    /// Call on R key, mode/message/audio cycle — anything that changes the signal.
+    /// Hard reset: revert all source-mode settings rows to defaults, then
+    /// restart the source.  Call on the R key (when settings popover is
+    /// closed) and on `switch_source` — i.e. anything that should snap state
+    /// back to defaults.
+    ///
+    /// Do NOT call this from "apply a setting change" paths (cycle audio,
+    /// cycle msg mode, commit message, M/N keys) — `reset_source_rows`
+    /// would undo the change you just made.  Use `restart_source` for those.
     pub(super) fn reset_playback(&mut self) {
         self.settings.reset_source_rows();
+        self.restart_source();
+    }
+
+    /// Soft restart: reconstruct the active source from current settings,
+    /// reset the loop timer, flush the decode pipeline.  Settings rows are
+    /// NOT touched, so caller-applied row changes persist.  Used by all the
+    /// "apply a setting and restart playback" paths.
+    pub(super) fn restart_source(&mut self) {
         self.sync_settings();
         if self.source_mode == SourceMode::TestTone {
             self.signal_gen = TestSignalGen::new(self.settings.freq_hz(), SAMPLE_RATE);
@@ -316,8 +330,7 @@ impl ViewApp {
                     match self.source_mode {
                         SourceMode::Psk31 => {
                             self.settings.cycle_psk31_mode();
-                            self.sync_settings();
-                            self.reset_playback();
+                            self.restart_source();
                         }
                         SourceMode::Ft8 => {
                             self.cycle_ft8_mode();
@@ -681,8 +694,7 @@ impl ViewApp {
             match self.source_mode {
                 SourceMode::Psk31 => {
                     self.settings.cycle_psk31_mode();
-                    self.sync_settings();
-                    self.reset_playback();
+                    self.restart_source();
                 }
                 SourceMode::Ft8 => {
                     self.cycle_ft8_mode();
