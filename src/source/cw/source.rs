@@ -6,7 +6,31 @@ use orion_sdr::codec::MorseEncoder;
 use orion_sdr::core::Block;
 use orion_sdr::modulate::CwKeyedMod;
 
-use super::{MAX_SIG_SECS, SignalSource};
+use crate::source::{MAX_SIG_SECS, SignalSource};
+
+// ── CW HUD helpers ───────────────────────────────────────────────────────────
+
+/// Format the CW submode string shown in the top HUD line:
+/// `"  msg n  13wpm"` (canned message) or `"  msg c  13wpm"` (custom).
+pub fn hud_submode_str(msg_is_custom: bool, wpm: f32) -> String {
+    let msg_ch = if msg_is_custom { "c" } else { "n" };
+    format!("  msg {msg_ch}  {}wpm", wpm as u32)
+}
+
+// ── CW timing helpers ────────────────────────────────────────────────────────
+
+/// Loop-timer holdoff for CW: ride through inter-character keying gaps without
+/// transitioning to "gap" state.  Two word-spaces wide so an entire word can
+/// arrive before the timer flips, which keeps the decode-bar steady during
+/// normal keying.  Returns 0 for nonsensical WPM (≤ 1).
+pub fn holdoff_secs(wpm: f32, word_space: f32) -> f32 {
+    if wpm < 1.0 {
+        return 0.0;
+    }
+    let unit_secs = 1.2 / wpm; // 1200 ms / wpm, in seconds
+    let word_gap_secs = unit_secs * word_space;
+    word_gap_secs * 2.0
+}
 
 // ── CW constants ─────────────────────────────────────────────────────────────
 
@@ -140,6 +164,75 @@ impl CwSource {
         self.gap_samples = (self.gap_secs * self.mod_rate) as usize;
     }
 
+    /// Apply a fresh set of timing/carrier parameters and return change flags.
+    /// `message` is intentionally NOT updated here — it is committed only when
+    /// the user explicitly accepts a text edit (see app-level glue).
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_params(
+        &mut self,
+        carrier_hz: f32,
+        gap_secs: f32,
+        noise_amp: f32,
+        wpm: f32,
+        jitter_pct: f32,
+        dash_weight: f32,
+        char_space: f32,
+        word_space: f32,
+        rise_ms: f32,
+        fall_ms: f32,
+        msg_repeat: usize,
+    ) -> CwSyncFlags {
+        let carrier_changed = (self.carrier_hz - carrier_hz).abs() > 0.01;
+        let wpm_changed = (self.wpm - wpm).abs() > 0.01;
+        let jitter_changed = (self.jitter_pct - jitter_pct).abs() > 0.01;
+        let weight_changed = (self.dash_weight - dash_weight).abs() > 0.01;
+        let char_sp_changed = (self.char_space - char_space).abs() > 0.01;
+        let word_sp_changed = (self.word_space - word_space).abs() > 0.01;
+        let rise_changed = (self.rise_ms - rise_ms).abs() > 0.01;
+        let fall_changed = (self.fall_ms - fall_ms).abs() > 0.01;
+        let repeat_changed = self.msg_repeat != msg_repeat;
+
+        self.carrier_hz = carrier_hz;
+        self.wpm = wpm;
+        self.jitter_pct = jitter_pct;
+        self.dash_weight = dash_weight;
+        self.char_space = char_space;
+        self.word_space = word_space;
+        self.rise_ms = rise_ms;
+        self.fall_ms = fall_ms;
+        self.noise_amp = noise_amp;
+        self.gap_secs = gap_secs;
+        self.msg_repeat = msg_repeat.max(1);
+
+        if carrier_changed
+            || wpm_changed
+            || jitter_changed
+            || weight_changed
+            || char_sp_changed
+            || word_sp_changed
+            || rise_changed
+            || fall_changed
+            || repeat_changed
+        {
+            self.render();
+        }
+        self.update_gap();
+
+        CwSyncFlags {
+            wpm_or_word_space_changed: wpm_changed || word_sp_changed,
+        }
+    }
+}
+
+/// Per-frame sync result for `CwSource::apply_params`.  The caller uses
+/// `wpm_or_word_space_changed` to decide whether to refresh the loop-timer
+/// holdoff (CW-specific concern).
+#[derive(Clone, Copy, Debug)]
+pub struct CwSyncFlags {
+    pub wpm_or_word_space_changed: bool,
+}
+
+impl CwSource {
     fn xorshift(&mut self) -> f32 {
         self.rng ^= self.rng << 13;
         self.rng ^= self.rng >> 7;

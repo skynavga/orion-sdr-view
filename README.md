@@ -11,7 +11,9 @@ and waterfall from a configurable signal source.
 
 ## Features
 
-- **Three display panes** — instantaneous spectrum, persistence density map, and a cycle-able waterfall pane (`W`) that toggles between a vertical waterfall and a horizontal spectrogram centered on the primary marker (±freq delta, configurable time range)
+- **Three display panes** — instantaneous spectrum, persistence density map, and a cycle-able waterfall
+  pane (`W`) that toggles between a vertical waterfall and a horizontal spectrogram centered on the primary
+  marker (±freq delta, configurable time range)
 - **Multiple signal sources** — synthetic test tone (sine + AWGN), CW (Morse code), AM DSB from looped audio, PSK31 (BPSK31/QPSK31), and FT8/FT4
 - **Decode bar** — optional bottom bar (cycled by `D`) showing signal info
   (Di: modulation, carrier, BW, SNR) or decoded text (Dt: smooth-scrolling teletype ticker)

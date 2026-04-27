@@ -3,10 +3,12 @@
 
 use eframe::egui;
 
+use super::settings::AmDsbSettings;
+use super::source::{amdsb, cw, ft8, psk31};
+use super::utils::dashed_hline;
 use super::view::ViewApp;
 use super::{DecodeBarMode, PANE_BG, SourceMode, WaterfallMode};
 use crate::decode::DecodeResult;
-use crate::source::ft8::{Ft8Mode, Ft8MsgType};
 
 impl ViewApp {
     pub(super) fn draw_hud(&self, ctx: &egui::Context) {
@@ -91,41 +93,11 @@ impl ViewApp {
                 }
             };
             let submode_str: String = match self.source_mode {
-                SourceMode::Cw => {
-                    let msg_ch = match self.settings.cw_msg_mode_str() {
-                        "Custom" => "c",
-                        _ => "n",
-                    };
-                    format!("  msg {msg_ch}  {}wpm", self.settings.cw_wpm() as u32)
-                }
-                SourceMode::AmDsb => match self.settings.am_audio_str() {
-                    "Voice" => "  aud v".to_owned(),
-                    "Custom" => "  aud c".to_owned(),
-                    _ => "  aud m".to_owned(),
-                },
-                SourceMode::Psk31 => {
-                    let mode_ch = match self.settings.psk31_mode_str() {
-                        "QPSK31" => "q",
-                        _ => "b",
-                    };
-                    let msg_ch = match self.settings.psk31_msg_mode_str() {
-                        "Custom" => "c",
-                        _ => "n",
-                    };
-                    format!("  mode {mode_ch}  msg {msg_ch}")
-                }
-                SourceMode::Ft8 => {
-                    let mode_ch = match self.ft_mode {
-                        Ft8Mode::Ft8 => "8",
-                        Ft8Mode::Ft4 => "4",
-                    };
-                    let msg_ch = match self.ft_msg_type {
-                        Ft8MsgType::Standard => "s",
-                        Ft8MsgType::FreeText => "f",
-                    };
-                    format!("  mode {mode_ch}  msg {msg_ch}")
-                }
-                _ => String::new(),
+                SourceMode::AmDsb => amdsb::hud_submode_str(&self.settings),
+                SourceMode::Cw => cw::hud_submode_str(&self.settings),
+                SourceMode::Psk31 => psk31::hud_submode_str(&self.settings),
+                SourceMode::Ft8 => ft8::hud_submode_str(&self.ft8_view),
+                SourceMode::TestTone => String::new(),
             };
             let status = format!(
                 "{}{}{}  ctr {}  span {}  zoom {}  ref {:.0}dB{}",
@@ -215,6 +187,8 @@ impl ViewApp {
         const LABEL_COL: egui::Color32 = egui::Color32::from_rgb(80, 100, 140);
         const TEXT_COL: egui::Color32 = egui::Color32::from_rgb(200, 200, 200);
         const DIM_COL: egui::Color32 = egui::Color32::from_rgb(100, 100, 100);
+        /// Used for absence-of-data states: "no audio", "waiting for signal".
+        const ALERT_COL: egui::Color32 = egui::Color32::from_rgb(0xff, 0x00, 0x00);
 
         painter.rect_filled(rect, 0.0, BAR_BG);
 
@@ -241,12 +215,34 @@ impl ViewApp {
             .x;
         let content_x = rect.left() + 6.0 + label_w + 12.0; // 12 px right margin
 
-        // Measure loop timer label so we know where the scrolling text must stop.
-        let timer_label = self.loop_timer.label();
-        let timer_w = painter
-            .layout_no_wrap(timer_label.clone(), font.clone(), TEXT_COL)
-            .size()
-            .x;
+        // Right-aligned status block.  Three cases:
+        //   - Loop timer ("sig N.NN  loop NNN") — the normal case for sources
+        //     that have sig/gap structure.
+        //   - "no audio" placeholder — AmDsb in Custom-with-no-WAV state.
+        //     The carrier is still emitted (PTT is keyed) but no audio
+        //     source is connected, so there's no modulation and no gap;
+        //     the loop timer would falsely climb forever.
+        //   - Hidden — TestTone without cycling: continuous tone, no gaps,
+        //     timer would just climb to 99.99 and clamp.
+        let right_status: Option<(String, egui::Color32)> = match self.source_mode {
+            SourceMode::TestTone => {
+                if self.signal_gen.cycling {
+                    Some((self.loop_timer.label(), TEXT_COL))
+                } else {
+                    None
+                }
+            }
+            SourceMode::AmDsb if !self.settings.am_has_audio() => {
+                Some(("no audio".to_owned(), ALERT_COL))
+            }
+            _ => Some((self.loop_timer.label(), TEXT_COL)),
+        };
+        let timer_w = right_status.as_ref().map_or(0.0, |(s, _)| {
+            painter
+                .layout_no_wrap(s.clone(), font.clone(), TEXT_COL)
+                .size()
+                .x
+        });
         let em_w = painter
             .layout_no_wrap("M".to_owned(), font.clone(), TEXT_COL)
             .size()
@@ -254,10 +250,7 @@ impl ViewApp {
 
         // For FT8/FT4 sources, show "frm xxx err yyy" to the left of the loop timer.
         let ft_label: Option<String> = if self.source_mode == SourceMode::Ft8 {
-            Some(format!(
-                "frm {:03} err {:03} ",
-                self.ft_frame_count, self.ft_err_count
-            ))
+            Some(ft8::hud_frame_counter_str(&self.ft8_view))
         } else {
             None
         };
@@ -326,7 +319,7 @@ impl ViewApp {
                 {
                     (info_str(modulation, *center_hz, *bw_hz, *snr_db), TEXT_COL)
                 } else {
-                    ("waiting for signal\u{2026}".to_owned(), DIM_COL)
+                    ("waiting for signal\u{2026}".to_owned(), ALERT_COL)
                 }
             } else {
                 // Dt mode with no visible text yet: just show waiting.
@@ -351,13 +344,15 @@ impl ViewApp {
                 TEXT_COL,
             );
         }
-        painter.text(
-            egui::pos2(timer_x, text_y),
-            egui::Align2::RIGHT_CENTER,
-            timer_label,
-            font,
-            TEXT_COL,
-        );
+        if let Some((label, color)) = right_status {
+            painter.text(
+                egui::pos2(timer_x, text_y),
+                egui::Align2::RIGHT_CENTER,
+                label,
+                font,
+                color,
+            );
+        }
     }
 
     pub(super) fn draw_spectrum(&self, painter: &egui::Painter, rect: egui::Rect) {
@@ -968,31 +963,5 @@ impl ViewApp {
             foot_font,
             foot_color,
         );
-    }
-}
-
-/// Draw a dashed horizontal line at `y` from `x0` to `x1`.  Matches the
-/// dash geometry used for vertical frequency markers in the other panes.
-fn dashed_hline(
-    painter: &egui::Painter,
-    x0: f32,
-    x1: f32,
-    y: f32,
-    color: egui::Color32,
-    width: f32,
-) {
-    const DASH: f32 = 8.0;
-    const GAP: f32 = 5.0;
-    let stroke = egui::Stroke::new(width, color);
-    let mut x = x0;
-    let mut paint = true;
-    while x < x1 {
-        let seg = if paint { DASH } else { GAP };
-        let xe = (x + seg).min(x1);
-        if paint {
-            painter.line_segment([egui::pos2(x, y), egui::pos2(xe, y)], stroke);
-        }
-        x = xe;
-        paint = !paint;
     }
 }

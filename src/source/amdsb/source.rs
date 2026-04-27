@@ -7,7 +7,7 @@ use std::path::Path;
 use orion_sdr::core::AudioToIqChain;
 use orion_sdr::modulate::AmDsbMod;
 
-use super::{MAX_SIG_SECS, SignalSource};
+use crate::source::{MAX_SIG_SECS, SignalSource};
 
 // ── BuiltinAudio ─────────────────────────────────────────────────────────────
 
@@ -28,8 +28,21 @@ impl BuiltinAudio {
     }
 }
 
-static CQ_MORSE_WAV: &[u8] = include_bytes!("../../assets/audio/cq_morse.wav");
-static CQ_VOICE_WAV: &[u8] = include_bytes!("../../assets/audio/cq_voice.wav");
+static CQ_MORSE_WAV: &[u8] = include_bytes!("../../../assets/audio/cq_morse.wav");
+static CQ_VOICE_WAV: &[u8] = include_bytes!("../../../assets/audio/cq_voice.wav");
+
+// ── AM DSB HUD helpers ───────────────────────────────────────────────────────
+
+/// Format the AM DSB submode string shown in the top HUD line:
+/// `"  aud m"` (Morse), `"  aud v"` (Voice), or `"  aud c"` (Custom WAV).
+/// `audio_label` is the toggle's current label as exposed by the settings UI.
+pub fn hud_submode_str(audio_label: &str) -> String {
+    match audio_label {
+        "Voice" => "  aud v".to_owned(),
+        "Custom" => "  aud c".to_owned(),
+        _ => "  aud m".to_owned(),
+    }
+}
 
 fn decode_wav_bytes(bytes: &[u8]) -> (Vec<f32>, f32) {
     let cursor = Cursor::new(bytes);
@@ -197,6 +210,32 @@ impl AmDsbSource {
         self.gap_samples = (self.gap_secs * self.mod_rate) as usize;
     }
 
+    /// Apply a fresh set of carrier/modulation/timing parameters, rebuilding the
+    /// modulator and gap counters as needed.
+    pub fn apply_params(
+        &mut self,
+        carrier_hz: f32,
+        mod_index: f32,
+        gap_secs: f32,
+        noise_amp: f32,
+        msg_repeat: usize,
+    ) {
+        let carrier_changed = (self.carrier_hz - carrier_hz).abs() > 0.5;
+        let index_changed = (self.mod_index - mod_index).abs() > 0.001;
+        self.carrier_hz = carrier_hz;
+        self.mod_index = mod_index;
+        if carrier_changed || index_changed {
+            self.rebuild_mod();
+        }
+        let gap_changed = (self.gap_secs - gap_secs).abs() > 0.01;
+        if gap_changed {
+            self.gap_secs = gap_secs;
+            self.update_gap();
+        }
+        self.noise_amp = noise_amp;
+        self.msg_repeat = msg_repeat.max(1);
+    }
+
     /// Interpolate one audio sample at the current fractional position,
     /// then advance the position. Returns (sample, wrapped) where `wrapped`
     /// is true when the position just looped back to zero.
@@ -260,8 +299,14 @@ impl SignalSource for AmDsbSource {
                     self.sig_samples = 0;
                 }
             } else {
-                // PTT keyed — accumulate audio samples until gap or end of n
+                // PTT keyed — accumulate audio samples until gap or end of n.
+                // When audio is empty (no source loaded), emit a continuous
+                // carrier with no artificial gap: the 99.99s burst cap is
+                // skipped because there's no playthrough boundary to anchor
+                // the gap to.  The bin-side display shows "no signal" in
+                // this state to make it visible to the user.
                 audio_chunk.clear();
+                let has_audio = !self.audio.is_empty();
                 while i < n && self.gap_remaining == 0 {
                     let (s, wrapped) = self.read_audio_sample();
                     audio_chunk.push(s);
@@ -274,7 +319,7 @@ impl SignalSource for AmDsbSource {
                             self.gap_remaining = self.gap_samples;
                         }
                     }
-                    if self.sig_samples >= max_sig_samples && self.gap_remaining == 0 {
+                    if has_audio && self.sig_samples >= max_sig_samples && self.gap_remaining == 0 {
                         // Hit signal-duration cap — truncate burst and enter gap.
                         self.play_count = 0;
                         self.audio_pos = 0.0;

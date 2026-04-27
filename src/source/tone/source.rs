@@ -1,7 +1,7 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::SignalSource;
+use crate::source::SignalSource;
 
 // ── CycleState ────────────────────────────────────────────────────────────────
 
@@ -102,6 +102,24 @@ impl TestSignalGen {
         self.tone_amp = self.amp_max;
         self.cycle_state = CycleState::PauseHigh;
         self.samples_remaining = (self.pause_secs * self.sample_rate) as u32;
+    }
+
+    /// Apply a fresh set of tone parameters.  Pure field copies — no
+    /// re-initialisation of cycle state or phase, so the live tone keeps
+    /// playing through the change.
+    pub fn apply_params(
+        &mut self,
+        freq_hz: f32,
+        noise_amp: f32,
+        amp_max: f32,
+        ramp_secs: f32,
+        pause_secs: f32,
+    ) {
+        self.freq_hz = freq_hz;
+        self.noise_amp = noise_amp;
+        self.amp_max = amp_max;
+        self.ramp_secs = ramp_secs;
+        self.pause_secs = pause_secs;
     }
 
     /// Stop cycling: snap immediately to full amplitude.

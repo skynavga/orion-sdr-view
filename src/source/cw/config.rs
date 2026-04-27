@@ -20,7 +20,7 @@ pub struct CwConfig {
     pub msg_repeat: Option<u32>,
 }
 
-impl super::ViewConfig {
+impl crate::config::ViewConfig {
     fn cw_cfg(&self) -> Option<&CwConfig> {
         self.sources.as_ref().and_then(|s| s.cw.as_ref())
     }

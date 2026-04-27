@@ -1,7 +1,7 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::Defaults;
+use crate::config::Defaults;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -15,7 +15,7 @@ pub struct Psk31Config {
     pub msg_repeat: Option<u32>,
 }
 
-impl super::ViewConfig {
+impl crate::config::ViewConfig {
     pub fn psk31_mode(&self) -> &str {
         self.sources
             .as_ref()

@@ -8,7 +8,7 @@ use eframe::egui;
 
 use super::freqview::{FreqMarker, FreqView};
 use super::persistence::PersistenceRenderer;
-use super::settings::SettingsState;
+use super::settings::{AmDsbSettings, CwSettings, Psk31Settings, SettingsState, ToneSettings};
 use super::spectrogram::SpectrogramDisplay;
 use super::spectrum::{RingBuffer, SpectrumProcessor};
 use super::waterfall::WaterfallDisplay;
@@ -17,28 +17,12 @@ use crate::decode::{DecodeConfig, DecodeResult, DecodeTicker, DecodeWorker, SIGN
 use crate::source::SignalSource;
 use crate::source::tone::TestSignalGen;
 use crate::source::tone::TestToneSource;
+use crate::utils::timer::LoopTimer;
 
 use super::{
-    DECODE_BAR_H, DecodeBarMode, FFT_SIZE, LoopTimer, SAMPLE_RATE, SAMPLES_PER_FRAME, SourceMode,
+    DECODE_BAR_H, DecodeBarMode, FFT_SIZE, SAMPLE_RATE, SAMPLES_PER_FRAME, SourceMode,
     WaterfallMode,
 };
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-/// Format a `SystemTime` as `HH:MM:SS.mmm`, offset from UTC by `offset_min`
-/// minutes (positive = east of UTC, negative = west, 0 = UTC).
-fn format_time(t: std::time::SystemTime, offset_min: i32) -> String {
-    let dur = t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
-    let unix_secs = dur.as_secs() as i64;
-    let millis = dur.subsec_millis();
-
-    let secs = unix_secs + offset_min as i64 * 60;
-
-    let s = secs.rem_euclid(60);
-    let m = (secs / 60).rem_euclid(60);
-    let h = (secs / 3600).rem_euclid(24);
-    format!("{h:02}:{m:02}:{s:02}.{millis:03}")
-}
 
 // ── ViewApp ───────────────────────────────────────────────────────────────────
 
@@ -103,16 +87,9 @@ pub(crate) struct ViewApp {
     /// Wall-clock time of the previous frame, for real-time dt calculation.
     pub(super) last_frame_time: std::time::Instant,
 
-    // FT8/FT4 frame counters (reset on source switch, mode change, or R key).
-    pub(super) ft_frame_count: u32,
-    pub(super) ft_err_count: u32,
-    /// Timestamp string (HH:MM:SS UTC) of the most recently decoded frame's signal onset.
-    pub(super) ft_last_timestamp: String,
-    /// Wall-clock time when the current FT8/FT4 signal burst started (for timestamp capture).
-    pub(super) ft_signal_onset: Option<std::time::SystemTime>,
-    /// Cached FT8/FT4 sub-mode for use in draw functions (updated on mode cycle).
-    pub(super) ft_mode: crate::source::ft8::Ft8Mode,
-    pub(super) ft_msg_type: crate::source::ft8::Ft8MsgType,
+    /// Per-frame view-side state for FT8/FT4 (frame counts, pending onset,
+    /// cached mode/msg_type).  See [`Ft8ViewState`].
+    pub(super) ft8_view: crate::source::ft8::Ft8ViewState,
     /// Display timestamps offset from UTC by this many minutes (0 = UTC).
     pub(super) time_zone_offset_min: i32,
 }
@@ -203,61 +180,54 @@ impl ViewApp {
             last_block_was_signal: false,
             last_frame_time: std::time::Instant::now(),
 
-            ft_frame_count: 0,
-            ft_err_count: 0,
-            ft_last_timestamp: String::new(),
-            ft_signal_onset: None,
-            ft_mode: crate::source::ft8::Ft8Mode::Ft8,
-            ft_msg_type: crate::source::ft8::Ft8MsgType::Standard,
+            ft8_view: crate::source::ft8::Ft8ViewState::new(),
             time_zone_offset_min: 0,
         };
         app.time_zone_offset_min = cfg.time_zone_offset_min();
         app.sync_decode_config();
+        super::source::debug_assert_factory_order(&app.settings);
         app
     }
 
-    /// Compute the holdoff duration for the loop timer based on current mode.
-    /// CW mode needs holdoff to ride through keying gaps; other modes use 0.
-    pub(super) fn cw_holdoff_secs(&self) -> f32 {
-        if self.source_mode != SourceMode::Cw {
-            return 0.0;
+    /// Loop-timer holdoff for the active source.  Only CW uses holdoff; all
+    /// other modes use immediate signal/gap transitions.
+    pub(super) fn loop_timer_holdoff_secs(&self) -> f32 {
+        if self.source_mode == SourceMode::Cw {
+            super::source::cw::holdoff_secs(&self.settings)
+        } else {
+            0.0
         }
-        let wpm = self.settings.cw_wpm();
-        if wpm < 1.0 {
-            return 0.0;
-        }
-        let unit_secs = 1.2 / wpm; // 1200 ms / wpm, in seconds
-        let word_gap_secs = unit_secs * self.settings.cw_word_space();
-        word_gap_secs * 2.0
     }
 
-    /// Full reset: restart source, reset timers, flush decode pipeline.
-    /// Call on R key, mode/message/audio cycle — anything that changes the signal.
+    /// Hard reset: revert all source-mode settings rows to defaults, then
+    /// restart the source.  Call on the R key (when settings popover is
+    /// closed) and on `switch_source` — i.e. anything that should snap state
+    /// back to defaults.
+    ///
+    /// Do NOT call this from "apply a setting change" paths (cycle audio,
+    /// cycle msg mode, commit message, M/N keys) — `reset_source_rows`
+    /// would undo the change you just made.  Use `restart_source` for those.
     pub(super) fn reset_playback(&mut self) {
         self.settings.reset_source_rows();
+        self.restart_source();
+    }
+
+    /// Soft restart: reconstruct the active source from current settings,
+    /// reset the loop timer, flush the decode pipeline.  Settings rows are
+    /// NOT touched, so caller-applied row changes persist.  Used by all the
+    /// "apply a setting and restart playback" paths.
+    pub(super) fn restart_source(&mut self) {
         self.sync_settings();
-        self.source = match self.source_mode {
-            SourceMode::TestTone => {
-                self.signal_gen = TestSignalGen::new(self.settings.freq_hz(), SAMPLE_RATE);
-                Box::new(TestToneSource::new(TestSignalGen::new(
-                    self.settings.freq_hz(),
-                    SAMPLE_RATE,
-                )))
-            }
-            SourceMode::Cw => Box::new(self.make_cw_source()),
-            SourceMode::AmDsb => Box::new(self.make_am_source()),
-            SourceMode::Psk31 => Box::new(self.make_psk31_source()),
-            SourceMode::Ft8 => Box::new(self.make_ft8_source()),
-        };
+        if self.source_mode == SourceMode::TestTone {
+            self.signal_gen = TestSignalGen::new(self.settings.freq_hz(), SAMPLE_RATE);
+        }
+        self.source = self.make_source();
         self.loop_timer.reset();
-        self.loop_timer.set_holdoff(self.cw_holdoff_secs());
+        self.loop_timer.set_holdoff(self.loop_timer_holdoff_secs());
         self.decode_ticker.reset();
         self.last_block_was_signal = false;
         self.spectrogram.clear();
-        self.ft_frame_count = 0;
-        self.ft_err_count = 0;
-        self.ft_last_timestamp = String::new();
-        self.ft_signal_onset = None;
+        self.ft8_view.reset();
         while self.decode_rx.try_recv().is_ok() {}
         let _ = self.decode_tx.try_send(Vec::new());
     }
@@ -269,35 +239,24 @@ impl ViewApp {
             return;
         }
         let hz = FreqView::snap_hz(self.freq_view.center_hz, 10.0);
-        match self.source_mode {
-            SourceMode::TestTone => self.settings.set_freq_hz(hz),
-            SourceMode::Cw => self.settings.set_cw_carrier_hz(hz),
-            SourceMode::AmDsb => self.settings.set_am_carrier_hz(hz),
-            SourceMode::Psk31 => self.settings.set_psk31_carrier_hz(hz),
-            SourceMode::Ft8 => self.settings.set_ft8_carrier_hz(hz),
-        }
+        super::common::source_mode_factory(self.source_mode).set_carrier_hz(&mut self.settings, hz);
         self.sync_settings();
     }
 
     /// Switch the active source to `mode`, constructing a new source box.
     pub(super) fn switch_source(&mut self, mode: SourceMode) {
         self.source_mode = mode;
-        self.source = match mode {
-            SourceMode::TestTone => {
-                // Re-create from signal_gen's current settings
-                Box::new(TestToneSource::new(TestSignalGen::new(
-                    self.signal_gen.freq_hz,
-                    SAMPLE_RATE,
-                )))
-            }
-            SourceMode::Cw => Box::new(self.make_cw_source()),
-            SourceMode::AmDsb => Box::new(self.make_am_source()),
-            SourceMode::Psk31 => Box::new(self.make_psk31_source()),
-            SourceMode::Ft8 => {
-                self.ft_mode = crate::source::ft8::Ft8Mode::Ft8;
-                self.ft_msg_type = crate::source::ft8::Ft8MsgType::Standard;
-                Box::new(self.make_ft8_source())
-            }
+        if mode == SourceMode::Ft8 {
+            self.ft8_view.reset_to_defaults();
+        }
+        self.source = if mode == SourceMode::TestTone {
+            // Re-create from signal_gen's current settings, not settings.freq_hz()
+            Box::new(TestToneSource::new(TestSignalGen::new(
+                self.signal_gen.freq_hz,
+                SAMPLE_RATE,
+            )))
+        } else {
+            self.make_source()
         };
         self.settings.set_source_mode(mode as usize);
         self.sync_decode_config();
@@ -371,8 +330,7 @@ impl ViewApp {
                     match self.source_mode {
                         SourceMode::Psk31 => {
                             self.settings.cycle_psk31_mode();
-                            self.sync_settings();
-                            self.reset_playback();
+                            self.restart_source();
                         }
                         SourceMode::Ft8 => {
                             self.cycle_ft8_mode();
@@ -438,20 +396,26 @@ impl ViewApp {
                 toggle_source = true;
             }
             if i.key_pressed(egui::Key::C) {
-                if self.signal_gen.cycling {
-                    self.signal_gen.stop_cycling();
-                } else {
+                // Toggle cycling on the persistent generator AND the active
+                // source's generator, keeping them in sync.  Don't call
+                // reset_playback here — that would reconstruct the active
+                // source's TestSignalGen and discard the cycling toggle we
+                // just set.  Resetting the loop timer is enough to restart
+                // the sig/gap accounting cleanly.
+                let now_cycling = !self.signal_gen.cycling;
+                if now_cycling {
                     self.signal_gen.start_cycling();
+                } else {
+                    self.signal_gen.stop_cycling();
                 }
-                // Propagate to active TestToneSource if applicable
                 if let Some(tts) = self.source.as_any_mut().downcast_mut::<TestToneSource>() {
-                    if tts.signal_gen.cycling {
-                        tts.signal_gen.stop_cycling();
-                    } else {
+                    if now_cycling {
                         tts.signal_gen.start_cycling();
+                    } else {
+                        tts.signal_gen.stop_cycling();
                     }
                 }
-                self.reset_playback();
+                self.loop_timer.reset();
             }
             if i.key_pressed(egui::Key::D) {
                 let has_text = matches!(
@@ -730,8 +694,7 @@ impl ViewApp {
             match self.source_mode {
                 SourceMode::Psk31 => {
                     self.settings.cycle_psk31_mode();
-                    self.sync_settings();
-                    self.reset_playback();
+                    self.restart_source();
                 }
                 SourceMode::Ft8 => {
                     self.cycle_ft8_mode();
@@ -798,25 +761,24 @@ impl eframe::App for ViewApp {
         // Track signal onset for timestamp capture.
         let is_ft8_mode = self.source_mode == SourceMode::Ft8;
         let is_cw_mode = self.source_mode == SourceMode::Cw;
+        let is_psk31_mode = self.source_mode == SourceMode::Psk31;
+        // CW and PSK31 both decode incrementally — frame each burst with
+        // matching open/close delimiters so the Dt ticker shows
+        // "|| HH:MM:SS.mmm | <text> ||" per burst, mirroring FT8.
+        let is_burst_text_mode = is_cw_mode || is_psk31_mode;
         if is_ft8_mode {
             let was_signal = self.last_block_was_signal;
             if block_is_signal && !was_signal {
                 // Rising edge: capture onset time for timestamp.
-                self.ft_signal_onset = Some(std::time::SystemTime::now());
+                self.ft8_view.on_signal_rising_edge();
             }
         }
-        // CW uses holdoff-aware onset from the loop timer.
-        if is_cw_mode && self.loop_timer.signal_onset {
-            self.ft_signal_onset = Some(std::time::SystemTime::now());
-            // Inject opening frame delimiter: "|| HH:MM:SS.fff | "
-            let ts = format_time(self.ft_signal_onset.unwrap(), self.time_zone_offset_min);
-            let ts_str = if ts.is_empty() {
-                "--:--:--.---".to_owned()
-            } else {
-                ts
-            };
-            self.decode_ticker
-                .push_result(DecodeResult::Text(format!("|| {ts_str} | ")));
+        if is_burst_text_mode && self.loop_timer.signal_onset {
+            let delim = super::source::format_burst_open_delimiter(
+                std::time::SystemTime::now(),
+                self.time_zone_offset_min,
+            );
+            self.decode_ticker.push_result(DecodeResult::Text(delim));
         }
         self.last_block_was_signal = block_is_signal;
 
@@ -827,12 +789,9 @@ impl eframe::App for ViewApp {
                 // For FT8/FT4: update frm/err counters; capture timestamp on success.
                 if is_ft8_mode {
                     if decoded {
-                        self.ft_frame_count = self.ft_frame_count.saturating_add(1).min(999);
-                        if let Some(onset) = self.ft_signal_onset.take() {
-                            self.ft_last_timestamp = format_time(onset, self.time_zone_offset_min);
-                        }
+                        self.ft8_view.on_decoded_frame(self.time_zone_offset_min);
                     } else {
-                        self.ft_err_count = self.ft_err_count.saturating_add(1).min(999);
+                        self.ft8_view.on_failed_frame();
                     }
                 }
                 self.decode_ticker
@@ -841,20 +800,13 @@ impl eframe::App for ViewApp {
                 // For FT8/FT4: wrap the decoded frame text as
                 // "|| HH:MM:SS.fff | <text> ||" so the leading/trailing "||"
                 // clearly demarcate the frame boundaries in the Dt ticker.
-                // The onset timestamp is still in ft_signal_onset at Text time
-                // (it's taken when the Gap{decoded:true} arrives just after).
+                // The onset timestamp is still in ft8_view.pending_onset at Text
+                // time (it's taken when the Gap{decoded:true} arrives just after).
                 let result = if let DecodeResult::Text(ref s) = result {
-                    let ts = if let Some(onset) = self.ft_signal_onset {
-                        format_time(onset, self.time_zone_offset_min)
-                    } else {
-                        self.ft_last_timestamp.clone()
-                    };
-                    let ts_str = if ts.is_empty() {
-                        "--:--:--.---".to_owned()
-                    } else {
-                        ts
-                    };
-                    DecodeResult::Text(format!("|| {ts_str} | {s} ||"))
+                    DecodeResult::Text(
+                        self.ft8_view
+                            .format_decoded_text(s, self.time_zone_offset_min),
+                    )
                 } else {
                     result
                 };
@@ -864,11 +816,12 @@ impl eframe::App for ViewApp {
             }
         }
 
-        // CW closing delimiter: inject after draining all decode results so
-        // the last characters appear before the "||" separator.
-        if is_cw_mode && self.loop_timer.gap_onset {
-            self.decode_ticker
-                .push_result(DecodeResult::Text(" ||".to_owned()));
+        // CW / PSK31 closing delimiter: inject after draining all decode
+        // results so the last characters appear before the "||" separator.
+        if is_burst_text_mode && self.loop_timer.gap_onset {
+            self.decode_ticker.push_result(DecodeResult::Text(
+                super::source::BURST_CLOSE_DELIMITER.to_owned(),
+            ));
         }
 
         if !self.loop_timer.in_signal && self.decode_bar.is_visible() {

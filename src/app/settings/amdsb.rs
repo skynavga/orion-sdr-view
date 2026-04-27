@@ -87,14 +87,6 @@ impl AmDsbRows {
         }
     }
 
-    pub fn patch_from_config(&mut self, cfg: &ViewConfig) {
-        self.rows[CARRIER].patch_num(cfg.carrier_hz());
-        self.rows[MOD_IDX].patch_num(cfg.mod_index());
-        self.rows[GAP].patch_num(cfg.am_gap_secs());
-        self.rows[NOISE].patch_num(cfg.am_noise_amp());
-        self.rows[REPEAT].patch_num(cfg.am_msg_repeat() as f32);
-    }
-
     /// Visible rows in the order they appear in the settings overlay.
     pub fn visible_indices(&self) -> Vec<usize> {
         vec![AUDIO, WAV_FILE, REPEAT, CARRIER, MOD_IDX, GAP, NOISE]
@@ -202,11 +194,6 @@ impl AmDsbRows {
         result
     }
 
-    /// Discard any in-progress pending WAV edit.
-    pub fn discard_pending(&mut self) {
-        self.pending_wav = None;
-    }
-
     /// Draw the WAV file text field value.
     pub fn draw_wav_field(&self, ctx: &RowDrawCtx, val_x: f32, y: f32, row_h: f32, focused: bool) {
         if let Row::Text(f) = &self.rows[WAV_FILE] {
@@ -301,90 +288,215 @@ pub(super) struct WavKeysResult {
     pub consumed: bool,
 }
 
+// ── SourceRows ─────────────────────────────────────────────────────────────
+
+impl super::common::SourceRows for AmDsbRows {
+    fn rows(&self) -> &[Row] {
+        &self.rows
+    }
+    fn rows_mut(&mut self) -> &mut [Row] {
+        &mut self.rows
+    }
+    fn visible_indices(&self) -> Vec<usize> {
+        self.visible_indices()
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+    fn discard_pending(&mut self) {
+        self.pending_wav = None;
+    }
+    fn patch_from_config(&mut self, cfg: &ViewConfig) {
+        self.rows[CARRIER].patch_num(cfg.carrier_hz());
+        self.rows[MOD_IDX].patch_num(cfg.mod_index());
+        self.rows[GAP].patch_num(cfg.am_gap_secs());
+        self.rows[NOISE].patch_num(cfg.am_noise_amp());
+        self.rows[REPEAT].patch_num(cfg.am_msg_repeat() as f32);
+    }
+
+    fn focused_text_field(&self, local_idx: usize) -> Option<super::common::TextFieldKind> {
+        (local_idx == AmDsbRows::WAV_FILE_IDX && self.wav_row_is_active())
+            .then_some(super::common::TextFieldKind::AmDsbWavFile)
+    }
+
+    fn handle_text_keys(
+        &mut self,
+        events: &[egui::Event],
+        _local_idx: usize,
+    ) -> super::common::TextOutcome {
+        let r = self.handle_wav_keys(events);
+        super::common::TextOutcome {
+            consumed: r.consumed,
+            defocus: r.defocus,
+            committed: r.load_requested,
+        }
+    }
+
+    fn draw_text_row(
+        &self,
+        ctx: &RowDrawCtx,
+        local_idx: usize,
+        val_x: f32,
+        y: f32,
+        row_h: f32,
+        focused: bool,
+    ) -> bool {
+        if local_idx == AmDsbRows::WAV_FILE_IDX {
+            self.draw_wav_field(ctx, val_x, y, row_h, focused);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn footer_hint(&self, focused_local: Option<usize>) -> Option<&'static str> {
+        let local = focused_local?;
+        if local == AmDsbRows::WAV_FILE_IDX && self.wav_row_is_active() {
+            Some(if self.pending_wav.is_some() {
+                "type path   ↵ load   Esc cancel"
+            } else {
+                "↵ edit path   ↑↓ navigate"
+            })
+        } else {
+            None
+        }
+    }
+}
+
 // ── SettingsState accessors ───────────────────────────────────────────────
 
-impl super::SettingsState {
-    pub fn am_audio_is_custom(&self) -> bool {
-        self.amdsb.audio_is_custom()
+use crate::app::SourceMode;
+
+/// Borrow this source's rows from `SettingsState`.
+fn rows(state: &super::SettingsState) -> &AmDsbRows {
+    state.source_as::<AmDsbRows>(SourceMode::AmDsb as usize)
+}
+fn rows_mut(state: &mut super::SettingsState) -> &mut AmDsbRows {
+    state.source_as_mut::<AmDsbRows>(SourceMode::AmDsb as usize)
+}
+
+/// Typed accessors for AM DSB settings.  Implemented for `SettingsState`;
+/// callers `use crate::app::settings::AmDsbSettings` to bring these methods
+/// in scope.
+pub(in crate::app) trait AmDsbSettings {
+    fn am_audio_is_custom(&self) -> bool;
+    fn am_audio_idx(&self) -> usize;
+    fn am_audio_str(&self) -> &str;
+    fn am_carrier_hz(&self) -> f32;
+    fn am_mod_index(&self) -> f32;
+    fn am_gap_secs(&self) -> f32;
+    fn am_noise_amp(&self) -> f32;
+    fn am_msg_repeat(&self) -> usize;
+    fn wav_path(&self) -> &str;
+    /// True if the AM source is currently producing audio: either a built-in
+    /// (Morse/Voice) is selected, or Custom is selected and the WAV file
+    /// last loaded successfully.
+    fn am_has_audio(&self) -> bool;
+
+    fn set_am_carrier_hz(&mut self, v: f32);
+    fn set_wav_status(&mut self, ok: bool);
+    fn cycle_am_audio(&mut self);
+    /// Reset the repeat row default (and value) to match the newly-selected
+    /// audio kind.  `audio_idx` 0 = Morse (default 1), 1 = Voice (default 3),
+    /// other = 1.
+    fn reset_am_repeat_for_audio(&mut self, audio_idx: usize);
+}
+
+impl AmDsbSettings for super::SettingsState {
+    fn am_audio_is_custom(&self) -> bool {
+        rows(self).audio_is_custom()
     }
-    pub fn am_audio_idx(&self) -> usize {
-        if let Row::Toggle(f) = &self.amdsb.rows[AUDIO] {
+    fn am_audio_idx(&self) -> usize {
+        if let Row::Toggle(f) = &rows(self).rows[AUDIO] {
             f.index
         } else {
             0
         }
     }
-    pub fn am_audio_str(&self) -> &str {
-        if let Row::Toggle(f) = &self.amdsb.rows[AUDIO] {
+    fn am_audio_str(&self) -> &str {
+        if let Row::Toggle(f) = &rows(self).rows[AUDIO] {
             f.value_str()
         } else {
             "Morse"
         }
     }
-    pub fn am_carrier_hz(&self) -> f32 {
-        if let Row::Num(f) = &self.amdsb.rows[CARRIER] {
+    fn am_carrier_hz(&self) -> f32 {
+        if let Row::Num(f) = &rows(self).rows[CARRIER] {
             f.value
         } else {
             5000.0
         }
     }
-    pub fn set_am_carrier_hz(&mut self, v: f32) {
-        if let Row::Num(f) = &mut self.amdsb.rows[CARRIER] {
+    fn set_am_carrier_hz(&mut self, v: f32) {
+        if let Row::Num(f) = &mut rows_mut(self).rows[CARRIER] {
             f.value = v.clamp(f.min, f.max);
         }
     }
-    pub fn am_mod_index(&self) -> f32 {
-        if let Row::Num(f) = &self.amdsb.rows[MOD_IDX] {
+    fn am_mod_index(&self) -> f32 {
+        if let Row::Num(f) = &rows(self).rows[MOD_IDX] {
             f.value
         } else {
             1.0
         }
     }
-    pub fn am_gap_secs(&self) -> f32 {
-        if let Row::Num(f) = &self.amdsb.rows[GAP] {
+    fn am_gap_secs(&self) -> f32 {
+        if let Row::Num(f) = &rows(self).rows[GAP] {
             f.value
         } else {
             2.0
         }
     }
-    pub fn am_noise_amp(&self) -> f32 {
-        if let Row::Num(f) = &self.amdsb.rows[NOISE] {
+    fn am_noise_amp(&self) -> f32 {
+        if let Row::Num(f) = &rows(self).rows[NOISE] {
             f.value
         } else {
             0.05
         }
     }
-    pub fn am_msg_repeat(&self) -> usize {
-        if let Row::Num(f) = &self.amdsb.rows[REPEAT] {
+    fn am_msg_repeat(&self) -> usize {
+        if let Row::Num(f) = &rows(self).rows[REPEAT] {
             f.value as usize
         } else {
             1
         }
     }
-    /// Reset the repeat row default (and value) to match the newly-selected audio kind.
-    /// `audio_idx` 0 = Morse (default 1), 1 = Voice (default 3), other = 1.
-    pub fn reset_am_repeat_for_audio(&mut self, audio_idx: usize) {
+    fn reset_am_repeat_for_audio(&mut self, audio_idx: usize) {
         let default = if audio_idx == 1 { 3.0 } else { 1.0 };
-        if let Row::Num(f) = &mut self.amdsb.rows[REPEAT] {
+        if let Row::Num(f) = &mut rows_mut(self).rows[REPEAT] {
             f.default = default;
             f.value = default;
         }
     }
-    pub fn wav_path(&self) -> &str {
-        if let Row::Text(f) = &self.amdsb.rows[WAV_FILE] {
+    fn wav_path(&self) -> &str {
+        if let Row::Text(f) = &rows(self).rows[WAV_FILE] {
             &f.value
         } else {
             ""
         }
     }
-    pub fn set_wav_status(&mut self, ok: bool) {
-        if let Row::Text(f) = &mut self.amdsb.rows[WAV_FILE] {
+    fn set_wav_status(&mut self, ok: bool) {
+        if let Row::Text(f) = &mut rows_mut(self).rows[WAV_FILE] {
             f.status = Some(ok);
         }
     }
-    pub fn cycle_am_audio(&mut self) {
-        if let Row::Toggle(f) = &mut self.amdsb.rows[AUDIO] {
+    fn cycle_am_audio(&mut self) {
+        if let Row::Toggle(f) = &mut rows_mut(self).rows[AUDIO] {
             f.next();
+        }
+    }
+    fn am_has_audio(&self) -> bool {
+        // Built-in audio (Morse / Voice) is always available.
+        if !self.am_audio_is_custom() {
+            return true;
+        }
+        // Custom: only true when a WAV load has succeeded.
+        if let Row::Text(f) = &rows(self).rows[WAV_FILE] {
+            f.status == Some(true)
+        } else {
+            false
         }
     }
 }

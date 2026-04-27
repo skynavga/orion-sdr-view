@@ -9,6 +9,54 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.14] - 2026-04-26
+
+### Changed
+
+- Major reorganization of source-specific code under per-source
+  directories: lib code at `src/source/<S>/{source,decode,config}.rs`,
+  bin app glue at `src/app/source/<S>.rs`, bin settings at
+  `src/app/settings/<S>.rs`. All `mod.rs` files now contain only
+  `pub mod` / `pub use`; logic lives in sibling `common.rs`.
+- Cross-source dispatch is now trait-based, not match-based, via
+  three traits: `SourceRows` (settings UI), `SourceFactory`
+  (orchestration), and per-source `<S>Settings` (typed accessors).
+  `app/settings/common.rs` and `app/sources.rs` contain zero
+  per-source matches; adding a new signal source no longer requires
+  editing them.
+- `<S>Source::apply_params(...)` methods consolidate field updates
+  with change-detection (replaces the inline downcast-and-poke
+  blocks that lived in `app/sources.rs`).
+- `Ft8ViewState` extracted to `src/source/ft8/state.rs` (six fields
+  on `ViewApp` collapsed to one with operations as methods).
+- Generic helpers (`LoopTimer`, `format_time`, `dashed_hline`)
+  moved to `src/utils/{timer,format}.rs` and `src/app/utils.rs`.
+- `SettingsState` storage migrated from typed per-source fields to
+  `Vec<Box<dyn SourceRows>>` indexed by `SourceMode as usize`.
+  Debug asserts at startup verify `sources[]` and `FACTORIES[]`
+  ordering matches the `SourceMode` enum.
+- "waiting for signal..." promoted from dim grey to red `ALERT_COL`
+  for visibility.
+- PSK31 Dt ticker text now wrapped with `"|| HH:MM:SS.mmm | ... ||"`
+  burst delimiters, matching CW and FT8 (UX consistency).
+
+### Fixed
+
+- C-key (TestTone amplitude cycling) now preserves its cycling
+  state; `reset_playback` was undoing the toggle on every press.
+- `reset_playback` split into hard (R-key, switch_source) and soft
+  (cycle audio / cycle msg / message commit / FT8 M+N) variants.
+  Pre-existing bug that hard-reset all source rows on every cycle,
+  immediately undoing the user's change.
+- AmDsb in Custom-with-no-WAV state now skips the artificial 99.99s
+  burst-end gap (continuous carrier modeling PTT-keyed-mic-absent)
+  and the decode bar shows "no audio" in red.
+- FT8 M (cycle FT8↔FT4) and N (cycle Standard↔FreeText) keys now
+  work correctly; previously the live-source field cycle was
+  overwritten by the next `sync_settings` tick.
+- `SignalSource` doctest un-ignored; rustdoc now compile-checks the
+  example (was using a stale `am_dsb::AmDsbSource` path).
+
 ## [0.0.13] - 2026-04-19
 
 ### Changed
