@@ -32,32 +32,12 @@ pub enum Ft8Mode {
     Ft4,
 }
 
-impl Ft8Mode {
-    /// Cycle to the next mode (FT8 ↔ FT4).
-    pub fn cycle(self) -> Self {
-        match self {
-            Ft8Mode::Ft8 => Ft8Mode::Ft4,
-            Ft8Mode::Ft4 => Ft8Mode::Ft8,
-        }
-    }
-}
-
 // ── Ft8MsgType ────────────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Ft8MsgType {
     Standard,
     FreeText,
-}
-
-impl Ft8MsgType {
-    /// Cycle to the next message type (Standard ↔ FreeText).
-    pub fn cycle(self) -> Self {
-        match self {
-            Ft8MsgType::Standard => Ft8MsgType::FreeText,
-            Ft8MsgType::FreeText => Ft8MsgType::Standard,
-        }
-    }
 }
 
 // ── Ft8Source ─────────────────────────────────────────────────────────────────

@@ -50,23 +50,6 @@ pub(in crate::app) fn apply_free_text(source: &mut dyn SignalSource, settings: &
     }
 }
 
-/// Cycle the active FT8 source between FT8 ↔ FT4.  Returns the new mode (or
-/// `None` if the source isn't FT8).
-pub(in crate::app) fn cycle_mode(source: &mut dyn SignalSource) -> Option<Ft8Mode> {
-    let ft8 = source.as_any_mut().downcast_mut::<Ft8Source>()?;
-    ft8.ft8_mode = ft8.ft8_mode.cycle();
-    ft8.render();
-    Some(ft8.ft8_mode)
-}
-
-/// Cycle the active FT8 source's message type Standard ↔ FreeText.
-pub(in crate::app) fn cycle_msg_type(source: &mut dyn SignalSource) -> Option<Ft8MsgType> {
-    let ft8 = source.as_any_mut().downcast_mut::<Ft8Source>()?;
-    ft8.msg_type = ft8.msg_type.cycle();
-    ft8.render();
-    Some(ft8.msg_type)
-}
-
 /// Submode line for the top HUD when FT8 is the active source.
 pub(in crate::app) fn hud_submode_str(view: &Ft8ViewState) -> String {
     view.hud_submode_str()

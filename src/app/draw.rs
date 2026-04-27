@@ -187,6 +187,8 @@ impl ViewApp {
         const LABEL_COL: egui::Color32 = egui::Color32::from_rgb(80, 100, 140);
         const TEXT_COL: egui::Color32 = egui::Color32::from_rgb(200, 200, 200);
         const DIM_COL: egui::Color32 = egui::Color32::from_rgb(100, 100, 100);
+        /// Used for absence-of-data states: "no audio", "waiting for signal".
+        const ALERT_COL: egui::Color32 = egui::Color32::from_rgb(0xff, 0x00, 0x00);
 
         painter.rect_filled(rect, 0.0, BAR_BG);
 
@@ -230,10 +232,9 @@ impl ViewApp {
                     None
                 }
             }
-            SourceMode::AmDsb if !self.settings.am_has_audio() => Some((
-                "no audio".to_owned(),
-                egui::Color32::from_rgb(0xff, 0x00, 0x00),
-            )),
+            SourceMode::AmDsb if !self.settings.am_has_audio() => {
+                Some(("no audio".to_owned(), ALERT_COL))
+            }
             _ => Some((self.loop_timer.label(), TEXT_COL)),
         };
         let timer_w = right_status.as_ref().map_or(0.0, |(s, _)| {
@@ -318,7 +319,7 @@ impl ViewApp {
                 {
                     (info_str(modulation, *center_hz, *bw_hz, *snr_db), TEXT_COL)
                 } else {
-                    ("waiting for signal\u{2026}".to_owned(), DIM_COL)
+                    ("waiting for signal\u{2026}".to_owned(), ALERT_COL)
                 }
             } else {
                 // Dt mode with no visible text yet: just show waiting.

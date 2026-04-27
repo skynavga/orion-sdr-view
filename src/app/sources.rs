@@ -10,7 +10,7 @@ use crate::source::amdsb::AmDsbSource;
 
 use super::SourceMode;
 use super::common::source_mode_factory;
-use super::settings::{AmDsbSettings, CwSettings, ToneSettings};
+use super::settings::{AmDsbSettings, CwSettings, Ft8Settings, ToneSettings};
 use super::source::{amdsb, cw, ft8, psk31, tone};
 use super::view::ViewApp;
 
@@ -95,20 +95,19 @@ impl ViewApp {
         success
     }
 
-    /// Cycle the FT8 source between FT8 and FT4 modes (M key).
+    /// Cycle the FT8 source between FT8 and FT4 modes (M key).  Cycles the
+    /// settings toggle row; restart_source() then flows the change through
+    /// sync_settings → ft8::sync → Ft8Source::apply_params.
     pub(super) fn cycle_ft8_mode(&mut self) {
-        if let Some(mode) = ft8::cycle_mode(self.source.as_mut()) {
-            self.ft8_view.mode = mode;
-        }
-        self.sync_decode_config();
+        self.settings.cycle_ft8_mode();
         self.restart_source();
     }
 
     /// Cycle the FT8 source message type (N key): Standard → FreeText → Standard.
+    /// Same pattern as cycle_ft8_mode — cycle the settings row, let
+    /// restart_source flow the change through.
     pub(super) fn cycle_ft8_msg_type(&mut self) {
-        if let Some(msg_type) = ft8::cycle_msg_type(self.source.as_mut()) {
-            self.ft8_view.msg_type = msg_type;
-        }
+        self.settings.cycle_ft8_msg_type();
         self.restart_source();
     }
 

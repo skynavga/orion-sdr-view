@@ -425,6 +425,8 @@ pub(in crate::app) trait Ft8Settings {
     fn ft8_msg_is_free_text(&self) -> bool;
 
     fn set_ft8_carrier_hz(&mut self, v: f32);
+    fn cycle_ft8_mode(&mut self);
+    fn cycle_ft8_msg_type(&mut self);
 }
 
 impl Ft8Settings for super::SettingsState {
@@ -494,5 +496,15 @@ impl Ft8Settings for super::SettingsState {
     }
     fn ft8_msg_is_free_text(&self) -> bool {
         rows(self).msg_is_free_text()
+    }
+    fn cycle_ft8_mode(&mut self) {
+        if let Row::Toggle(f) = &mut rows_mut(self).rows[MODE] {
+            f.next();
+        }
+    }
+    fn cycle_ft8_msg_type(&mut self) {
+        if let Row::Toggle(f) = &mut rows_mut(self).rows[MSG_TYPE] {
+            f.next();
+        }
     }
 }
