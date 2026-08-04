@@ -104,11 +104,7 @@ impl PersistenceMap {
                     weight_sum += c;
                     bin_sum += c * pb as u64;
                 }
-                if weight_sum == 0 {
-                    None
-                } else {
-                    Some((bin_sum / weight_sum) as usize)
-                }
+                bin_sum.checked_div(weight_sum).map(|v| v as usize)
             })
             .collect()
     }

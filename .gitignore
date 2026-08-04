@@ -5,7 +5,6 @@
 *.patch
 
 # directories
-/.claude/memory
 /screenshots
 /target
 /tmp

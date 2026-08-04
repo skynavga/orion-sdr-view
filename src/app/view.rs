@@ -731,7 +731,12 @@ impl ViewApp {
 // ── eframe::App ───────────────────────────────────────────────────────────────
 
 impl eframe::App for ViewApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    /// Per-frame state work: feed samples, run the spectrum/decode pipeline,
+    /// and refresh GPU textures.  Runs before every `ui` and also when the
+    /// window is hidden (so decode keeps flowing).  Splitting this out from
+    /// `ui` is the eframe 0.34+ idiom; `ctx` is available directly here, so
+    /// texture uploads need no clone.
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Wall-clock delta since last frame.
         let now = std::time::Instant::now();
         let dt = now.duration_since(self.last_frame_time).as_secs_f32();
@@ -874,17 +879,26 @@ impl eframe::App for ViewApp {
             self.spectrogram.update_texture(ctx);
         }
 
-        self.handle_keys(ctx);
-        self.draw_hud(ctx);
+        // Drive the loop at display rate regardless of interaction.
+        ctx.request_repaint();
+    }
+
+    /// Per-frame drawing: keyboard handling plus the HUD, optional decode bar,
+    /// and central pane stack.  Panels attach to the passed `ui` via
+    /// `Panel::show(ui, ..)` (the eframe 0.34+ replacement for opening panels
+    /// on the context directly).
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.handle_keys(ui.ctx());
+        self.draw_hud(ui);
         if self.decode_bar.is_visible() {
-            egui::TopBottomPanel::bottom("decode_bar")
-                .exact_height(DECODE_BAR_H)
-                .show(ctx, |ui| {
+            egui::Panel::bottom("decode_bar")
+                .exact_size(DECODE_BAR_H)
+                .show(ui, |ui| {
                     let rect = ui.available_rect_before_wrap();
                     self.draw_decode_bar(ui.painter_at(rect), rect);
                 });
         }
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             self.draw_panes(ui);
             if self.show_help {
                 self.draw_help_overlay(ui);
@@ -892,7 +906,5 @@ impl eframe::App for ViewApp {
             let mono = self.mono_font_id.clone();
             self.settings.draw(ui, &mono);
         });
-
-        ctx.request_repaint();
     }
 }

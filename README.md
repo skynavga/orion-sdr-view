@@ -26,7 +26,7 @@ and waterfall from a configurable signal source.
 ## Requirements
 
 - Rust (edition 2024)
-- macOS or Linux (uses OpenGL via `eframe` glow backend)
+- macOS or Linux (renders via `eframe` wgpu backend — Metal/Vulkan)
 - [orion-sdr](https://crates.io/crates/orion-sdr) 0.0.33 (pulled automatically from crates.io)
 
 The GUI dependencies (`eframe`, `egui`) are behind an optional `gui` feature

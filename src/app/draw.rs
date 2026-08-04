@@ -11,8 +11,8 @@ use super::{DecodeBarMode, PANE_BG, SourceMode, WaterfallMode};
 use crate::decode::DecodeResult;
 
 impl ViewApp {
-    pub(super) fn draw_hud(&self, ctx: &egui::Context) {
-        egui::TopBottomPanel::top("hud").show(ctx, |ui| {
+    pub(super) fn draw_hud(&self, ui: &mut egui::Ui) {
+        egui::Panel::top("hud").show(ui, |ui| {
             // Build the status string first so we can centre it.
             let center = self.freq_view.center_hz;
             let span = self.freq_view.span_hz;

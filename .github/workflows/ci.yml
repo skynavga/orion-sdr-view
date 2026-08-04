@@ -22,6 +22,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The `gui` feature builds the eframe/winit/wgpu stack.  Its only
+      # build-time system dependency on Linux is libwayland-dev: wayland-sys's
+      # build script runs `pkg-config --probe wayland-{client,cursor,egl}`.
+      # X11 (x11rb/x11-dl) and xkbcommon (xkbcommon-dl) are dlopen/pure-rust,
+      # so they need nothing at compile time and no display is required.
+      - name: Install GUI build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwayland-dev
+
       - name: Install stable toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -40,6 +50,8 @@ jobs:
       - run: cargo fmt --check
       - run: cargo check --no-default-features
       - run: cargo clippy --no-default-features --tests -- -D warnings
+      - run: cargo check --features gui
+      - run: cargo clippy --features gui -- -D warnings
 
   # ── Rust tests ─────────────────────────────────────────────────────────────
   test:
