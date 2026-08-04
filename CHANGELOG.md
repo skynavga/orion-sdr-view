@@ -9,6 +9,24 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.15] - 2026-08-03
+
+### Changed
+
+- Bumped `orion-sdr` dependency from 0.0.33 to 0.0.53 and refreshed
+  `Cargo.lock` to latest compatible versions. Adopted the upstream rename
+  `util::spectrum_snr_db` → `util::nb_spectrum_snr_db` (identical
+  signature; a new `wb_spectrum_snr_db` was added upstream for wideband).
+
+### Fixed
+
+- Added explicit `_f32` suffixes to bare float literals in `Stroke::new`
+  calls to clear the new `float_literal_f32_fallback` future-incompatibility
+  lint.
+- Cleaned up rustfmt import ordering and removed redundant `&` in `println!`
+  arguments (clippy `useless_borrows_in_formatting`) so CI passes under
+  rust 1.97.
+
 ## [0.0.14] - 2026-04-26
 
 ### Changed
