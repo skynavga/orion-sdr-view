@@ -33,6 +33,7 @@ impl DisplayRows {
                     min: -160.0,
                     max: -1.0,
                     unit: " dB",
+                    coarse: None,
                 }),
                 Row::Num(NumField {
                     label: "dB max",
@@ -42,6 +43,7 @@ impl DisplayRows {
                     min: -159.0,
                     max: 0.0,
                     unit: " dB",
+                    coarse: None,
                 }),
                 Row::Num(NumField {
                     label: "Spec span",
@@ -51,6 +53,7 @@ impl DisplayRows {
                     min: 100.0,
                     max: 24_000.0,
                     unit: " Hz",
+                    coarse: None,
                 }),
                 Row::Num(NumField {
                     label: "Spec time",
@@ -60,6 +63,7 @@ impl DisplayRows {
                     min: 1.0,
                     max: 120.0,
                     unit: " s",
+                    coarse: None,
                 }),
                 Row::TimeZone(TimeZoneField {
                     label: "Time zone",

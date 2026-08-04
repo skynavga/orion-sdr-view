@@ -54,6 +54,11 @@ pub(in crate::app) trait SourceFactory: Sync {
     fn preferred_spec_delta_hz(&self, _settings: &SettingsState) -> Option<f32> {
         None
     }
+
+    /// Preferred spectrum reference level (dBFS, scale top) on switch.
+    fn preferred_ref_db(&self, _settings: &SettingsState) -> Option<f32> {
+        None
+    }
 }
 
 /// Static dispatch table of per-source factories, indexed by `SourceMode as

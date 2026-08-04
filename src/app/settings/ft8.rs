@@ -41,6 +41,7 @@ impl Ft8Rows {
                     min: 100.0,
                     max: 22000.0,
                     unit: " Hz",
+                    coarse: None,
                 }),
                 Row::Num(NumField {
                     label: "Gap",
@@ -50,6 +51,7 @@ impl Ft8Rows {
                     min: 15.0,
                     max: 99.99,
                     unit: " s",
+                    coarse: None,
                 }),
                 Row::Num(NumField {
                     label: "Noise amp",
@@ -59,6 +61,7 @@ impl Ft8Rows {
                     min: 0.0,
                     max: 0.50,
                     unit: "",
+                    coarse: None,
                 }),
                 Row::Toggle(ToggleField {
                     label: "Message",

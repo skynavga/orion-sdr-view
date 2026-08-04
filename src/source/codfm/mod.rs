@@ -9,6 +9,7 @@ mod source;
 pub use config::CodfmConfig;
 pub use decode::CodfmState;
 pub use source::{
-    CODFM_DEFAULT_GAP_SECS, CODFM_DEFAULT_NOISE_AMP, CODFM_FS, CODFM_NOMINAL_CENTER, CodfmSource,
-    codfm_occupied_bw, hud_submode_str,
+    CODFM_DEFAULT_BW_FRACTION, CODFM_DEFAULT_GAP_SECS, CODFM_DEFAULT_NOISE_AMP,
+    CODFM_DEFAULT_SIG_SECS, CODFM_FS, CODFM_NOMINAL_CENTER, CODFM_PREFERRED_REF_DB,
+    CodfmBwFraction, CodfmSource, codfm_occupied_bw, hud_submode_str,
 };

@@ -10,7 +10,7 @@ use crate::source::amdsb::AmDsbSource;
 
 use super::SourceMode;
 use super::common::source_mode_factory;
-use super::settings::{AmDsbSettings, CwSettings, Ft8Settings, ToneSettings};
+use super::settings::{AmDsbSettings, CodfmSettings, CwSettings, Ft8Settings, ToneSettings};
 use super::source::{amdsb, codfm, cw, ft8, psk31, tone};
 use super::view::ViewApp;
 
@@ -112,6 +112,18 @@ impl ViewApp {
         self.restart_source();
     }
 
+    /// Cycle the CODFM occupied-bandwidth fraction (M key).  Cycles the toggle,
+    /// re-frames the horizontal-spectrogram window to the new band width, then
+    /// restarts (which re-renders the source and re-derives the decode bw).
+    pub(super) fn cycle_codfm_bandwidth(&mut self) {
+        self.settings.cycle_codfm_bw();
+        let factory = source_mode_factory(self.source_mode);
+        if let Some(delta) = factory.preferred_spec_delta_hz(&self.settings) {
+            self.settings.set_spec_freq_delta_hz(delta);
+        }
+        self.restart_source();
+    }
+
     /// Apply the committed PSK31 message to the live source and re-render.
     pub(super) fn apply_psk31_message(&mut self) {
         psk31::apply_message(self.source.as_mut(), &self.settings);
@@ -148,6 +160,9 @@ impl ViewApp {
                 cfg.cw_char_space = self.settings.cw_char_space();
                 cfg.cw_word_space = self.settings.cw_word_space();
                 cfg.cw_msg_repeat = self.settings.cw_msg_repeat();
+            }
+            if self.source_mode == SourceMode::Codfm {
+                cfg.codfm_bw_hz = codfm::occupied_bw_hz(&self.settings);
             }
         }
     }

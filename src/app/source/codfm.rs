@@ -4,15 +4,19 @@
 use crate::app::settings::{CodfmSettings, SettingsState};
 use crate::decode::DecodeMode;
 use crate::source::SignalSource;
-use crate::source::codfm::{self, CODFM_FS, CODFM_NOMINAL_CENTER, CodfmSource, codfm_occupied_bw};
+use crate::source::codfm::{
+    self, CODFM_FS, CODFM_NOMINAL_CENTER, CODFM_PREFERRED_REF_DB, CodfmSource, codfm_occupied_bw,
+};
 use crate::source::ft8::Ft8ViewState;
 
 /// Build a fresh `CodfmSource` from current settings.  The sample rate is a
 /// fixed source property (`CODFM_FS`), not a settings value.
 pub(in crate::app) fn make(settings: &SettingsState) -> CodfmSource {
     CodfmSource::new(
+        settings.codfm_sig_secs(),
         settings.codfm_gap_secs(),
         settings.codfm_noise_amp(),
+        settings.codfm_bw_fraction(),
         CODFM_FS,
     )
 }
@@ -20,13 +24,23 @@ pub(in crate::app) fn make(settings: &SettingsState) -> CodfmSource {
 /// Push current CODFM settings into the active source if applicable.
 pub(in crate::app) fn sync(source: &mut dyn SignalSource, settings: &SettingsState) {
     if let Some(codfm) = source.as_any_mut().downcast_mut::<CodfmSource>() {
-        codfm.apply_params(settings.codfm_gap_secs(), settings.codfm_noise_amp());
+        codfm.apply_params(
+            settings.codfm_sig_secs(),
+            settings.codfm_gap_secs(),
+            settings.codfm_noise_amp(),
+            settings.codfm_bw_fraction(),
+        );
     }
 }
 
-/// Submode line for the top HUD when CODFM is the active source (empty).
-pub(in crate::app) fn hud_submode_str(_settings: &SettingsState) -> String {
-    codfm::hud_submode_str()
+/// Occupied bandwidth (Hz) for the current settings — reported in the Di bar.
+pub(in crate::app) fn occupied_bw_hz(settings: &SettingsState) -> f32 {
+    codfm_occupied_bw(CODFM_FS, settings.codfm_bw_fraction())
+}
+
+/// Submode line for the top HUD when CODFM is the active source.
+pub(in crate::app) fn hud_submode_str(settings: &SettingsState) -> String {
+    codfm::hud_submode_str(settings.codfm_bw_fraction())
 }
 
 pub(super) struct Factory;
@@ -51,9 +65,17 @@ impl super::SourceFactory for Factory {
         Some(CODFM_NOMINAL_CENTER)
     }
     fn preferred_span_hz(&self, _settings: &SettingsState) -> Option<f32> {
-        Some(codfm_occupied_bw(CODFM_FS) * 1.2)
+        // Full Nyquist: the bandwidth fraction (a settings toggle) then controls
+        // how much of this fixed span the occupied band fills.  Clamped to
+        // Nyquist by `FreqView::reframe`.
+        Some(CODFM_FS / 2.0)
     }
-    fn preferred_spec_delta_hz(&self, _settings: &SettingsState) -> Option<f32> {
-        Some(codfm_occupied_bw(CODFM_FS) * 0.6)
+    fn preferred_spec_delta_hz(&self, settings: &SettingsState) -> Option<f32> {
+        // ± window that comfortably frames the current occupied band.
+        Some(occupied_bw_hz(settings) * 0.8)
+    }
+    fn preferred_ref_db(&self, _settings: &SettingsState) -> Option<f32> {
+        // Match the ~-15 dB signal peaks produced by the modulator gain.
+        Some(CODFM_PREFERRED_REF_DB)
     }
 }

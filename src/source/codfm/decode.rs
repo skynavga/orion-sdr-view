@@ -9,7 +9,7 @@
 use std::sync::mpsc::SyncSender;
 
 use crate::decode::DecodeResult;
-use crate::decode::spectral::{SpectralState, spectrum_bw_hz};
+use crate::decode::spectral::SpectralState;
 
 pub struct CodfmState(pub SpectralState);
 
@@ -28,12 +28,14 @@ impl CodfmState {
         self.0.reset();
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn process(
         &mut self,
         samples: &[f32],
         is_signal: bool,
         gap_edge: bool,
         carrier_hz: f32,
+        bw_hz: f32,
         fs: f32,
         tx: &SyncSender<DecodeResult>,
     ) {
@@ -44,17 +46,13 @@ impl CodfmState {
             "COFDM",
             carrier_hz,
             fs,
-            |real, fs, carrier_hz, state| {
-                // Wideband occupied-bandwidth estimate, EMA-smoothed.  The 20 dB
-                // threshold captures the flat OFDM band down to its edges.
-                let raw_bw = spectrum_bw_hz(real, fs, carrier_hz, 20.0);
-                if state.smoothed_bw_hz == 0.0 {
-                    state.smoothed_bw_hz = raw_bw;
-                } else {
-                    state.smoothed_bw_hz = 0.2 * raw_bw + 0.8 * state.smoothed_bw_hz;
-                }
-                state.smoothed_bw_hz
-            },
+            // The occupied bandwidth of a COFDM band is a fixed property of the
+            // carrier plan (it depends on the selected bandwidth fraction), not
+            // a value to measure.  `spectrum_bw_hz` is a narrowband estimator
+            // (it only searches ±4 kHz around the carrier) and would report a
+            // tiny sliver for this wideband band — so report the analytic
+            // occupied bandwidth supplied by the caller.
+            |_real, _fs, _carrier_hz, _state| bw_hz,
             tx,
         );
     }

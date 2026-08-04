@@ -15,11 +15,26 @@ pub(super) struct NumField {
     pub min: f32,
     pub max: f32,
     pub unit: &'static str,
+    /// Optional coarser step used when `value >= threshold`.  `None` uses `step`
+    /// throughout.  Lets a field nudge finely at low values and coarsely at
+    /// high ones (e.g. 0.5 s below 10 s, 1 s at/above).
+    pub coarse: Option<CoarseStep>,
+}
+
+/// A coarser step that applies once the field's value reaches `threshold`.
+#[derive(Clone, Copy)]
+pub(super) struct CoarseStep {
+    pub threshold: f32,
+    pub step: f32,
 }
 
 impl NumField {
     pub fn nudge(&mut self, delta: f32) {
-        self.value = (self.value + delta * self.step).clamp(self.min, self.max);
+        let step = match self.coarse {
+            Some(c) if self.value >= c.threshold => c.step,
+            _ => self.step,
+        };
+        self.value = (self.value + delta * step).clamp(self.min, self.max);
     }
     pub fn reset(&mut self) {
         self.value = self.default;
