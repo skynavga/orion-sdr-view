@@ -13,8 +13,17 @@ pub(crate) const PANE_BG: [egui::Color32; 3] = [
 
 pub(crate) const FFT_SIZE: usize = 1024;
 pub(crate) const SAMPLE_RATE: f32 = 48_000.0;
-/// Number of new samples fed per frame, targeting ~60 fps.
-pub(crate) const SAMPLES_PER_FRAME: usize = (SAMPLE_RATE / 60.0) as usize;
+/// Per-frame sample consumption is paced to wall-clock
+/// (`dt * source.sample_rate()`, clamped to the bounds below) so time-based
+/// playback (gaps, Test Tone ramp/pause, …) is frame-rate independent rather
+/// than assuming a fixed 60 fps.
+///
+/// Lower bound on the per-frame sample budget, so the FFT keeps refreshing even
+/// at very high frame rates (tiny `dt`).
+pub(crate) const MIN_SAMPLES_PER_FRAME: usize = 128;
+/// Upper bound on the per-frame sample budget, so a large `dt` (after a stall or
+/// a high-`fs` source) can't dump an unbounded block into the pipeline.
+pub(crate) const MAX_SAMPLES_PER_FRAME: usize = 4096;
 /// Fixed pixel height of the decode bar (does not participate in pane proportions).
 pub(crate) const DECODE_BAR_H: f32 = 28.0;
 

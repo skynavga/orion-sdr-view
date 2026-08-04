@@ -20,8 +20,8 @@ use crate::source::tone::TestToneSource;
 use crate::utils::timer::LoopTimer;
 
 use super::{
-    DECODE_BAR_H, DecodeBarMode, FFT_SIZE, SAMPLE_RATE, SAMPLES_PER_FRAME, SourceMode,
-    WaterfallMode,
+    DECODE_BAR_H, DecodeBarMode, FFT_SIZE, MAX_SAMPLES_PER_FRAME, MIN_SAMPLES_PER_FRAME,
+    SAMPLE_RATE, SourceMode, WaterfallMode,
 };
 
 // ── ViewApp ───────────────────────────────────────────────────────────────────
@@ -777,8 +777,22 @@ impl eframe::App for ViewApp {
         let dt = now.duration_since(self.last_frame_time).as_secs_f32();
         self.last_frame_time = now;
 
+        // Advance the source's wall-clock timeline before pulling samples, so
+        // time-based playback (e.g. CODFM signal/gap phases) is frame-rate
+        // independent.  No-op for sources that don't use it.
+        self.source.advance_time(dt);
+
+        // Pace sample consumption to wall-clock: pull `dt * fs` samples this
+        // frame (clamped) rather than a fixed count.  This makes every source's
+        // seconds-based timing (gaps, Test Tone ramp/pause, …) run at true
+        // wall-clock instead of scaling with the frame rate.  The clamp keeps
+        // the FFT fresh at high frame rates and bounds a large `dt` (post-stall,
+        // or a high-`fs` source like CODFM at 1.92 MHz).
+        let budget = (dt * self.source.sample_rate()) as usize;
+        let n = budget.clamp(MIN_SAMPLES_PER_FRAME, MAX_SAMPLES_PER_FRAME);
+
         // Feed new samples and process spectrum before drawing.
-        let samples = self.source.next_samples(SAMPLES_PER_FRAME);
+        let samples = self.source.next_samples(n);
         // Non-blocking send to decode thread; drop if channel is full.
         let _ = self.decode_tx.try_send(samples.clone());
         for s in &samples {

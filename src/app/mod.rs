@@ -17,6 +17,7 @@ pub(super) mod waterfall;
 
 pub(crate) use common::DECODE_BAR_H;
 pub(super) use common::{
-    DecodeBarMode, FFT_SIZE, PANE_BG, SAMPLE_RATE, SAMPLES_PER_FRAME, SourceMode, WaterfallMode,
+    DecodeBarMode, FFT_SIZE, MAX_SAMPLES_PER_FRAME, MIN_SAMPLES_PER_FRAME, PANE_BG, SAMPLE_RATE,
+    SourceMode, WaterfallMode,
 };
 pub(crate) use view::ViewApp;

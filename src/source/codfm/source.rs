@@ -37,12 +37,11 @@ const CODFM_MCS_INDEX: u8 = 1;
 /// Payload bytes per COFDM frame (RS(204,188)-style block minus a 4-byte CRC).
 const CODFM_PAYLOAD_BYTES: usize = 184;
 
-/// The viewer's fixed sample-consumption rate (see `app::SAMPLE_RATE`).  CODFM
-/// plays back NON-realtime: the viewer consumes a fixed 48 kHz regardless of the
-/// native `fs`, so both the signal burst and the silence gap are sized in
-/// **wall-clock seconds** via `secs * VIEWER_CONSUME_FS` samples.  Kept local to
-/// avoid a bin-crate dependency from the lib.
-const VIEWER_CONSUME_FS: f32 = 48_000.0;
+/// Number of back-to-back COFDM frames in the looping signal buffer.  This sets
+/// the buffer *content* (enough frames that the loop point isn't obvious), not
+/// the signal-phase duration — that is timed by real `dt` in `next_samples`.
+/// ~40 frames ≈ 0.3 s of native signal at `CODFM_FS`.
+const CODFM_BUFFER_FRAMES: usize = 40;
 
 /// Modulator output gain.  Bare OFDM spreads its energy across the active
 /// subcarriers, so per-sample RMS at unit gain sits *below* the decoder's
@@ -151,28 +150,35 @@ pub fn hud_submode_str(fraction: CodfmBwFraction) -> String {
 
 /// Wideband coded-OFDM (COFDM) signal source.
 ///
-/// Pre-renders a burst of back-to-back COFDM frames — each
-/// `[preamble+training][header][payload]` via [`OfdmFrameMod`] — taking the
-/// real part of the upconverted IQ.  Enough frames are rendered to fill
-/// `sig_secs` of wall-clock playback.  The burst plays once, followed by a
-/// `gap_secs` silence gap, then repeats indefinitely without reallocation.
+/// Pre-renders a fixed-length looping buffer of back-to-back COFDM frames —
+/// each `[preamble+training][header][payload]` via [`OfdmFrameMod`] — taking the
+/// real part of the upconverted IQ.  Playback alternates a `sig_secs` signal
+/// phase (the buffer, looped) with a `gap_secs` silence phase, repeating
+/// indefinitely.
 ///
-/// Playback is deliberately NON-realtime: the viewer feeds a fixed number of
-/// samples per frame regardless of `fs`, so at `CODFM_FS` (1.92 MHz) the burst
-/// plays slower than wall-clock.  Both `sig_secs` and `gap_secs` are therefore
-/// interpreted as **wall-clock seconds** and sized in emitted samples at the
-/// viewer's fixed `VIEWER_CONSUME_FS`, so a "Gap 2 s" setting yields a ~2 s
-/// on-screen pause — consistent with the narrowband sources.
+/// **Timing is driven by real wall-clock `dt`, not sample counts.**  CODFM plays
+/// back NON-realtime (the viewer consumes a fixed rate regardless of the native
+/// `fs`, and the render frame rate is uncapped), so counting emitted samples
+/// would make the phase durations scale with the frame rate.  Instead the app
+/// (or a test) advances the source's timeline via [`SignalSource::advance_time`]
+/// with the real per-frame `dt`, flipping the signal/gap phase when the elapsed
+/// phase time reaches `sig_secs` / `gap_secs`.  A "Gap 2 s" setting thus yields a
+/// ~2 s on-screen pause regardless of frame rate — consistent with the
+/// narrowband sources — and the timing is deterministically testable.
 pub struct CodfmSource {
     pub sig_secs: f32,
     pub gap_secs: f32,
     pub noise_amp: f32,
     pub fraction: CodfmBwFraction,
     fs: f32,
+    /// Looping COFDM signal buffer (fixed length; content, not duration).
     samples: Vec<f32>,
+    /// Wrapping read cursor into `samples` during the signal phase.
     pos: usize,
-    gap_remaining: usize,
-    gap_samples: usize,
+    /// True during the signal phase, false during the silence gap.
+    in_signal: bool,
+    /// Wall-clock seconds elapsed in the current phase.
+    phase_secs: f32,
     rng: u64,
 }
 
@@ -184,7 +190,6 @@ impl CodfmSource {
         fraction: CodfmBwFraction,
         fs: f32,
     ) -> Self {
-        let gap_samples = (gap_secs * VIEWER_CONSUME_FS) as usize;
         let mut src = Self {
             sig_secs,
             gap_secs,
@@ -193,12 +198,18 @@ impl CodfmSource {
             fs,
             samples: Vec::new(),
             pos: 0,
-            gap_remaining: 0,
-            gap_samples,
+            in_signal: true,
+            phase_secs: 0.0,
             rng: 0x853c_49e6_748f_ea9b,
         };
         src.render();
         src
+    }
+
+    /// True while in the signal phase (exposed for tests / decode gating).
+    #[allow(dead_code)]
+    pub fn in_signal(&self) -> bool {
+        self.in_signal
     }
 
     /// Build the carrier plan (sized by the bandwidth fraction), config,
@@ -226,23 +237,20 @@ impl CodfmSource {
         let table = McsTable::default_ladder();
         let modu = OfdmFrameMod::new(cfg, table, preamble);
 
-        // Stream back-to-back COFDM frames until the burst reaches the target
-        // wall-clock duration (sized in emitted samples at the viewer's fixed
-        // consumption rate).  Each frame carries a fresh deterministic
-        // pseudo-random payload with an incrementing sequence number, so the
-        // spectrum stays fully populated across all subcarriers.
-        let target_samples = (self.sig_secs * VIEWER_CONSUME_FS) as usize;
+        // Render a fixed-length looping buffer of back-to-back COFDM frames.
+        // This is *content*, not duration — the signal-phase length is timed by
+        // real `dt` in `next_samples`, and this buffer just loops.  Each frame
+        // carries a fresh deterministic pseudo-random payload with an
+        // incrementing sequence number, so the spectrum stays fully populated
+        // across all subcarriers and the loop point isn't obvious.
         self.samples.clear();
-        let mut seq = 0u32;
-        while self.samples.len() < target_samples {
+        for seq in 0..CODFM_BUFFER_FRAMES as u32 {
             let payload = self.build_payload();
             let frame = FramePacket::new(FrameMetadata::new(seq, CODFM_MCS_INDEX), payload);
             let iq: Vec<C32> = modu.modulate_frame(&frame, 0);
             self.samples.extend(iq.iter().map(|c| c.re));
-            seq += 1;
         }
         self.pos = 0;
-        self.gap_remaining = 0;
     }
 
     /// Build a deterministic pseudo-random payload of `CODFM_PAYLOAD_BYTES`.
@@ -252,14 +260,9 @@ impl CodfmSource {
             .collect()
     }
 
-    /// Recompute the gap sample count (wall-clock) after `gap_secs` changes.
-    pub fn update_gap(&mut self) {
-        self.gap_samples = (self.gap_secs * VIEWER_CONSUME_FS) as usize;
-    }
-
-    /// Apply fresh parameters.  Re-renders the burst if the bandwidth fraction
-    /// or signal duration changed (both alter the rendered samples); gap/noise
-    /// changes alone do not.
+    /// Apply fresh parameters.  Only the bandwidth fraction changes the rendered
+    /// buffer; `sig_secs` / `gap_secs` are wall-clock phase durations applied
+    /// live (no re-render), and `noise_amp` is read per sample.
     pub fn apply_params(
         &mut self,
         sig_secs: f32,
@@ -267,7 +270,7 @@ impl CodfmSource {
         noise_amp: f32,
         fraction: CodfmBwFraction,
     ) {
-        let rerender = self.fraction != fraction || (self.sig_secs - sig_secs).abs() > f32::EPSILON;
+        let rerender = self.fraction != fraction;
         self.sig_secs = sig_secs;
         self.gap_secs = gap_secs;
         self.noise_amp = noise_amp;
@@ -275,7 +278,6 @@ impl CodfmSource {
         if rerender {
             self.render();
         }
-        self.update_gap();
     }
 
     fn next_u64(&mut self) -> u64 {
@@ -297,52 +299,52 @@ impl SignalSource for CodfmSource {
 
     fn restart(&mut self) {
         self.pos = 0;
-        self.gap_remaining = 0;
+        self.in_signal = true;
+        self.phase_secs = 0.0;
+    }
+
+    /// Advance the signal/gap phase timer by `dt` seconds and flip the phase
+    /// when it reaches the current phase's duration.  Frame-rate independent.
+    fn advance_time(&mut self, dt_secs: f32) {
+        self.phase_secs += dt_secs;
+        // Clamp the signal phase so a runaway can't overflow the decode-bar
+        // timer's fixed-width display.
+        let limit = if self.in_signal {
+            self.sig_secs.min(MAX_SIG_SECS)
+        } else {
+            self.gap_secs
+        };
+        if self.phase_secs >= limit {
+            self.phase_secs = 0.0;
+            self.in_signal = !self.in_signal;
+            if self.in_signal {
+                self.pos = 0;
+            }
+        }
     }
 
     fn next_samples(&mut self, n: usize) -> Vec<f32> {
-        // Wall-clock cap: the burst is consumed at VIEWER_CONSUME_FS, so bound
-        // it by MAX_SIG_SECS of wall-clock to keep the decode-bar timer within
-        // its fixed-width display.
-        let max_sig_samples = (MAX_SIG_SECS * VIEWER_CONSUME_FS) as usize;
-        let effective_len = self.samples.len().min(max_sig_samples);
         let mut out = Vec::with_capacity(n);
-        let mut i = 0;
-        while i < n {
-            if self.gap_remaining > 0 {
-                let gap_now = self.gap_remaining.min(n - i);
-                for _ in 0..gap_now {
-                    let noise = if self.noise_amp > 0.0 {
-                        self.noise_amp * self.xorshift()
-                    } else {
-                        0.0
-                    };
-                    out.push(noise);
-                }
-                self.gap_remaining -= gap_now;
-                i += gap_now;
-                if self.gap_remaining == 0 {
-                    self.pos = 0;
-                }
-            } else if self.pos < effective_len {
-                let available = (effective_len - self.pos).min(n - i);
-                for k in 0..available {
-                    let noise = if self.noise_amp > 0.0 {
-                        self.noise_amp * self.xorshift()
-                    } else {
-                        0.0
-                    };
-                    out.push(self.samples[self.pos + k] + noise);
-                }
-                self.pos += available;
-                i += available;
-                if self.pos >= effective_len {
-                    self.gap_remaining = self.gap_samples;
-                }
-            } else {
-                // samples is empty (should not happen after render())
-                out.push(0.0);
-                i += 1;
+        if self.in_signal && !self.samples.is_empty() {
+            let len = self.samples.len();
+            for _ in 0..n {
+                let noise = if self.noise_amp > 0.0 {
+                    self.noise_amp * self.xorshift()
+                } else {
+                    0.0
+                };
+                out.push(self.samples[self.pos] + noise);
+                self.pos = (self.pos + 1) % len; // loop the content buffer
+            }
+        } else {
+            // Silence gap (or empty buffer): noise only.
+            for _ in 0..n {
+                let noise = if self.noise_amp > 0.0 {
+                    self.noise_amp * self.xorshift()
+                } else {
+                    0.0
+                };
+                out.push(noise);
             }
         }
         out
