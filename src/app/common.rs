@@ -82,6 +82,7 @@ pub(crate) enum SourceMode {
     AmDsb,
     Psk31,
     Ft8,
+    Codfm,
 }
 
 impl SourceMode {
@@ -91,6 +92,7 @@ impl SourceMode {
         SourceMode::AmDsb,
         SourceMode::Psk31,
         SourceMode::Ft8,
+        SourceMode::Codfm,
     ];
 
     pub(crate) fn label(self) -> &'static str {
@@ -100,6 +102,7 @@ impl SourceMode {
             SourceMode::AmDsb => "AM DSB",
             SourceMode::Psk31 => "PSK31",
             SourceMode::Ft8 => "FT8",
+            SourceMode::Codfm => "CODFM",
         }
     }
 

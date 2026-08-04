@@ -11,7 +11,7 @@ use crate::source::amdsb::AmDsbSource;
 use super::SourceMode;
 use super::common::source_mode_factory;
 use super::settings::{AmDsbSettings, CwSettings, Ft8Settings, ToneSettings};
-use super::source::{amdsb, cw, ft8, psk31, tone};
+use super::source::{amdsb, codfm, cw, ft8, psk31, tone};
 use super::view::ViewApp;
 
 impl ViewApp {
@@ -37,6 +37,7 @@ impl ViewApp {
         tone::sync(self.source.as_mut(), &self.settings);
         amdsb::sync(self.source.as_mut(), &self.settings);
         psk31::sync(self.source.as_mut(), &self.settings);
+        codfm::sync(self.source.as_mut(), &self.settings);
         if let Some(flags) = cw::sync(self.source.as_mut(), &self.settings)
             && flags.wpm_or_word_space_changed
         {

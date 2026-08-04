@@ -26,7 +26,7 @@ use std::sync::{Arc, Mutex};
 use orion_sdr::util::SIGNAL_THRESHOLD;
 use orion_sdr::util::rms;
 
-use crate::source::{amdsb, cw, ft8, psk31, tone};
+use crate::source::{amdsb, codfm, cw, ft8, psk31, tone};
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -42,6 +42,8 @@ pub enum DecodeMode {
     Ft8,
     /// FT4 full-frame accumulate+decode (Phase 2).
     Ft4,
+    /// CODFM wideband COFDM — info-only spectral analysis (no text decode).
+    Codfm,
 }
 
 #[derive(Clone, Debug)]
@@ -276,6 +278,7 @@ impl DecodeWorker {
         let mut amdsb = amdsb::AmDsbState::new();
         let mut testtone = tone::ToneState::new();
         let mut ft8 = ft8::Ft8State::new();
+        let mut codfm = codfm::CodfmState::new();
 
         loop {
             let samples = match self.rx.recv_timeout(std::time::Duration::from_millis(100)) {
@@ -304,6 +307,7 @@ impl DecodeWorker {
                 amdsb.reset();
                 testtone.reset();
                 ft8.reset();
+                codfm.reset();
                 was_signal = false;
                 last_mode = mode;
                 last_carrier = carrier_hz;
@@ -317,6 +321,7 @@ impl DecodeWorker {
                 amdsb.reset();
                 testtone.reset();
                 ft8.reset();
+                codfm.reset();
                 was_signal = false;
                 last_mode = mode;
                 last_carrier = carrier_hz;
@@ -345,6 +350,9 @@ impl DecodeWorker {
                     ft8.process(
                         &samples, is_signal, gap_edge, mode, carrier_hz, fs, &self.tx,
                     );
+                }
+                DecodeMode::Codfm => {
+                    codfm.process(&samples, is_signal, gap_edge, carrier_hz, fs, &self.tx);
                 }
                 DecodeMode::Off => {}
             }

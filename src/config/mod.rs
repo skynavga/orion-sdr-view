@@ -19,6 +19,8 @@ pub use display::{DisplayConfig, TzMode, format_offset_min};
 #[allow(unused_imports)]
 pub use crate::source::amdsb::AmDsbConfig;
 #[allow(unused_imports)]
+pub use crate::source::codfm::CodfmConfig;
+#[allow(unused_imports)]
 pub use crate::source::cw::CwConfig;
 #[allow(unused_imports)]
 pub use crate::source::ft8::Ft8Config;

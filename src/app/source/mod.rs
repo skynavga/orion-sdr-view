@@ -12,6 +12,7 @@
 //! Shared bin-side helpers live in `common.rs`.
 
 pub(super) mod amdsb;
+pub(super) mod codfm;
 mod common;
 pub(super) mod cw;
 pub(super) mod ft8;

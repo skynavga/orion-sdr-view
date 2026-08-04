@@ -4,7 +4,7 @@
 use eframe::egui;
 
 use super::settings::AmDsbSettings;
-use super::source::{amdsb, cw, ft8, psk31};
+use super::source::{amdsb, codfm, cw, ft8, psk31};
 use super::utils::dashed_hline;
 use super::view::ViewApp;
 use super::{DecodeBarMode, PANE_BG, SourceMode, WaterfallMode};
@@ -97,6 +97,7 @@ impl ViewApp {
                 SourceMode::Cw => cw::hud_submode_str(&self.settings),
                 SourceMode::Psk31 => psk31::hud_submode_str(&self.settings),
                 SourceMode::Ft8 => ft8::hud_submode_str(&self.ft8_view),
+                SourceMode::Codfm => codfm::hud_submode_str(&self.settings),
                 SourceMode::TestTone => String::new(),
             };
             let status = format!(

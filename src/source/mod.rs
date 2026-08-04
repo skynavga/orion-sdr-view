@@ -4,6 +4,7 @@
 mod common;
 
 pub mod amdsb;
+pub mod codfm;
 pub mod cw;
 pub mod ft8;
 pub mod psk31;
@@ -13,6 +14,8 @@ pub use common::{MAX_SIG_SECS, SignalSource};
 
 #[allow(unused_imports)]
 pub use amdsb::{AmDsbSource, BuiltinAudio, load_builtin};
+#[allow(unused_imports)]
+pub use codfm::{CODFM_FS, CODFM_NOMINAL_CENTER, CodfmSource, codfm_occupied_bw};
 #[allow(unused_imports)]
 pub use cw::CwSource;
 #[allow(unused_imports)]
