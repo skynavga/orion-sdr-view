@@ -316,6 +316,21 @@ impl super::SettingsState {
             2_000.0
         }
     }
+    /// Set the horizontal-spectrogram ± window (clamped to the row's bounds).
+    /// Wideband sources call this on switch via `preferred_spec_delta_hz`.
+    pub fn set_spec_freq_delta_hz(&mut self, v: f32) {
+        if let Row::Num(f) = &mut self.display.rows[SPEC_FREQ_DELTA] {
+            f.value = v.clamp(f.min, f.max);
+        }
+    }
+    /// Raise/lower the "Spec span" row's max bound so it tracks the active
+    /// Nyquist (per-source sample rate).  Re-clamps the current value.
+    pub fn set_spec_freq_delta_max(&mut self, max: f32) {
+        if let Row::Num(f) = &mut self.display.rows[SPEC_FREQ_DELTA] {
+            f.max = max.max(f.min);
+            f.value = f.value.clamp(f.min, f.max);
+        }
+    }
     pub fn spec_time_range_secs(&self) -> f32 {
         if let Row::Num(f) = &self.display.rows[SPEC_TIME_RANGE] {
             f.value

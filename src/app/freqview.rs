@@ -67,6 +67,24 @@ impl FreqView {
         self.center_hz = self.nyquist / 2.0;
     }
 
+    /// Change the Nyquist limit and re-validate span/center against the new
+    /// range.  Used when the active source's sample rate differs from the
+    /// current view (per-source sample rate).
+    pub fn set_nyquist(&mut self, nyquist: f32) {
+        self.nyquist = nyquist;
+        self.span_hz = self.span_hz.clamp(1000.0_f32.min(nyquist), nyquist);
+        let half = self.span_hz / 2.0;
+        self.center_hz = self.center_hz.clamp(half, nyquist - half);
+    }
+
+    /// Reframe to an explicit center + span, clamped to the current nyquist.
+    /// Used to auto-frame a wideband source on switch.
+    pub fn reframe(&mut self, center_hz: f32, span_hz: f32) {
+        self.span_hz = span_hz.clamp(1000.0_f32.min(self.nyquist), self.nyquist);
+        let half = self.span_hz / 2.0;
+        self.center_hz = center_hz.clamp(half, self.nyquist - half);
+    }
+
     /// Snap `hz` to the nearest multiple of `grid` Hz.
     pub fn snap_hz(hz: f32, grid: f32) -> f32 {
         (hz / grid).round() * grid

@@ -222,6 +222,7 @@ impl ViewApp {
             self.signal_gen = TestSignalGen::new(self.settings.freq_hz(), SAMPLE_RATE);
         }
         self.source = self.make_source();
+        self.apply_source_sample_rate();
         self.loop_timer.reset();
         self.loop_timer.set_holdoff(self.loop_timer_holdoff_secs());
         self.decode_ticker.reset();
@@ -230,6 +231,24 @@ impl ViewApp {
         self.ft8_view.reset();
         while self.decode_rx.try_recv().is_ok() {}
         let _ = self.decode_tx.try_send(Vec::new());
+    }
+
+    /// Re-derive the sample-rate-dependent display pipeline from the currently
+    /// constructed source's `sample_rate()`.  Called after any source
+    /// (re)construction.  For the narrowband sources (all 48 kHz) this is a
+    /// no-op reproducing today's behavior; a wideband source (higher fs) shifts
+    /// the Nyquist limit, the "Spec span" row bound, and clears bin-indexed
+    /// history so the new frequency scaling isn't mixed with the old.
+    fn apply_source_sample_rate(&mut self) {
+        let fs = self.source.sample_rate();
+        self.freq_view.set_nyquist(fs / 2.0);
+        self.settings.set_spec_freq_delta_max(fs / 2.0);
+        self.waterfall = WaterfallDisplay::new(FFT_SIZE / 2 + 1, 512, self.db_min, self.db_max);
+        self.persistence.clear();
+        self.spectrogram.clear();
+        if let Ok(mut cfg) = self.decode_config.lock() {
+            cfg.fs = fs;
+        }
     }
 
     /// When source_locked, write center_hz into the active source's freq/carrier
@@ -259,6 +278,20 @@ impl ViewApp {
             self.make_source()
         };
         self.settings.set_source_mode(mode as usize);
+        // Re-derive the per-source sample rate (Nyquist, decode fs, spec-span
+        // bound, cleared history) before reframing, so reframe clamps to the
+        // new Nyquist.
+        self.apply_source_sample_rate();
+        let factory = super::common::source_mode_factory(mode);
+        if let (Some(center), Some(span)) = (
+            factory.nominal_center_hz(&self.settings),
+            factory.preferred_span_hz(&self.settings),
+        ) {
+            self.freq_view.reframe(center, span);
+        }
+        if let Some(delta) = factory.preferred_spec_delta_hz(&self.settings) {
+            self.settings.set_spec_freq_delta_hz(delta);
+        }
         self.sync_decode_config();
         self.reset_playback();
         // Text mode is only valid for CW/PSK31/FT8; clamp if we switched away.
