@@ -30,3 +30,42 @@ pub(super) fn dashed_hline(
         paint = !paint;
     }
 }
+
+/// Emit one textured quad covering `scr`.  `u = [left, right]` are the U
+/// coordinates at the left/right screen edges; `v = [top, bottom]` are the V
+/// coordinates at the top/bottom edges.  Passing `u[0] > u[1]` flips
+/// horizontally and `v[0] > v[1]` flips vertically — used to render ring-buffer
+/// textures whose newest row/column is not at physical index 0.
+pub(super) fn image_quad(
+    painter: &egui::Painter,
+    tex: egui::TextureId,
+    scr: egui::Rect,
+    u: [f32; 2],
+    v: [f32; 2],
+) {
+    let mut mesh = egui::Mesh::with_texture(tex);
+    let color = egui::Color32::WHITE;
+    // Vertices in TL, TR, BR, BL order.
+    mesh.vertices.push(egui::epaint::Vertex {
+        pos: scr.left_top(),
+        uv: egui::pos2(u[0], v[0]),
+        color,
+    });
+    mesh.vertices.push(egui::epaint::Vertex {
+        pos: scr.right_top(),
+        uv: egui::pos2(u[1], v[0]),
+        color,
+    });
+    mesh.vertices.push(egui::epaint::Vertex {
+        pos: scr.right_bottom(),
+        uv: egui::pos2(u[1], v[1]),
+        color,
+    });
+    mesh.vertices.push(egui::epaint::Vertex {
+        pos: scr.left_bottom(),
+        uv: egui::pos2(u[0], v[1]),
+        color,
+    });
+    mesh.indices.extend_from_slice(&[0, 1, 2, 0, 2, 3]);
+    painter.add(egui::Shape::mesh(mesh));
+}

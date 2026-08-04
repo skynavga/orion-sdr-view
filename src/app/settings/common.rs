@@ -5,6 +5,7 @@ use crate::config::ViewConfig;
 use eframe::egui;
 
 use super::amdsb::{AmDsbRows, AmDsbSettings};
+use super::codfm::CodfmRows;
 use super::cw::CwRows;
 use super::display::{self, DisplayRows};
 use super::field::{Row, RowDrawCtx, ToggleField, draw_num, draw_toggle};
@@ -187,7 +188,6 @@ impl SettingsState {
     pub fn new(
         db_min: f32,
         db_max: f32,
-        spec_freq_delta_hz: f32,
         spec_time_range_secs: f32,
         freq_hz: f32,
         noise_amp: f32,
@@ -204,6 +204,7 @@ impl SettingsState {
             Box::new(AmDsbRows::new()),
             Box::new(Psk31Rows::new()),
             Box::new(Ft8Rows::new()),
+            Box::new(CodfmRows::new()),
         ];
         // Belt-and-suspenders: panic loudly at startup if the per-source
         // `Vec` order ever drifts from the `SourceMode` enum.  If this fires,
@@ -228,17 +229,22 @@ impl SettingsState {
                 .is::<Psk31Rows>()
         );
         debug_assert!(sources[SourceMode::Ft8 as usize].as_any().is::<Ft8Rows>());
+        debug_assert!(
+            sources[SourceMode::Codfm as usize]
+                .as_any()
+                .is::<CodfmRows>()
+        );
         Self {
             visible: false,
             active_tab: TAB_SOURCE,
             focused_row: None,
             source_selector: Row::Toggle(ToggleField {
                 label: "Source",
-                options: &["Test Tone", "CW", "AM DSB", "PSK31", "FT8"],
+                options: &["Test Tone", "CW", "AM DSB", "PSK31", "FT8", "CODFM"],
                 index: 0,
                 default: 0,
             }),
-            display: DisplayRows::new(db_min, db_max, spec_freq_delta_hz, spec_time_range_secs),
+            display: DisplayRows::new(db_min, db_max, spec_time_range_secs),
             sources,
         }
     }
@@ -250,7 +256,6 @@ impl SettingsState {
         let mut s = Self::new(
             cfg.db_min(),
             cfg.db_max(),
-            cfg.spec_freq_delta_hz(),
             cfg.spec_time_range_secs(),
             cfg.freq_hz(),
             cfg.noise_amp(),

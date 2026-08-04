@@ -32,6 +32,7 @@ impl ToneRows {
                     min: 100.0,
                     max: 23_900.0,
                     unit: " Hz",
+                    coarse: None,
                 }),
                 Row::Num(NumField {
                     label: "Noise amp",
@@ -41,6 +42,7 @@ impl ToneRows {
                     min: 0.0,
                     max: 1.0,
                     unit: "",
+                    coarse: None,
                 }),
                 Row::Num(NumField {
                     label: "Tone amp max",
@@ -50,6 +52,7 @@ impl ToneRows {
                     min: 0.0,
                     max: 1.0,
                     unit: "",
+                    coarse: None,
                 }),
                 Row::Num(NumField {
                     label: "Ramp secs",
@@ -59,6 +62,7 @@ impl ToneRows {
                     min: 0.5,
                     max: 30.0,
                     unit: " s",
+                    coarse: None,
                 }),
                 Row::Num(NumField {
                     label: "Pause secs",
@@ -68,6 +72,7 @@ impl ToneRows {
                     min: 0.5,
                     max: 99.99,
                     unit: " s",
+                    coarse: None,
                 }),
             ],
         }

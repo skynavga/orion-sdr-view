@@ -1,28 +1,28 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::field::{NumField, Row, RowDrawCtx, TimeZoneField};
+use super::field::{NumField, Row, RowDrawCtx, TimeZoneField, ToggleField};
 use crate::config::{TzMode, ViewConfig, format_offset_min};
 use eframe::egui;
 
 // ── Row indices (local) ───────────────────────────────────────────────────
 const DB_MIN: usize = 0;
 const DB_MAX: usize = 1;
-const SPEC_FREQ_DELTA: usize = 2;
-const SPEC_TIME_RANGE: usize = 3;
+const SPEC_TIME_RANGE: usize = 2;
+const PAN_DIR: usize = 3;
 const TIME_ZONE: usize = 4;
+
+/// Pan-direction toggle options, in enum order.  "spectrum" = arrow scrolls the
+/// spectrum (panadapter convention; a fixed signal appears to move opposite the
+/// arrow).  "signal" = arrow moves the center/signal in the arrow's direction.
+const PAN_OPTIONS: &[&str] = &["spectrum", "signal"];
 
 pub(super) struct DisplayRows {
     pub rows: Vec<Row>,
 }
 
 impl DisplayRows {
-    pub fn new(
-        db_min: f32,
-        db_max: f32,
-        spec_freq_delta_hz: f32,
-        spec_time_range_secs: f32,
-    ) -> Self {
+    pub fn new(db_min: f32, db_max: f32, spec_time_range_secs: f32) -> Self {
         Self {
             rows: vec![
                 Row::Num(NumField {
@@ -33,6 +33,7 @@ impl DisplayRows {
                     min: -160.0,
                     max: -1.0,
                     unit: " dB",
+                    coarse: None,
                 }),
                 Row::Num(NumField {
                     label: "dB max",
@@ -42,15 +43,7 @@ impl DisplayRows {
                     min: -159.0,
                     max: 0.0,
                     unit: " dB",
-                }),
-                Row::Num(NumField {
-                    label: "Spec span",
-                    value: spec_freq_delta_hz,
-                    default: crate::config::Defaults::SPEC_FREQ_DELTA_HZ,
-                    step: 100.0,
-                    min: 100.0,
-                    max: 24_000.0,
-                    unit: " Hz",
+                    coarse: None,
                 }),
                 Row::Num(NumField {
                     label: "Spec time",
@@ -60,6 +53,13 @@ impl DisplayRows {
                     min: 1.0,
                     max: 120.0,
                     unit: " s",
+                    coarse: None,
+                }),
+                Row::Toggle(ToggleField {
+                    label: "Pan",
+                    options: PAN_OPTIONS,
+                    index: 0,
+                    default: 0,
                 }),
                 Row::TimeZone(TimeZoneField {
                     label: "Time zone",
@@ -76,8 +76,13 @@ impl DisplayRows {
     pub fn patch_from_config(&mut self, cfg: &ViewConfig) {
         self.rows[DB_MIN].patch_num(cfg.db_min());
         self.rows[DB_MAX].patch_num(cfg.db_max());
-        self.rows[SPEC_FREQ_DELTA].patch_num(cfg.spec_freq_delta_hz());
         self.rows[SPEC_TIME_RANGE].patch_num(cfg.spec_time_range_secs());
+
+        let pan_idx = usize::from(cfg.pan_signal_follows());
+        if let Row::Toggle(f) = &mut self.rows[PAN_DIR] {
+            f.index = pan_idx;
+            f.default = pan_idx;
+        }
 
         let mode = cfg.time_zone_mode();
         if let Row::TimeZone(f) = &mut self.rows[TIME_ZONE] {
@@ -309,18 +314,20 @@ impl super::SettingsState {
             f.value = v.clamp(f.min, f.max);
         }
     }
-    pub fn spec_freq_delta_hz(&self) -> f32 {
-        if let Row::Num(f) = &self.display.rows[SPEC_FREQ_DELTA] {
-            f.value
-        } else {
-            2_000.0
-        }
-    }
     pub fn spec_time_range_secs(&self) -> f32 {
         if let Row::Num(f) = &self.display.rows[SPEC_TIME_RANGE] {
             f.value
         } else {
             10.0
+        }
+    }
+    /// True when pan is in "signal" mode (arrow moves the center/signal in the
+    /// arrow's direction); false for "spectrum" (panadapter) mode.
+    pub fn pan_signal_follows(&self) -> bool {
+        if let Row::Toggle(f) = &self.display.rows[PAN_DIR] {
+            f.index == 1
+        } else {
+            false
         }
     }
     /// Effective UTC offset in minutes for the Time zone row, resolving

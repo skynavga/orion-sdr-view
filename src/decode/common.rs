@@ -26,7 +26,7 @@ use std::sync::{Arc, Mutex};
 use orion_sdr::util::SIGNAL_THRESHOLD;
 use orion_sdr::util::rms;
 
-use crate::source::{amdsb, cw, ft8, psk31, tone};
+use crate::source::{amdsb, codfm, cw, ft8, psk31, tone};
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -42,6 +42,8 @@ pub enum DecodeMode {
     Ft8,
     /// FT4 full-frame accumulate+decode (Phase 2).
     Ft4,
+    /// CODFM wideband COFDM — info-only spectral analysis (no text decode).
+    Codfm,
 }
 
 #[derive(Clone, Debug)]
@@ -49,6 +51,9 @@ pub struct DecodeConfig {
     pub mode: DecodeMode,
     pub carrier_hz: f32,
     pub fs: f32,
+    /// CODFM occupied bandwidth (Hz), reported directly in the Di bar since the
+    /// narrowband `spectrum_bw_hz` estimator cannot measure a wideband band.
+    pub codfm_bw_hz: f32,
     // CW-specific fields for character-timed text decode.
     pub cw_message: String,
     pub cw_wpm: f32,
@@ -64,6 +69,7 @@ impl DecodeConfig {
             mode: DecodeMode::Off,
             carrier_hz: 0.0,
             fs,
+            codfm_bw_hz: 0.0,
             cw_message: String::new(),
             cw_wpm: 0.0,
             cw_dash_weight: 3.0,
@@ -276,6 +282,7 @@ impl DecodeWorker {
         let mut amdsb = amdsb::AmDsbState::new();
         let mut testtone = tone::ToneState::new();
         let mut ft8 = ft8::Ft8State::new();
+        let mut codfm = codfm::CodfmState::new();
 
         loop {
             let samples = match self.rx.recv_timeout(std::time::Duration::from_millis(100)) {
@@ -284,7 +291,7 @@ impl DecodeWorker {
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
             };
 
-            let (mode, carrier_hz, fs) = {
+            let (mode, carrier_hz, fs, codfm_bw_hz) = {
                 let cfg = self.config.lock().unwrap();
                 if cfg.mode == DecodeMode::Cw {
                     cw.message.clone_from(&cfg.cw_message);
@@ -294,7 +301,7 @@ impl DecodeWorker {
                     cw.word_space = cfg.cw_word_space;
                     cw.msg_repeat = cfg.cw_msg_repeat;
                 }
-                (cfg.mode, cfg.carrier_hz, cfg.fs)
+                (cfg.mode, cfg.carrier_hz, cfg.fs, cfg.codfm_bw_hz)
             };
 
             // Empty vec is a flush signal (sent by main thread on source reset).
@@ -304,6 +311,7 @@ impl DecodeWorker {
                 amdsb.reset();
                 testtone.reset();
                 ft8.reset();
+                codfm.reset();
                 was_signal = false;
                 last_mode = mode;
                 last_carrier = carrier_hz;
@@ -317,6 +325,7 @@ impl DecodeWorker {
                 amdsb.reset();
                 testtone.reset();
                 ft8.reset();
+                codfm.reset();
                 was_signal = false;
                 last_mode = mode;
                 last_carrier = carrier_hz;
@@ -344,6 +353,17 @@ impl DecodeWorker {
                 DecodeMode::Ft8 | DecodeMode::Ft4 => {
                     ft8.process(
                         &samples, is_signal, gap_edge, mode, carrier_hz, fs, &self.tx,
+                    );
+                }
+                DecodeMode::Codfm => {
+                    codfm.process(
+                        &samples,
+                        is_signal,
+                        gap_edge,
+                        carrier_hz,
+                        codfm_bw_hz,
+                        fs,
+                        &self.tx,
                     );
                 }
                 DecodeMode::Off => {}

@@ -5,6 +5,7 @@ use serde::Deserialize;
 
 use super::display::DisplayConfig;
 use crate::source::amdsb::AmDsbConfig;
+use crate::source::codfm::CodfmConfig;
 use crate::source::cw::CwConfig;
 use crate::source::ft8::Ft8Config;
 use crate::source::psk31::Psk31Config;
@@ -17,6 +18,7 @@ pub struct SourcesConfig {
     pub am_dsb: Option<AmDsbConfig>,
     pub psk31: Option<Psk31Config>,
     pub ft8: Option<Ft8Config>,
+    pub codfm: Option<CodfmConfig>,
 }
 
 #[derive(Debug, Deserialize)]

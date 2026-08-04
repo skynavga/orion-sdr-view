@@ -9,6 +9,52 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.17] - 2026-08-04
+
+### Added
+
+- **CODFM signal source** — a wideband coded-OFDM (COFDM) source built on
+  `orion-sdr`'s `OfdmFrameMod`, running at its own 1.92 MHz sample rate. The
+  occupied bandwidth is a selectable fraction of the display span (1/8 … 7/8,
+  cycled with `M`); the band is centered on the primary marker with an
+  info-only "COFDM" decode line (modulation, center, occupied bandwidth, SNR).
+- **Per-source sample rate** — the display pipeline (Nyquist, spectrum,
+  waterfall/persistence/spectrogram) is re-derived from the active source's
+  sample rate on switch, and the viewport reframes to a wideband source's
+  nominal center and span. New `SourceFactory` hooks (`nominal_center_hz`,
+  `preferred_span_hz`, `preferred_ref_db`) drive this; narrowband sources are
+  unaffected.
+- `Z` hotkey — recenter the frequency view to mid-band, keeping the current
+  zoom.
+- Display setting `pan` (`spectrum` / `signal`) to choose the pan-direction
+  convention.
+
+### Changed
+
+- Signal/gap and other time-based playback (source gaps, Test Tone ramp/pause,
+  CODFM signal/gap) now run at true wall-clock time instead of scaling with the
+  frame rate. Sample consumption is paced to `dt × sample_rate`, and sources
+  gain a `SignalSource::advance_time(dt)` hook (used by CODFM's dt-driven
+  phases and by tests).
+- Frequency pan steps are span-relative and scale across sources: coarse pan is
+  1/12 of the current span per keypress, fine is 10 % of coarse, extra-fine is
+  1 %. Panning uses discrete key presses (frame-rate independent) and auto-zooms
+  to 2× from full span so there is room to pan.
+- The horizontal spectrogram now follows the main viewport span, so up/down zoom
+  scales it in step with the spectrum and waterfall panes (the separate
+  "Spec span" setting was removed). It renders at full frequency resolution with
+  a peak-hold mapping so narrow tones stay visible.
+
+### Fixed
+
+- Eliminated a progressive frame-rate decay (110 → 30 fps as buffers filled):
+  the waterfall and spectrogram re-uploaded their entire textures every frame.
+  They now use ring buffers and upload only the changed row/column via
+  `TextureHandle::set_partial`, holding a stable high frame rate.
+- Fixed frequency panning that got stuck near full span (it auto-zoomed only
+  1.1× and clamped the center to a tiny window) and slewed to the band edge on a
+  brief key tap at high frame rates.
+
 ## [0.0.16] - 2026-08-03
 
 ### Changed

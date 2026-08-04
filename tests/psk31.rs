@@ -280,7 +280,7 @@ fn psk31_decode_yields_text() {
 /// decode callback.
 ///
 /// Parameters match the viewer defaults:
-///   BLOCK         = 800 samples (~16.7 ms at 48 kHz, matching SAMPLES_PER_FRAME)
+///   BLOCK         = 800 samples (~16.7 ms at 48 kHz, a nominal 60 fps frame)
 ///   gap_secs      = 10 s
 ///   msg_repeat    = 5
 ///   noise_amp     = 0 (clean signal for clarity)

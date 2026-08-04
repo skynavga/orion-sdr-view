@@ -30,6 +30,30 @@ pub(in crate::app) trait SourceFactory: Sync {
     /// Write a new carrier frequency into this source's settings rows
     /// (called by the source-locked center-frequency tracker).
     fn set_carrier_hz(&self, settings: &mut SettingsState, hz: f32);
+
+    // ── Wideband viewport preferences ───────────────────────────────────────
+    //
+    // Narrowband sources return `None` for all three and the viewport is never
+    // auto-reframed on switch (historical behavior).  A wideband source returns
+    // `Some(..)` so `switch_source` frames its band, sizes the spectrum span,
+    // and widens the horizontal-spectrogram window automatically.  The source's
+    // sample rate itself is not a preference here — it flows from
+    // `SignalSource::sample_rate()` on the constructed source.
+
+    /// Nominal center frequency to place at the display center on switch.
+    fn nominal_center_hz(&self, _settings: &SettingsState) -> Option<f32> {
+        None
+    }
+
+    /// Preferred spectrum viewport span (Hz) on switch.
+    fn preferred_span_hz(&self, _settings: &SettingsState) -> Option<f32> {
+        None
+    }
+
+    /// Preferred spectrum reference level (dBFS, scale top) on switch.
+    fn preferred_ref_db(&self, _settings: &SettingsState) -> Option<f32> {
+        None
+    }
 }
 
 /// Static dispatch table of per-source factories, indexed by `SourceMode as
@@ -40,6 +64,7 @@ pub(in crate::app) static FACTORIES: &[&'static (dyn SourceFactory + Sync)] = &[
     &super::amdsb::Factory,
     &super::psk31::Factory,
     &super::ft8::Factory,
+    &super::codfm::Factory,
 ];
 
 /// Belt-and-suspenders: panic loudly at startup if `FACTORIES` ever drifts
@@ -79,6 +104,11 @@ pub(in crate::app) fn debug_assert_factory_order(settings: &SettingsState) {
         FACTORIES[SourceMode::Ft8 as usize].decode_mode(settings, &view),
         DecodeMode::Ft8,
         "FACTORIES order mismatch at Ft8"
+    );
+    debug_assert_eq!(
+        FACTORIES[SourceMode::Codfm as usize].decode_mode(settings, &view),
+        DecodeMode::Codfm,
+        "FACTORIES order mismatch at Codfm"
     );
 }
 

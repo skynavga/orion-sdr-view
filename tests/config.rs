@@ -12,11 +12,6 @@ fn defaults_all_match(cfg: &ViewConfig) {
     assert_eq!(cfg.db_min(), Defaults::DB_MIN, "db_min");
     assert_eq!(cfg.db_max(), Defaults::DB_MAX, "db_max");
     assert_eq!(
-        cfg.spec_freq_delta_hz(),
-        Defaults::SPEC_FREQ_DELTA_HZ,
-        "spec_freq_delta_hz"
-    );
-    assert_eq!(
         cfg.spec_time_range_secs(),
         Defaults::SPEC_TIME_RANGE_SECS,
         "spec_time_range_secs"
@@ -100,14 +95,12 @@ fn spectrogram_display_full() {
     let yaml = r#"
 view:
   display:
-    spec_freq_delta_hz:   1500.0
     spec_time_range_secs: 15.0
 "#;
     let mut f = NamedTempFile::new().unwrap();
     f.write_all(yaml.as_bytes()).unwrap();
 
     let cfg = ViewConfig::load(Some(f.path().to_path_buf()));
-    assert_eq!(cfg.spec_freq_delta_hz(), 1500.0);
     assert_eq!(cfg.spec_time_range_secs(), 15.0);
 }
 
@@ -117,8 +110,28 @@ fn spectrogram_display_defaults_when_absent() {
     let mut f = NamedTempFile::new().unwrap();
     f.write_all(yaml.as_bytes()).unwrap();
     let cfg = ViewConfig::load(Some(f.path().to_path_buf()));
-    assert_eq!(cfg.spec_freq_delta_hz(), Defaults::SPEC_FREQ_DELTA_HZ);
     assert_eq!(cfg.spec_time_range_secs(), Defaults::SPEC_TIME_RANGE_SECS);
+}
+
+#[test]
+fn pan_direction_config() {
+    // Default (absent) → "spectrum" (false).
+    let cfg = ViewConfig::load(None);
+    assert!(!cfg.pan_signal_follows());
+
+    // Explicit "signal" → true.
+    let yaml = "view:\n  display:\n    pan: signal\n";
+    let mut f = NamedTempFile::new().unwrap();
+    f.write_all(yaml.as_bytes()).unwrap();
+    assert!(ViewConfig::load(Some(f.path().to_path_buf())).pan_signal_follows());
+
+    // Explicit "spectrum" and unrecognized both → false.
+    for v in ["spectrum", "bogus"] {
+        let yaml = format!("view:\n  display:\n    pan: {v}\n");
+        let mut f = NamedTempFile::new().unwrap();
+        f.write_all(yaml.as_bytes()).unwrap();
+        assert!(!ViewConfig::load(Some(f.path().to_path_buf())).pan_signal_follows());
+    }
 }
 
 // ── Scenario 3: explicit --config with partial YAML → overrides + defaults ────

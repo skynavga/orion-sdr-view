@@ -20,8 +20,8 @@ use crate::source::tone::TestToneSource;
 use crate::utils::timer::LoopTimer;
 
 use super::{
-    DECODE_BAR_H, DecodeBarMode, FFT_SIZE, SAMPLE_RATE, SAMPLES_PER_FRAME, SourceMode,
-    WaterfallMode,
+    DECODE_BAR_H, DecodeBarMode, FFT_SIZE, MAX_SAMPLES_PER_FRAME, MIN_SAMPLES_PER_FRAME,
+    SAMPLE_RATE, SourceMode, WaterfallMode,
 };
 
 // ── ViewApp ───────────────────────────────────────────────────────────────────
@@ -152,7 +152,7 @@ impl ViewApp {
 
             waterfall: WaterfallDisplay::new(FFT_SIZE / 2 + 1, 512, db_min, db_max),
             spectrogram: {
-                let mut s = SpectrogramDisplay::new(256, 512, db_min, db_max);
+                let mut s = SpectrogramDisplay::new(FFT_SIZE / 2 + 1, 512, db_min, db_max);
                 s.set_time_range(cfg.spec_time_range_secs());
                 s
             },
@@ -222,6 +222,7 @@ impl ViewApp {
             self.signal_gen = TestSignalGen::new(self.settings.freq_hz(), SAMPLE_RATE);
         }
         self.source = self.make_source();
+        self.apply_source_sample_rate();
         self.loop_timer.reset();
         self.loop_timer.set_holdoff(self.loop_timer_holdoff_secs());
         self.decode_ticker.reset();
@@ -230,6 +231,23 @@ impl ViewApp {
         self.ft8_view.reset();
         while self.decode_rx.try_recv().is_ok() {}
         let _ = self.decode_tx.try_send(Vec::new());
+    }
+
+    /// Re-derive the sample-rate-dependent display pipeline from the currently
+    /// constructed source's `sample_rate()`.  Called after any source
+    /// (re)construction.  For the narrowband sources (all 48 kHz) this is a
+    /// no-op reproducing today's behavior; a wideband source (higher fs) shifts
+    /// the Nyquist limit, the "Spec span" row bound, and clears bin-indexed
+    /// history so the new frequency scaling isn't mixed with the old.
+    fn apply_source_sample_rate(&mut self) {
+        let fs = self.source.sample_rate();
+        self.freq_view.set_nyquist(fs / 2.0);
+        self.waterfall.clear();
+        self.persistence.clear();
+        self.spectrogram.clear();
+        if let Ok(mut cfg) = self.decode_config.lock() {
+            cfg.fs = fs;
+        }
     }
 
     /// When source_locked, write center_hz into the active source's freq/carrier
@@ -259,6 +277,20 @@ impl ViewApp {
             self.make_source()
         };
         self.settings.set_source_mode(mode as usize);
+        // Re-derive the per-source sample rate (Nyquist, decode fs, spec-span
+        // bound, cleared history) before reframing, so reframe clamps to the
+        // new Nyquist.
+        self.apply_source_sample_rate();
+        let factory = super::common::source_mode_factory(mode);
+        if let (Some(center), Some(span)) = (
+            factory.nominal_center_hz(&self.settings),
+            factory.preferred_span_hz(&self.settings),
+        ) {
+            self.freq_view.reframe(center, span);
+        }
+        if let Some(ref_db) = factory.preferred_ref_db(&self.settings) {
+            self.settings.set_db_max(ref_db);
+        }
         self.sync_decode_config();
         self.reset_playback();
         // Text mode is only valid for CW/PSK31/FT8; clamp if we switched away.
@@ -335,6 +367,9 @@ impl ViewApp {
                         SourceMode::Ft8 => {
                             self.cycle_ft8_mode();
                         }
+                        SourceMode::Codfm => {
+                            self.cycle_codfm_bandwidth();
+                        }
                         _ => {}
                     }
                 }
@@ -367,12 +402,11 @@ impl ViewApp {
         let mut cycle_mode = false;
         let mut cycle_audio = false;
         let mut toggle_lock = false;
-        // When non-zero, snap center_hz to this grid after applying pan_delta.
-        let mut snap_pan_grid: f32 = 0.0;
         // Frequency pan/zoom deltas to apply after the closure.
         let mut pan_delta: f32 = 0.0;
         let mut zoom_delta: f32 = 0.0; // added to zoom ratio; +0.5 coarse, +0.1 fine
         let mut freq_reset = false;
+        let mut center_reset = false; // Z: recenter viewport to mid-band
         let mut db_shift: f32 = 0.0;
         // Marker actions
         let mut place_marker_a = false;
@@ -499,62 +533,43 @@ impl ViewApp {
             if i.key_pressed(egui::Key::Q) {
                 quit = true;
             }
+            if i.key_pressed(egui::Key::Z) {
+                center_reset = true;
+            }
 
             // ── Frequency pan ────────────────────────────────────────────────
-            // Left/Right:             coarse pan (span/8, auto-repeat)
-            // Shift+Left/Right:       fine pan, snap to nearest 100 Hz (auto-repeat)
-            // Ctrl+Shift+Left/Right:  extra-fine pan:
-            //   key_pressed (first hit) → snap to nearest 10 Hz
-            //   key_down (held)         → snap to nearest 100 Hz
-            // Alt+Left/Right reserved for marker movement — skip pan when alt held.
-            if !i.modifiers.alt {
-                if i.modifiers.ctrl && i.modifiers.shift {
-                    // Extra-fine pan: 10 Hz per keypress.
-                    let left = i.key_pressed(egui::Key::ArrowLeft);
-                    let right = i.key_pressed(egui::Key::ArrowRight);
-                    let arrow = left || right;
-                    if arrow && self.freq_view.span_hz >= self.freq_view.nyquist {
-                        self.freq_view.step_zoom(0.1);
+            // Left/Right:            coarse pan, span/12 per keypress
+            // Shift+Left/Right:      fine pan, 10% of coarse
+            // Ctrl+Shift+Left/Right: extra-fine pan, 1% of coarse
+            //
+            // Steps are span-relative so they scale across sources (a narrowband
+            // 24 kHz span and a wideband ~1 MHz span both traverse in a similar
+            // number of presses).  `key_pressed` (not `key_down`) makes each step
+            // frame-rate independent — OS key-repeat continues it when held.
+            // Alt+Left/Right (marker move) and Ctrl+Left/Right without Shift
+            // (marker coarse move) are reserved — skip pan for those.
+            let ctrl_only = i.modifiers.ctrl && !i.modifiers.shift;
+            if !i.modifiers.alt && !ctrl_only {
+                let left = i.key_pressed(egui::Key::ArrowLeft);
+                let right = i.key_pressed(egui::Key::ArrowRight);
+                if left || right {
+                    // Zoom in from full span first so panning has room.
+                    if self.freq_view.span_hz >= self.freq_view.nyquist {
+                        self.freq_view.step_zoom(1.0);
                     }
+                    let coarse = self.freq_view.span_hz / 12.0;
+                    let step = if i.modifiers.ctrl && i.modifiers.shift {
+                        coarse * 0.01 // extra-fine
+                    } else if i.modifiers.shift {
+                        coarse * 0.1 // fine
+                    } else {
+                        coarse
+                    };
                     if left {
-                        pan_delta -= 10.0;
+                        pan_delta -= step;
                     }
                     if right {
-                        pan_delta += 10.0;
-                    }
-                    if arrow {
-                        snap_pan_grid = 10.0;
-                    }
-                } else if !i.modifiers.ctrl {
-                    if i.modifiers.shift {
-                        // Fine pan: snap to 100 Hz. Zoom in first if at full span.
-                        let arrow = i.key_pressed(egui::Key::ArrowLeft)
-                            || i.key_pressed(egui::Key::ArrowRight);
-                        if arrow && self.freq_view.span_hz >= self.freq_view.nyquist {
-                            self.freq_view.step_zoom(0.1);
-                        }
-                        if i.key_pressed(egui::Key::ArrowLeft) {
-                            pan_delta -= 100.0;
-                        }
-                        if i.key_pressed(egui::Key::ArrowRight) {
-                            pan_delta += 100.0;
-                        }
-                        if arrow {
-                            snap_pan_grid = 100.0;
-                        }
-                    } else {
-                        let arrow =
-                            i.key_down(egui::Key::ArrowLeft) || i.key_down(egui::Key::ArrowRight);
-                        if arrow && self.freq_view.span_hz >= self.freq_view.nyquist {
-                            self.freq_view.step_zoom(0.1);
-                        }
-                        let pan_step = self.freq_view.span_hz / 8.0;
-                        if i.key_down(egui::Key::ArrowLeft) {
-                            pan_delta -= pan_step;
-                        }
-                        if i.key_down(egui::Key::ArrowRight) {
-                            pan_delta += pan_step;
-                        }
+                        pan_delta += step;
                     }
                 }
             }
@@ -596,14 +611,19 @@ impl ViewApp {
 
         // Apply pan/zoom/span/reset
         if pan_delta != 0.0 {
-            self.freq_view.pan(pan_delta);
-            if snap_pan_grid > 0.0 {
-                self.freq_view.center_hz =
-                    FreqView::snap_hz(self.freq_view.center_hz, snap_pan_grid);
+            // "signal" pan mode moves the signal/center in the arrow's
+            // direction; "spectrum" (default) scrolls the spectrum the other way.
+            if self.settings.pan_signal_follows() {
+                pan_delta = -pan_delta;
             }
+            self.freq_view.pan(pan_delta);
         }
         if zoom_delta.abs() > 0.001 {
             self.freq_view.step_zoom(zoom_delta);
+        }
+        if center_reset {
+            // Z: recenter the viewport to mid-band, keeping the current zoom.
+            self.freq_view.center_hz = self.freq_view.nyquist / 2.0;
         }
         if freq_reset {
             self.freq_view.reset();
@@ -742,8 +762,22 @@ impl eframe::App for ViewApp {
         let dt = now.duration_since(self.last_frame_time).as_secs_f32();
         self.last_frame_time = now;
 
+        // Advance the source's wall-clock timeline before pulling samples, so
+        // time-based playback (e.g. CODFM signal/gap phases) is frame-rate
+        // independent.  No-op for sources that don't use it.
+        self.source.advance_time(dt);
+
+        // Pace sample consumption to wall-clock: pull `dt * fs` samples this
+        // frame (clamped) rather than a fixed count.  This makes every source's
+        // seconds-based timing (gaps, Test Tone ramp/pause, …) run at true
+        // wall-clock instead of scaling with the frame rate.  The clamp keeps
+        // the FFT fresh at high frame rates and bounds a large `dt` (post-stall,
+        // or a high-`fs` source like CODFM at 1.92 MHz).
+        let budget = (dt * self.source.sample_rate()) as usize;
+        let n = budget.clamp(MIN_SAMPLES_PER_FRAME, MAX_SAMPLES_PER_FRAME);
+
         // Feed new samples and process spectrum before drawing.
-        let samples = self.source.next_samples(SAMPLES_PER_FRAME);
+        let samples = self.source.next_samples(n);
         // Non-blocking send to decode thread; drop if channel is full.
         let _ = self.decode_tx.try_send(samples.clone());
         for s in &samples {
@@ -849,12 +883,14 @@ impl eframe::App for ViewApp {
             *ph = (*ph - 0.2_f32).max(db);
         }
 
+        // Per-frame data advance.  The waterfall paces its own scroll by
+        // wall-clock `dt` and uploads only changed rows (ring buffer +
+        // set_partial), so it runs every frame.
         self.persistence
             .map
             .accumulate(&self.spectrum.fft_out_db, self.db_min, self.db_max);
         self.persistence.map.decay();
-        self.persistence.update_texture(ctx);
-        self.waterfall.push_row(&self.spectrum.fft_out_db);
+        self.waterfall.push_row(&self.spectrum.fft_out_db, dt);
         self.waterfall.update_texture(ctx);
 
         // Spectrogram: keep db/time-range/color ramp in sync with the
@@ -866,8 +902,10 @@ impl eframe::App for ViewApp {
         self.spectrogram.db_max = self.db_max;
         self.spectrogram
             .set_time_range(self.settings.spec_time_range_secs());
+        // Frequency window = ± half the current viewport span (same extent as
+        // the spectrum/waterfall panes), so ↑/↓ zoom scales the spectrogram.
         let spec_center = self.markers[0].hz;
-        let spec_delta = self.settings.spec_freq_delta_hz();
+        let spec_delta = self.freq_view.visible_span() / 2.0;
         self.spectrogram.push_spectrum(
             &self.spectrum.fft_out_db,
             dt,
@@ -878,6 +916,11 @@ impl eframe::App for ViewApp {
         if self.waterfall_mode == WaterfallMode::Horizontal {
             self.spectrogram.update_texture(ctx);
         }
+
+        // Persistence is a 2D histogram that changes everywhere each frame, so
+        // it re-uploads the whole (small, 513×100) texture.  Measured flat at
+        // ~5.75 ms/frame, which sustains a high frame rate without throttling.
+        self.persistence.update_texture(ctx);
 
         // Drive the loop at display rate regardless of interaction.
         ctx.request_repaint();

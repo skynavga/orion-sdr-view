@@ -59,8 +59,8 @@ view:
     db_min:               -100.0
     db_max:               -20.0
     time_zone:            utc     # "utc", "local", or "+HH:MM" / "-HH:MM"
-    spec_freq_delta_hz:   2000.0  # horizontal spectrogram ±freq window
     spec_time_range_secs: 10.0    # horizontal spectrogram time span
+    pan:                  spectrum # arrow pan: "spectrum" (panadapter) or "signal"
   sources:
     test_tone:
       freq_hz:    12000.0
@@ -126,12 +126,13 @@ All fields are optional; missing fields fall back to built-in defaults.
 | `H` or `?` | Toggle help overlay |
 | `Escape` | Dismiss overlays |
 | `Q` | Quit |
-| `←` / `→` | Pan frequency view (coarse) |
-| `Shift+←` / `Shift+→` | Pan frequency view (fine, snap 100 Hz; zooms in first if at full span) |
-| `Ctrl+Shift+←` / `Ctrl+Shift+→` | Pan frequency view (extra-fine, snap 10 Hz) |
+| `←` / `→` | Pan frequency view (coarse, 1/12 of span per press; zooms in first if at full span) |
+| `Shift+←` / `Shift+→` | Pan frequency view (fine, 10% of coarse) |
+| `Ctrl+Shift+←` / `Ctrl+Shift+→` | Pan frequency view (extra-fine, 1% of coarse) |
 | `↑` / `↓` | Zoom in / out (±0.5×) |
 | `Shift+↑` / `Shift+↓` | Fine zoom in / out (±0.1×) |
 | `[` / `]` | Shift dB reference ±5 dB |
+| `Z` | Center view to mid-band (keeps zoom) |
 | `A` / `B` (Shift) | Place marker A / B at center |
 | `a` / `b` | Toggle marker A / B visibility |
 | `Tab` | Cycle active marker |

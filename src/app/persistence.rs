@@ -73,6 +73,15 @@ impl PersistenceMap {
         }
     }
 
+    /// Zero all counts and reset the running maximum.  Call when the display
+    /// scaling changes (e.g. a per-source sample-rate switch) so stale history
+    /// isn't mixed with the new frequency scaling.
+    pub fn clear(&mut self) {
+        self.counts.iter_mut().for_each(|c| *c = 0);
+        self.max_count = 1;
+        self.frame_counter = 0;
+    }
+
     /// Apply decay once every `decay_every_n_frames` frames.
     /// Call this once per frame; it handles its own rate limiting.
     pub fn decay(&mut self) {
@@ -147,6 +156,11 @@ impl PersistenceRenderer {
     /// Expose the texture handle for UV-cropped rendering by the caller.
     pub fn texture_handle(&self) -> Option<&egui::TextureHandle> {
         self.texture.as_ref()
+    }
+
+    /// Clear the accumulated density map (see `PersistenceMap::clear`).
+    pub fn clear(&mut self) {
+        self.map.clear();
     }
 
     /// Rebuild the texture from the current map state. Call once per frame.

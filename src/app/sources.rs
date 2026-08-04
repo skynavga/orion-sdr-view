@@ -10,8 +10,8 @@ use crate::source::amdsb::AmDsbSource;
 
 use super::SourceMode;
 use super::common::source_mode_factory;
-use super::settings::{AmDsbSettings, CwSettings, Ft8Settings, ToneSettings};
-use super::source::{amdsb, cw, ft8, psk31, tone};
+use super::settings::{AmDsbSettings, CodfmSettings, CwSettings, Ft8Settings, ToneSettings};
+use super::source::{amdsb, codfm, cw, ft8, psk31, tone};
 use super::view::ViewApp;
 
 impl ViewApp {
@@ -37,6 +37,7 @@ impl ViewApp {
         tone::sync(self.source.as_mut(), &self.settings);
         amdsb::sync(self.source.as_mut(), &self.settings);
         psk31::sync(self.source.as_mut(), &self.settings);
+        codfm::sync(self.source.as_mut(), &self.settings);
         if let Some(flags) = cw::sync(self.source.as_mut(), &self.settings)
             && flags.wpm_or_word_space_changed
         {
@@ -111,6 +112,15 @@ impl ViewApp {
         self.restart_source();
     }
 
+    /// Cycle the CODFM occupied-bandwidth fraction (M key).  Cycles the toggle,
+    /// then restarts (which re-renders the source and re-derives the decode bw).
+    /// The spectrogram follows the viewport span, so no spectrogram reframe is
+    /// needed here.
+    pub(super) fn cycle_codfm_bandwidth(&mut self) {
+        self.settings.cycle_codfm_bw();
+        self.restart_source();
+    }
+
     /// Apply the committed PSK31 message to the live source and re-render.
     pub(super) fn apply_psk31_message(&mut self) {
         psk31::apply_message(self.source.as_mut(), &self.settings);
@@ -147,6 +157,9 @@ impl ViewApp {
                 cfg.cw_char_space = self.settings.cw_char_space();
                 cfg.cw_word_space = self.settings.cw_word_space();
                 cfg.cw_msg_repeat = self.settings.cw_msg_repeat();
+            }
+            if self.source_mode == SourceMode::Codfm {
+                cfg.codfm_bw_hz = codfm::occupied_bw_hz(&self.settings);
             }
         }
     }
