@@ -588,7 +588,7 @@ impl SettingsState {
         painter.rect_stroke(
             rect,
             6.0,
-            egui::Stroke::new(1.0, egui::Color32::from_gray(80)),
+            egui::Stroke::new(1.0_f32, egui::Color32::from_gray(80)),
             egui::StrokeKind::Outside,
         );
 
@@ -615,7 +615,7 @@ impl SettingsState {
                 painter.rect_stroke(
                     tab_rect,
                     4.0,
-                    egui::Stroke::new(1.5, egui::Color32::from_rgb(100, 160, 255)),
+                    egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(100, 160, 255)),
                     egui::StrokeKind::Outside,
                 );
             }
@@ -637,7 +637,7 @@ impl SettingsState {
         painter.hline(
             (rect.left() + 8.0)..=(rect.right() - 8.0),
             y,
-            egui::Stroke::new(0.5, egui::Color32::from_gray(60)),
+            egui::Stroke::new(0.5_f32, egui::Color32::from_gray(60)),
         );
         y += 8.0;
 
@@ -670,7 +670,7 @@ impl SettingsState {
                 painter.rect_stroke(
                     row_rect,
                     3.0,
-                    egui::Stroke::new(1.0, egui::Color32::from_rgb(100, 160, 255)),
+                    egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(100, 160, 255)),
                     egui::StrokeKind::Outside,
                 );
             }
@@ -715,7 +715,7 @@ impl SettingsState {
         painter.hline(
             (rect.left() + 8.0)..=(rect.right() - 8.0),
             y,
-            egui::Stroke::new(0.5, egui::Color32::from_gray(60)),
+            egui::Stroke::new(0.5_f32, egui::Color32::from_gray(60)),
         );
         y += 6.0;
 

@@ -377,7 +377,7 @@ impl ViewApp {
         };
 
         // ── Horizontal dB grid lines ──────────────────────────────────────
-        let grid_stroke = egui::Stroke::new(0.5, egui::Color32::from_gray(45));
+        let grid_stroke = egui::Stroke::new(0.5_f32, egui::Color32::from_gray(45));
         let label_font = egui::FontId::new(10.0, egui::FontFamily::Monospace);
         let mut db = (self.db_min / 10.0).ceil() * 10.0;
         while db <= self.db_max {
@@ -446,7 +446,7 @@ impl ViewApp {
                 if !points.is_empty() {
                     painter.line(
                         std::mem::take(&mut points),
-                        egui::Stroke::new(1.5, egui::Color32::from_rgb(0, 220, 180)),
+                        egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(0, 220, 180)),
                     );
                 }
                 continue;
@@ -456,7 +456,7 @@ impl ViewApp {
         if !points.is_empty() {
             painter.line(
                 points,
-                egui::Stroke::new(1.5, egui::Color32::from_rgb(0, 220, 180)),
+                egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(0, 220, 180)),
             );
         }
 
@@ -470,7 +470,7 @@ impl ViewApp {
                         painter.line(
                             std::mem::take(&mut ph_points),
                             egui::Stroke::new(
-                                1.0,
+                                1.0_f32,
                                 egui::Color32::from_rgba_premultiplied(255, 180, 0, 180),
                             ),
                         );
@@ -483,7 +483,7 @@ impl ViewApp {
                 painter.line(
                     ph_points,
                     egui::Stroke::new(
-                        1.0,
+                        1.0_f32,
                         egui::Color32::from_rgba_premultiplied(255, 180, 0, 180),
                     ),
                 );
@@ -687,7 +687,7 @@ impl ViewApp {
         }
 
         let label_font = egui::FontId::new(10.0, egui::FontFamily::Monospace);
-        let grid_stroke = egui::Stroke::new(0.5, egui::Color32::from_gray(45));
+        let grid_stroke = egui::Stroke::new(0.5_f32, egui::Color32::from_gray(45));
 
         // ── Frequency window ─────────────────────────────────────────────
         let center_hz = self.markers[0].hz;
@@ -850,7 +850,7 @@ impl ViewApp {
         painter.rect_stroke(
             overlay_rect,
             8.0,
-            egui::Stroke::new(1.0, egui::Color32::GRAY),
+            egui::Stroke::new(1.0_f32, egui::Color32::GRAY),
             egui::StrokeKind::Outside,
         );
 

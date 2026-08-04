@@ -11,7 +11,7 @@ use orion_sdr::message::{Ft8Message, gridfield_to_str};
 
 use crate::decode::{DecodeMode, DecodeResult};
 use crate::source::psk31::INFO_INTERVAL;
-pub use orion_sdr::util::spectrum_snr_db;
+pub use orion_sdr::util::nb_spectrum_snr_db;
 
 /// FT8 signal bandwidth: 8 tones × 6.25 Hz spacing = 50 Hz.
 pub const FT8_BW_HZ: f32 = 50.0;
@@ -147,7 +147,7 @@ impl Ft8State {
                 self.info_counter = 0;
                 if let Some(ref dec) = self.decoder {
                     let real: Vec<f32> = dec.view_buf().iter().map(|c| c.re).collect();
-                    let raw_snr = spectrum_snr_db(&real, native_fs, native_carrier);
+                    let raw_snr = nb_spectrum_snr_db(&real, native_fs, native_carrier);
                     self.smoothed_snr_db = if self.smoothed_snr_db == 0.0 {
                         raw_snr
                     } else {

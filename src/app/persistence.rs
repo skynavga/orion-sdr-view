@@ -194,7 +194,7 @@ impl PersistenceRenderer {
             |vi: usize| rect.left() + (vi as f32 / (vis_bins - 1) as f32) * rect.width();
 
         let stroke = egui::Stroke::new(
-            1.0,
+            1.0_f32,
             egui::Color32::from_rgba_premultiplied(255, 255, 255, 160),
         );
         let mut prev: Option<egui::Pos2> = None;
@@ -239,7 +239,7 @@ impl PersistenceRenderer {
         let x_for_fb = |fb: usize| rect.left() + (fb as f32 / (n - 1) as f32) * rect.width();
 
         let stroke = egui::Stroke::new(
-            1.0,
+            1.0_f32,
             egui::Color32::from_rgba_premultiplied(255, 255, 255, 160),
         );
 

@@ -875,7 +875,7 @@ fn cw_round_trip_slow_5wpm() {
                 let decoded_count = current_loop_text.len();
                 println!(
                     "t={t_secs:7.1}s  [GAP]   loop {loop_num}: decoded {decoded_count}/{sched_len} chars: {:?}",
-                    &current_loop_text
+                    current_loop_text
                 );
                 loop_texts.push(std::mem::take(&mut current_loop_text));
                 cw_accum_samples = 0;
