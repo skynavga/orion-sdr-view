@@ -9,6 +9,15 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.18] - 2026-08-04
+
+### Documentation
+
+- Documented the CODFM source in the README: added it to the signal-sources
+  list and a `codfm:` block (bandwidth fraction, signal/gap durations, noise)
+  to the configuration example. Corrected the stale `orion-sdr` version
+  reference (0.0.33 → 0.0.53).
+
 ## [0.0.17] - 2026-08-04
 
 ### Added
