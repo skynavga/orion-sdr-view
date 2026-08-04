@@ -10,7 +10,7 @@ use orion_sdr::modulate::psk31::{PSK31_BAUD, psk31_sps};
 use orion_sdr::sync::psk31_sync::psk31_sync;
 
 use crate::decode::{DecodeMode, DecodeResult, Psk31Stream, SPECTRUM_WINDOW_SAMPLES};
-pub use orion_sdr::util::{PSK31_BW_HZ, best_sync, spectrum_snr_db};
+pub use orion_sdr::util::{PSK31_BW_HZ, best_sync, nb_spectrum_snr_db};
 
 /// Maximum PSK31 accumulation buffer: caps memory and limits decode latency.
 /// 1200 symbols ≈ 38 s at 31.25 baud — comfortably larger than the default
@@ -162,7 +162,7 @@ impl Psk31State {
                 self.info_counter = 0;
                 let tail_start = self.iq_buf.len().saturating_sub(SPECTRUM_WINDOW_SAMPLES);
                 let win: Vec<f32> = self.iq_buf[tail_start..].iter().map(|c| c.re).collect();
-                let raw_snr = spectrum_snr_db(&win, fs, carrier_hz);
+                let raw_snr = nb_spectrum_snr_db(&win, fs, carrier_hz);
                 if self.smoothed_snr_db == 0.0 {
                     self.smoothed_snr_db = raw_snr;
                 } else {

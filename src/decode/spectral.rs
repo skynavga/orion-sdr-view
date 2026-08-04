@@ -13,7 +13,7 @@ use num_complex::Complex32 as C32;
 
 use super::{DecodeResult, SPECTRUM_WINDOW_SAMPLES};
 use crate::source::psk31::INFO_INTERVAL;
-pub use orion_sdr::util::{power_spectrum, spectrum_bw_hz, spectrum_snr_db};
+pub use orion_sdr::util::{power_spectrum, spectrum_bw_hz, nb_spectrum_snr_db};
 
 #[derive(Default)]
 pub struct SpectralState {
@@ -80,7 +80,7 @@ impl SpectralState {
         self.spec_buf.drain(..SPECTRUM_WINDOW_SAMPLES / 2);
 
         let real: Vec<f32> = decode_buf.iter().map(|c| c.re).collect();
-        let raw_snr = spectrum_snr_db(&real, fs, carrier_hz);
+        let raw_snr = nb_spectrum_snr_db(&real, fs, carrier_hz);
         if self.smoothed_snr_db == 0.0 {
             self.smoothed_snr_db = raw_snr;
         } else {

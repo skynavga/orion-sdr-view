@@ -12,7 +12,7 @@ use orion_sdr::sync::psk31_sync::psk31_sync;
 
 use orion_sdr_view::decode::{
     DecodeMode, DecodeResult, PSK31_BW_HZ, PSK31_MAX_ACCUM_SYMS, Psk31Stream, SIGNAL_THRESHOLD,
-    SYNC_MIN_SYMS, SYNC_SEARCH_HZ, best_sync, spectrum_snr_db,
+    SYNC_MIN_SYMS, SYNC_SEARCH_HZ, best_sync, nb_spectrum_snr_db,
 };
 use orion_sdr_view::source::{Psk31Mode, Psk31Source, SignalSource};
 
@@ -49,7 +49,7 @@ fn decode_bpsk31(
     let (found_hz, time_sym) = match best_sync(&results, carrier_hz, PSK31_BAUD) {
         Some(r) => r,
         None => {
-            let snr = spectrum_snr_db(&real, fs, carrier_hz);
+            let snr = nb_spectrum_snr_db(&real, fs, carrier_hz);
             return (
                 DecodeResult::Info {
                     modulation: "BPSK31".to_owned(),
@@ -62,7 +62,7 @@ fn decode_bpsk31(
         }
     };
 
-    let snr = spectrum_snr_db(&real, fs, found_hz);
+    let snr = nb_spectrum_snr_db(&real, fs, found_hz);
     let info = DecodeResult::Info {
         modulation: "BPSK31".to_owned(),
         center_hz: found_hz,

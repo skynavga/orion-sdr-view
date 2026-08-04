@@ -6,7 +6,7 @@
 use num_complex::Complex32 as C32;
 
 use orion_sdr_view::decode::{
-    SIGNAL_THRESHOLD, SPECTRUM_WINDOW_SAMPLES, spectrum_bw_hz, spectrum_snr_db,
+    SIGNAL_THRESHOLD, SPECTRUM_WINDOW_SAMPLES, spectrum_bw_hz, nb_spectrum_snr_db,
 };
 use orion_sdr_view::source::{AmDsbSource, BuiltinAudio, SignalSource, load_builtin};
 
@@ -74,7 +74,7 @@ fn simulate_am_dsb_viewer() {
             }
 
             window_count += 1;
-            let snr = spectrum_snr_db(&win, FS, CARRIER_HZ);
+            let snr = nb_spectrum_snr_db(&win, FS, CARRIER_HZ);
             println!(
                 "  t={t_secs:5.2}s  raw_bw={raw_bw:7.1}  smoothed={smoothed_bw:7.1}  snr={snr:.1}dB"
             );
