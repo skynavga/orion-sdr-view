@@ -389,7 +389,7 @@ fn streaming_decode_short_messages_bpsk31() {
         ("CQ CQ CQ DE N0GNR", 5, 2),
     ] {
         let text = run_streaming_decode(Psk31Mode::Bpsk31, msg, repeat, loops, 5.0);
-        println!("BPSK31 msg={msg:?} r={repeat}: {:?}", &text);
+        println!("BPSK31 msg={msg:?} r={repeat}: {:?}", text);
         let errors = text
             .chars()
             .filter(|c| !msg.contains(*c) && *c != ' ')
@@ -409,7 +409,7 @@ fn streaming_decode_short_messages_qpsk31() {
         ("CQ CQ CQ DE N0GNR", 5, 2),
     ] {
         let text = run_streaming_decode(Psk31Mode::Qpsk31, msg, repeat, loops, 5.0);
-        println!("QPSK31 msg={msg:?} r={repeat}: {:?}", &text);
+        println!("QPSK31 msg={msg:?} r={repeat}: {:?}", text);
         let errors = text
             .chars()
             .filter(|c| !msg.contains(*c) && *c != ' ')

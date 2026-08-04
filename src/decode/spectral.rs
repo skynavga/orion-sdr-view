@@ -13,7 +13,7 @@ use num_complex::Complex32 as C32;
 
 use super::{DecodeResult, SPECTRUM_WINDOW_SAMPLES};
 use crate::source::psk31::INFO_INTERVAL;
-pub use orion_sdr::util::{power_spectrum, spectrum_bw_hz, nb_spectrum_snr_db};
+pub use orion_sdr::util::{nb_spectrum_snr_db, power_spectrum, spectrum_bw_hz};
 
 #[derive(Default)]
 pub struct SpectralState {

@@ -6,7 +6,7 @@
 use num_complex::Complex32 as C32;
 
 use orion_sdr_view::decode::{
-    SIGNAL_THRESHOLD, SPECTRUM_WINDOW_SAMPLES, spectrum_bw_hz, nb_spectrum_snr_db,
+    SIGNAL_THRESHOLD, SPECTRUM_WINDOW_SAMPLES, nb_spectrum_snr_db, spectrum_bw_hz,
 };
 use orion_sdr_view::source::{AmDsbSource, BuiltinAudio, SignalSource, load_builtin};
 

@@ -10,7 +10,7 @@ use num_complex::Complex32 as C32;
 use crate::decode::{DecodeResult, SPECTRUM_WINDOW_SAMPLES};
 use crate::source::MAX_SIG_SECS;
 use crate::source::psk31::INFO_INTERVAL;
-pub use orion_sdr::util::{spectrum_bw_hz, nb_spectrum_snr_db};
+pub use orion_sdr::util::{nb_spectrum_snr_db, spectrum_bw_hz};
 
 // ── CW character timing ─────────────────────────────────────────────────────
 
