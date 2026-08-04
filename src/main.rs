@@ -30,6 +30,7 @@ fn main() -> eframe::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_title("orion-sdr-view")
             .with_inner_size([1200.0, 800.0 + DECODE_BAR_H]),
+        renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };
     eframe::run_native(
