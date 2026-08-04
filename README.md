@@ -14,7 +14,9 @@ and waterfall from a configurable signal source.
 - **Three display panes** — instantaneous spectrum, persistence density map, and a cycle-able waterfall
   pane (`W`) that toggles between a vertical waterfall and a horizontal spectrogram centered on the primary
   marker (±freq delta, configurable time range)
-- **Multiple signal sources** — synthetic test tone (sine + AWGN), CW (Morse code), AM DSB from looped audio, PSK31 (BPSK31/QPSK31), and FT8/FT4
+- **Multiple signal sources** — synthetic test tone (sine + AWGN), CW (Morse code), AM DSB from looped
+  audio, PSK31 (BPSK31/QPSK31), FT8/FT4, and CODFM (wideband coded-OFDM at 1.92 MHz, with a selectable
+  occupied-bandwidth fraction)
 - **Decode bar** — optional bottom bar (cycled by `D`) showing signal info
   (Di: modulation, carrier, BW, SNR) or decoded text (Dt: smooth-scrolling teletype ticker)
 - **Frequency pan and zoom** — keyboard-driven viewport with coarse/fine pan snap, coarse/fine zoom, and span steps
@@ -27,7 +29,7 @@ and waterfall from a configurable signal source.
 
 - Rust (edition 2024)
 - macOS or Linux (renders via `eframe` wgpu backend — Metal/Vulkan)
-- [orion-sdr](https://crates.io/crates/orion-sdr) 0.0.33 (pulled automatically from crates.io)
+- [orion-sdr](https://crates.io/crates/orion-sdr) 0.0.53 (pulled automatically from crates.io)
 
 The GUI dependencies (`eframe`, `egui`) are behind an optional `gui` feature
 (enabled by default). Use `--no-default-features` to build and test the library
@@ -104,6 +106,11 @@ view:
       free_text:  "CQ DX"
       carrier_hz: 12000.0
       gap_secs:   15.0
+      noise_amp:  0.05
+    codfm:
+      bandwidth:  1/4    # occupied BW as a fraction of span: 1/8 1/4 1/3 1/2 2/3 3/4 7/8
+      sig_secs:   10.0   # signal-burst duration (wall-clock seconds)
+      gap_secs:   2.0    # silence gap between bursts (wall-clock seconds)
       noise_amp:  0.05
 ```
 
