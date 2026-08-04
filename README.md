@@ -59,7 +59,6 @@ view:
     db_min:               -100.0
     db_max:               -20.0
     time_zone:            utc     # "utc", "local", or "+HH:MM" / "-HH:MM"
-    spec_freq_delta_hz:   2000.0  # horizontal spectrogram ±freq window
     spec_time_range_secs: 10.0    # horizontal spectrogram time span
   sources:
     test_tone:

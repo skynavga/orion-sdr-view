@@ -50,11 +50,6 @@ pub(in crate::app) trait SourceFactory: Sync {
         None
     }
 
-    /// Preferred ± horizontal-spectrogram window (Hz) on switch.
-    fn preferred_spec_delta_hz(&self, _settings: &SettingsState) -> Option<f32> {
-        None
-    }
-
     /// Preferred spectrum reference level (dBFS, scale top) on switch.
     fn preferred_ref_db(&self, _settings: &SettingsState) -> Option<f32> {
         None

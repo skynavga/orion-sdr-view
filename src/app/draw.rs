@@ -661,13 +661,12 @@ impl ViewApp {
         let lo_uv = self.freq_view.lo() / self.freq_view.nyquist;
         let hi_uv = self.freq_view.hi() / self.freq_view.nyquist;
 
-        if let Some(tex) = self.waterfall.texture_handle() {
-            let uv = egui::Rect::from_min_max(egui::pos2(lo_uv, 0.0), egui::pos2(hi_uv, 1.0));
-            painter.image(tex.id(), rect, uv, egui::Color32::WHITE);
-        } else {
-            self.waterfall.draw(painter, rect);
+        if self.waterfall.texture_handle().is_none() {
             return;
         }
+        // Ring-buffer draw: frequency (X) cropped to [lo_uv, hi_uv], rows mapped
+        // newest-at-top via two UV quads split at the ring head.
+        self.waterfall.draw_cropped(painter, rect, lo_uv, hi_uv);
 
         let label_font = egui::FontId::new(10.0, egui::FontFamily::Monospace);
         self.draw_freq_markers(painter, rect, &label_font);
@@ -679,20 +678,19 @@ impl ViewApp {
     /// (x=0) and oldest at the right.  The full width spans
     /// `spec_time_range_secs` seconds.
     fn draw_horizontal_spectrogram(&self, painter: &egui::Painter, rect: egui::Rect) {
-        // Paint the texture.  The SpectrogramDisplay stores row 0 = hi freq,
-        // col 0 = newest, so a straight full-UV draw already matches our
-        // desired screen orientation.
-        if let Some(tex) = self.spectrogram.texture_handle() {
-            let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
-            painter.image(tex.id(), rect, uv, egui::Color32::WHITE);
-        }
+        // Paint the texture.  Columns are a ring buffer (newest at `head-1`),
+        // so draw_ring maps them newest-at-left via two UV quads.
+        self.spectrogram.draw_ring(painter, rect);
 
         let label_font = egui::FontId::new(10.0, egui::FontFamily::Monospace);
         let grid_stroke = egui::Stroke::new(0.5_f32, egui::Color32::from_gray(45));
 
         // ── Frequency window ─────────────────────────────────────────────
+        // The spectrogram shows the same frequency extent as the spectrum /
+        // waterfall panes: centered on the primary marker, ± half the current
+        // viewport span, so ↑/↓ zoom scales it in lockstep.
         let center_hz = self.markers[0].hz;
-        let delta_hz = self.settings.spec_freq_delta_hz();
+        let delta_hz = self.freq_view.visible_span() / 2.0;
         let nyquist = self.freq_view.nyquist;
         let f_lo = (center_hz - delta_hz).max(0.0);
         let f_hi = (center_hz + delta_hz).min(nyquist);

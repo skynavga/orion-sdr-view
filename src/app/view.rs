@@ -26,15 +26,6 @@ use super::{
 
 // ── ViewApp ───────────────────────────────────────────────────────────────────
 
-/// Rate (Hz) at which the waterfall/persistence/spectrogram GPU textures are
-/// re-uploaded.  Decoupled from the render frame rate: these displays currently
-/// re-upload their ENTIRE texture per update, which saturates GPU upload
-/// bandwidth on high-refresh (120 Hz+) displays and drags the frame rate down as
-/// the buffers fill.  Throttling to 10 Hz holds a stable ~95 fps.  This is an
-/// interim cap; a follow-up ring-buffer + `set_partial` refactor will upload
-/// only the changed row/column and remove the need for this throttle.
-const TEX_UPLOAD_HZ: f32 = 10.0;
-
 pub(crate) struct ViewApp {
     pub(super) pane_visible: [bool; 3],
     // Fractional height per pane — stored even when hidden so proportions are
@@ -95,11 +86,6 @@ pub(crate) struct ViewApp {
     pub(super) last_block_was_signal: bool,
     /// Wall-clock time of the previous frame, for real-time dt calculation.
     pub(super) last_frame_time: std::time::Instant,
-    /// Accumulated time since the last GPU texture upload.  Texture uploads are
-    /// throttled to `TEX_UPLOAD_HZ` (decoupled from the render rate) because
-    /// re-uploading the full waterfall/persistence/spectrogram textures every
-    /// frame saturates GPU upload bandwidth at high refresh rates.
-    pub(super) tex_upload_accum: f32,
 
     /// Per-frame view-side state for FT8/FT4 (frame counts, pending onset,
     /// cached mode/msg_type).  See [`Ft8ViewState`].
@@ -166,7 +152,7 @@ impl ViewApp {
 
             waterfall: WaterfallDisplay::new(FFT_SIZE / 2 + 1, 512, db_min, db_max),
             spectrogram: {
-                let mut s = SpectrogramDisplay::new(256, 512, db_min, db_max);
+                let mut s = SpectrogramDisplay::new(FFT_SIZE / 2 + 1, 512, db_min, db_max);
                 s.set_time_range(cfg.spec_time_range_secs());
                 s
             },
@@ -193,7 +179,6 @@ impl ViewApp {
             decode_ticker: DecodeTicker::new(),
             last_block_was_signal: false,
             last_frame_time: std::time::Instant::now(),
-            tex_upload_accum: 0.0,
 
             ft8_view: crate::source::ft8::Ft8ViewState::new(),
             time_zone_offset_min: 0,
@@ -257,8 +242,7 @@ impl ViewApp {
     fn apply_source_sample_rate(&mut self) {
         let fs = self.source.sample_rate();
         self.freq_view.set_nyquist(fs / 2.0);
-        self.settings.set_spec_freq_delta_max(fs / 2.0);
-        self.waterfall = WaterfallDisplay::new(FFT_SIZE / 2 + 1, 512, self.db_min, self.db_max);
+        self.waterfall.clear();
         self.persistence.clear();
         self.spectrogram.clear();
         if let Ok(mut cfg) = self.decode_config.lock() {
@@ -303,9 +287,6 @@ impl ViewApp {
             factory.preferred_span_hz(&self.settings),
         ) {
             self.freq_view.reframe(center, span);
-        }
-        if let Some(delta) = factory.preferred_spec_delta_hz(&self.settings) {
-            self.settings.set_spec_freq_delta_hz(delta);
         }
         if let Some(ref_db) = factory.preferred_ref_db(&self.settings) {
             self.settings.set_db_max(ref_db);
@@ -903,12 +884,15 @@ impl eframe::App for ViewApp {
             *ph = (*ph - 0.2_f32).max(db);
         }
 
-        // Per-frame data advance (cheap): accumulate/scroll the display buffers.
+        // Per-frame data advance.  The waterfall paces its own scroll by
+        // wall-clock `dt` and uploads only changed rows (ring buffer +
+        // set_partial), so it runs every frame.
         self.persistence
             .map
             .accumulate(&self.spectrum.fft_out_db, self.db_min, self.db_max);
         self.persistence.map.decay();
-        self.waterfall.push_row(&self.spectrum.fft_out_db);
+        self.waterfall.push_row(&self.spectrum.fft_out_db, dt);
+        self.waterfall.update_texture(ctx);
 
         // Spectrogram: keep db/time-range/color ramp in sync with the
         // user's current display choices, then push one FFT slice.  A
@@ -919,8 +903,10 @@ impl eframe::App for ViewApp {
         self.spectrogram.db_max = self.db_max;
         self.spectrogram
             .set_time_range(self.settings.spec_time_range_secs());
+        // Frequency window = ± half the current viewport span (same extent as
+        // the spectrum/waterfall panes), so ↑/↓ zoom scales the spectrogram.
         let spec_center = self.markers[0].hz;
-        let spec_delta = self.settings.spec_freq_delta_hz();
+        let spec_delta = self.freq_view.visible_span() / 2.0;
         self.spectrogram.push_spectrum(
             &self.spectrum.fft_out_db,
             dt,
@@ -928,18 +914,14 @@ impl eframe::App for ViewApp {
             spec_delta,
             self.freq_view.nyquist,
         );
-
-        // GPU texture uploads (expensive): throttled to TEX_UPLOAD_HZ, decoupled
-        // from the render rate (see the const's rationale).
-        self.tex_upload_accum += dt;
-        if self.tex_upload_accum >= 1.0 / TEX_UPLOAD_HZ {
-            self.tex_upload_accum = 0.0;
-            self.persistence.update_texture(ctx);
-            self.waterfall.update_texture(ctx);
-            if self.waterfall_mode == WaterfallMode::Horizontal {
-                self.spectrogram.update_texture(ctx);
-            }
+        if self.waterfall_mode == WaterfallMode::Horizontal {
+            self.spectrogram.update_texture(ctx);
         }
+
+        // Persistence is a 2D histogram that changes everywhere each frame, so
+        // it re-uploads the whole (small, 513×100) texture.  Measured flat at
+        // ~5.75 ms/frame, which sustains a high frame rate without throttling.
+        self.persistence.update_texture(ctx);
 
         // Drive the loop at display rate regardless of interaction.
         ctx.request_repaint();

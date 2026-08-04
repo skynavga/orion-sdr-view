@@ -188,7 +188,6 @@ impl SettingsState {
     pub fn new(
         db_min: f32,
         db_max: f32,
-        spec_freq_delta_hz: f32,
         spec_time_range_secs: f32,
         freq_hz: f32,
         noise_amp: f32,
@@ -245,7 +244,7 @@ impl SettingsState {
                 index: 0,
                 default: 0,
             }),
-            display: DisplayRows::new(db_min, db_max, spec_freq_delta_hz, spec_time_range_secs),
+            display: DisplayRows::new(db_min, db_max, spec_time_range_secs),
             sources,
         }
     }
@@ -257,7 +256,6 @@ impl SettingsState {
         let mut s = Self::new(
             cfg.db_min(),
             cfg.db_max(),
-            cfg.spec_freq_delta_hz(),
             cfg.spec_time_range_secs(),
             cfg.freq_hz(),
             cfg.noise_amp(),

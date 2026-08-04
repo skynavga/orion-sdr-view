@@ -67,12 +67,9 @@ impl super::SourceFactory for Factory {
     fn preferred_span_hz(&self, _settings: &SettingsState) -> Option<f32> {
         // Full Nyquist: the bandwidth fraction (a settings toggle) then controls
         // how much of this fixed span the occupied band fills.  Clamped to
-        // Nyquist by `FreqView::reframe`.
+        // Nyquist by `FreqView::reframe`.  The horizontal spectrogram follows
+        // this same viewport span, so it needs no separate preference.
         Some(CODFM_FS / 2.0)
-    }
-    fn preferred_spec_delta_hz(&self, settings: &SettingsState) -> Option<f32> {
-        // ± window that comfortably frames the current occupied band.
-        Some(occupied_bw_hz(settings) * 0.8)
     }
     fn preferred_ref_db(&self, _settings: &SettingsState) -> Option<f32> {
         // Match the ~-15 dB signal peaks produced by the modulator gain.

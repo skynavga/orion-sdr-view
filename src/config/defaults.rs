@@ -14,8 +14,6 @@ impl Defaults {
     pub const MOD_INDEX: f32 = 1.0;
     pub const AM_GAP_SECS: f32 = 7.0;
     pub const AM_NOISE_AMP: f32 = 0.05;
-    /// Default ± frequency window (Hz) for the horizontal spectrogram pane.
-    pub const SPEC_FREQ_DELTA_HZ: f32 = 2_000.0;
     /// Default time range (seconds) spanned by the full width of the
     /// horizontal spectrogram pane.
     pub const SPEC_TIME_RANGE_SECS: f32 = 10.0;

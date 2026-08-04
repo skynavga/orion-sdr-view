@@ -113,14 +113,11 @@ impl ViewApp {
     }
 
     /// Cycle the CODFM occupied-bandwidth fraction (M key).  Cycles the toggle,
-    /// re-frames the horizontal-spectrogram window to the new band width, then
-    /// restarts (which re-renders the source and re-derives the decode bw).
+    /// then restarts (which re-renders the source and re-derives the decode bw).
+    /// The spectrogram follows the viewport span, so no spectrogram reframe is
+    /// needed here.
     pub(super) fn cycle_codfm_bandwidth(&mut self) {
         self.settings.cycle_codfm_bw();
-        let factory = source_mode_factory(self.source_mode);
-        if let Some(delta) = factory.preferred_spec_delta_hz(&self.settings) {
-            self.settings.set_spec_freq_delta_hz(delta);
-        }
         self.restart_source();
     }
 
