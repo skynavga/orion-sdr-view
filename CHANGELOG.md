@@ -9,6 +9,26 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.16] - 2026-08-03
+
+### Changed
+
+- Upgraded `egui`/`eframe` from 0.33 to 0.35 and switched the renderer from
+  the glow (OpenGL) backend to `wgpu` (Metal/Vulkan), now the eframe default.
+  The renderer is pinned explicitly via `eframe::Renderer::Wgpu`.
+- Migrated the frame loop to the eframe 0.34+ App API: `App::update` (removed
+  upstream) is split into `logic()` (sample feed, decode drain, texture
+  uploads, repaint) and `ui()` (HUD, decode bar, central panes). Panels use
+  the unified `egui::Panel` API (`TopBottomPanel` removed; `exact_height` →
+  `exact_size`).
+
+### Fixed
+
+- CI now compiles and lints the GUI (`cargo check`/`clippy --features gui`,
+  with a `libwayland-dev` step), closing a gap where `--no-default-features`
+  never built the egui code. Fixed a latent `manual_checked_ops` clippy lint
+  in `persistence.rs` surfaced by that check.
+
 ## [0.0.15] - 2026-08-03
 
 ### Changed
