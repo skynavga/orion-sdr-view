@@ -113,6 +113,27 @@ fn spectrogram_display_defaults_when_absent() {
     assert_eq!(cfg.spec_time_range_secs(), Defaults::SPEC_TIME_RANGE_SECS);
 }
 
+#[test]
+fn pan_direction_config() {
+    // Default (absent) → "spectrum" (false).
+    let cfg = ViewConfig::load(None);
+    assert!(!cfg.pan_signal_follows());
+
+    // Explicit "signal" → true.
+    let yaml = "view:\n  display:\n    pan: signal\n";
+    let mut f = NamedTempFile::new().unwrap();
+    f.write_all(yaml.as_bytes()).unwrap();
+    assert!(ViewConfig::load(Some(f.path().to_path_buf())).pan_signal_follows());
+
+    // Explicit "spectrum" and unrecognized both → false.
+    for v in ["spectrum", "bogus"] {
+        let yaml = format!("view:\n  display:\n    pan: {v}\n");
+        let mut f = NamedTempFile::new().unwrap();
+        f.write_all(yaml.as_bytes()).unwrap();
+        assert!(!ViewConfig::load(Some(f.path().to_path_buf())).pan_signal_follows());
+    }
+}
+
 // ── Scenario 3: explicit --config with partial YAML → overrides + defaults ────
 
 #[test]

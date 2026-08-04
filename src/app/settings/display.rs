@@ -1,7 +1,7 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::field::{NumField, Row, RowDrawCtx, TimeZoneField};
+use super::field::{NumField, Row, RowDrawCtx, TimeZoneField, ToggleField};
 use crate::config::{TzMode, ViewConfig, format_offset_min};
 use eframe::egui;
 
@@ -9,7 +9,13 @@ use eframe::egui;
 const DB_MIN: usize = 0;
 const DB_MAX: usize = 1;
 const SPEC_TIME_RANGE: usize = 2;
-const TIME_ZONE: usize = 3;
+const PAN_DIR: usize = 3;
+const TIME_ZONE: usize = 4;
+
+/// Pan-direction toggle options, in enum order.  "spectrum" = arrow scrolls the
+/// spectrum (panadapter convention; a fixed signal appears to move opposite the
+/// arrow).  "signal" = arrow moves the center/signal in the arrow's direction.
+const PAN_OPTIONS: &[&str] = &["spectrum", "signal"];
 
 pub(super) struct DisplayRows {
     pub rows: Vec<Row>,
@@ -49,6 +55,12 @@ impl DisplayRows {
                     unit: " s",
                     coarse: None,
                 }),
+                Row::Toggle(ToggleField {
+                    label: "Pan",
+                    options: PAN_OPTIONS,
+                    index: 0,
+                    default: 0,
+                }),
                 Row::TimeZone(TimeZoneField {
                     label: "Time zone",
                     mode: TzMode::Utc,
@@ -65,6 +77,12 @@ impl DisplayRows {
         self.rows[DB_MIN].patch_num(cfg.db_min());
         self.rows[DB_MAX].patch_num(cfg.db_max());
         self.rows[SPEC_TIME_RANGE].patch_num(cfg.spec_time_range_secs());
+
+        let pan_idx = usize::from(cfg.pan_signal_follows());
+        if let Row::Toggle(f) = &mut self.rows[PAN_DIR] {
+            f.index = pan_idx;
+            f.default = pan_idx;
+        }
 
         let mode = cfg.time_zone_mode();
         if let Row::TimeZone(f) = &mut self.rows[TIME_ZONE] {
@@ -301,6 +319,15 @@ impl super::SettingsState {
             f.value
         } else {
             10.0
+        }
+    }
+    /// True when pan is in "signal" mode (arrow moves the center/signal in the
+    /// arrow's direction); false for "spectrum" (panadapter) mode.
+    pub fn pan_signal_follows(&self) -> bool {
+        if let Row::Toggle(f) = &self.display.rows[PAN_DIR] {
+            f.index == 1
+        } else {
+            false
         }
     }
     /// Effective UTC offset in minutes for the Time zone row, resolving

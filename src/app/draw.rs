@@ -873,6 +873,7 @@ impl ViewApp {
             ("Ctrl+Shift+← / →\textra-fine pan, snap 10 Hz", 2),
             ("↑ / ↓ | Shift+↑ / ↓\tzoom | fine zoom (in / out)", 2),
             ("[ / ]\tref level ±5 dB", 2),
+            ("Z\tcenter view to mid-band (keep zoom)", 2),
             ("R\treset to full view (0 – Nyquist)", 2),
             ("Markers", 1),
             ("A / B (shift)\tplace marker A / B at center, select it", 2),

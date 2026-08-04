@@ -402,12 +402,11 @@ impl ViewApp {
         let mut cycle_mode = false;
         let mut cycle_audio = false;
         let mut toggle_lock = false;
-        // When non-zero, snap center_hz to this grid after applying pan_delta.
-        let mut snap_pan_grid: f32 = 0.0;
         // Frequency pan/zoom deltas to apply after the closure.
         let mut pan_delta: f32 = 0.0;
         let mut zoom_delta: f32 = 0.0; // added to zoom ratio; +0.5 coarse, +0.1 fine
         let mut freq_reset = false;
+        let mut center_reset = false; // Z: recenter viewport to mid-band
         let mut db_shift: f32 = 0.0;
         // Marker actions
         let mut place_marker_a = false;
@@ -534,62 +533,43 @@ impl ViewApp {
             if i.key_pressed(egui::Key::Q) {
                 quit = true;
             }
+            if i.key_pressed(egui::Key::Z) {
+                center_reset = true;
+            }
 
             // ── Frequency pan ────────────────────────────────────────────────
-            // Left/Right:             coarse pan (span/8, auto-repeat)
-            // Shift+Left/Right:       fine pan, snap to nearest 100 Hz (auto-repeat)
-            // Ctrl+Shift+Left/Right:  extra-fine pan:
-            //   key_pressed (first hit) → snap to nearest 10 Hz
-            //   key_down (held)         → snap to nearest 100 Hz
-            // Alt+Left/Right reserved for marker movement — skip pan when alt held.
-            if !i.modifiers.alt {
-                if i.modifiers.ctrl && i.modifiers.shift {
-                    // Extra-fine pan: 10 Hz per keypress.
-                    let left = i.key_pressed(egui::Key::ArrowLeft);
-                    let right = i.key_pressed(egui::Key::ArrowRight);
-                    let arrow = left || right;
-                    if arrow && self.freq_view.span_hz >= self.freq_view.nyquist {
-                        self.freq_view.step_zoom(0.1);
+            // Left/Right:            coarse pan, span/12 per keypress
+            // Shift+Left/Right:      fine pan, 10% of coarse
+            // Ctrl+Shift+Left/Right: extra-fine pan, 1% of coarse
+            //
+            // Steps are span-relative so they scale across sources (a narrowband
+            // 24 kHz span and a wideband ~1 MHz span both traverse in a similar
+            // number of presses).  `key_pressed` (not `key_down`) makes each step
+            // frame-rate independent — OS key-repeat continues it when held.
+            // Alt+Left/Right (marker move) and Ctrl+Left/Right without Shift
+            // (marker coarse move) are reserved — skip pan for those.
+            let ctrl_only = i.modifiers.ctrl && !i.modifiers.shift;
+            if !i.modifiers.alt && !ctrl_only {
+                let left = i.key_pressed(egui::Key::ArrowLeft);
+                let right = i.key_pressed(egui::Key::ArrowRight);
+                if left || right {
+                    // Zoom in from full span first so panning has room.
+                    if self.freq_view.span_hz >= self.freq_view.nyquist {
+                        self.freq_view.step_zoom(1.0);
                     }
+                    let coarse = self.freq_view.span_hz / 12.0;
+                    let step = if i.modifiers.ctrl && i.modifiers.shift {
+                        coarse * 0.01 // extra-fine
+                    } else if i.modifiers.shift {
+                        coarse * 0.1 // fine
+                    } else {
+                        coarse
+                    };
                     if left {
-                        pan_delta -= 10.0;
+                        pan_delta -= step;
                     }
                     if right {
-                        pan_delta += 10.0;
-                    }
-                    if arrow {
-                        snap_pan_grid = 10.0;
-                    }
-                } else if !i.modifiers.ctrl {
-                    if i.modifiers.shift {
-                        // Fine pan: snap to 100 Hz. Zoom in first if at full span.
-                        let arrow = i.key_pressed(egui::Key::ArrowLeft)
-                            || i.key_pressed(egui::Key::ArrowRight);
-                        if arrow && self.freq_view.span_hz >= self.freq_view.nyquist {
-                            self.freq_view.step_zoom(0.1);
-                        }
-                        if i.key_pressed(egui::Key::ArrowLeft) {
-                            pan_delta -= 100.0;
-                        }
-                        if i.key_pressed(egui::Key::ArrowRight) {
-                            pan_delta += 100.0;
-                        }
-                        if arrow {
-                            snap_pan_grid = 100.0;
-                        }
-                    } else {
-                        let arrow =
-                            i.key_down(egui::Key::ArrowLeft) || i.key_down(egui::Key::ArrowRight);
-                        if arrow && self.freq_view.span_hz >= self.freq_view.nyquist {
-                            self.freq_view.step_zoom(0.1);
-                        }
-                        let pan_step = self.freq_view.span_hz / 8.0;
-                        if i.key_down(egui::Key::ArrowLeft) {
-                            pan_delta -= pan_step;
-                        }
-                        if i.key_down(egui::Key::ArrowRight) {
-                            pan_delta += pan_step;
-                        }
+                        pan_delta += step;
                     }
                 }
             }
@@ -631,14 +611,19 @@ impl ViewApp {
 
         // Apply pan/zoom/span/reset
         if pan_delta != 0.0 {
-            self.freq_view.pan(pan_delta);
-            if snap_pan_grid > 0.0 {
-                self.freq_view.center_hz =
-                    FreqView::snap_hz(self.freq_view.center_hz, snap_pan_grid);
+            // "signal" pan mode moves the signal/center in the arrow's
+            // direction; "spectrum" (default) scrolls the spectrum the other way.
+            if self.settings.pan_signal_follows() {
+                pan_delta = -pan_delta;
             }
+            self.freq_view.pan(pan_delta);
         }
         if zoom_delta.abs() > 0.001 {
             self.freq_view.step_zoom(zoom_delta);
+        }
+        if center_reset {
+            // Z: recenter the viewport to mid-band, keeping the current zoom.
+            self.freq_view.center_hz = self.freq_view.nyquist / 2.0;
         }
         if freq_reset {
             self.freq_view.reset();
