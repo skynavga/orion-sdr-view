@@ -9,11 +9,32 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.20] - 2026-08-08
+
+### Changed
+
+- **Renamed the wideband source `CODFM` → `COFDM`** throughout. The acronym is
+  *Coded Orthogonal Frequency-Division Multiplexing*; the transposed spelling
+  had been in place since 0.0.17, even though the surrounding prose already
+  used the correct one. **This is a breaking change with no back-compat shim:**
+  - The module path `source::codfm` becomes `source::cofdm`.
+  - Public items rename accordingly — `CodfmSource`, `CodfmConfig`,
+    `CodfmBwFraction`, `CodfmShaping`, `CodfmTaper`, `CodfmMask`, the
+    `CODFM_*` constants, and the `codfm_*` free functions.
+  - The YAML key `sources.codfm:` becomes `sources.cofdm:`. Unknown keys are
+    ignored rather than rejected, so a config still using the old spelling
+    loses that block **silently** — rename it.
+  - The source-selector entry and HUD label now read `COFDM`.
+
+  Rename only: no behavior, numerics, or layout changed, and no test's numeric
+  assertion moved. Historical entries below are written with the corrected
+  spelling even where the old one shipped.
+
 ## [0.0.19] - 2026-08-08
 
 ### Added
 
-- **CODFM out-of-band spectral shaping** — the three `orion-sdr` transmit
+- **COFDM out-of-band spectral shaping** — the three `orion-sdr` transmit
   shaping levers, composed and reachable live from the settings popover under
   a `Shaping` toggle that is on by default: an edge-carrier guard (`Edge
   guard`, seeded from the `Bandwidth` fraction — the two are the same lever),
@@ -24,12 +45,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   in-band power holds within ±0.4 dB. The levers act in different places and
   stack. The effect is largest at the narrow fractions, which leave the mask
   unoccupied bandwidth to filter into.
-- YAML `codfm:` keys `shaping`, `edge_guard`, `include_dc`, `taper`, `mask`.
+- YAML `cofdm:` keys `shaping`, `edge_guard`, `include_dc`, `taper`, `mask`.
 
 ### Changed
 
 - Bumped `orion-sdr` 0.0.53 → 0.0.56 (spectral-shaping API).
-- **CODFM now modulates at baseband and upconverts in the source.**
+- **COFDM now modulates at baseband and upconverts in the source.**
   `OfdmConfig`'s `rf_hz` rotates per symbol inside `modulate_frame`, before the
   shaping post-passes, so a DC-centered `TxLowpass` applied there would have
   deleted the signal. Two artifacts went with it: the preamble and training
@@ -41,7 +62,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Lengthened the Schmidl & Cox preamble repeats from 16 to 64 samples. A mask
   filters the whole burst, and the repetition a receiver correlates on only
   survives where the filter's group delay is small against the repeat length.
-- Set the receiver FFT-window back-off to `cp_len/2` on the CODFM config, so
+- Set the receiver FFT-window back-off to `cp_len/2` on the COFDM config, so
   the taper and the mask's group delay land in guard samples a receiver
   discards.
 - The decode bar's `BW` readout follows the effective edge guard rather than
@@ -51,8 +72,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Documentation
 
-- Documented the CODFM source in the README: added it to the signal-sources
-  list and a `codfm:` block (bandwidth fraction, signal/gap durations, noise)
+- Documented the COFDM source in the README: added it to the signal-sources
+  list and a `cofdm:` block (bandwidth fraction, signal/gap durations, noise)
   to the configuration example. Corrected the stale `orion-sdr` version
   reference (0.0.33 → 0.0.53).
 
@@ -60,7 +81,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- **CODFM signal source** — a wideband coded-OFDM (COFDM) source built on
+- **COFDM signal source** — a wideband coded-OFDM source built on
   `orion-sdr`'s `OfdmFrameMod`, running at its own 1.92 MHz sample rate. The
   occupied bandwidth is a selectable fraction of the display span (1/8 … 7/8,
   cycled with `M`); the band is centered on the primary marker with an
@@ -79,9 +100,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - Signal/gap and other time-based playback (source gaps, Test Tone ramp/pause,
-  CODFM signal/gap) now run at true wall-clock time instead of scaling with the
+  COFDM signal/gap) now run at true wall-clock time instead of scaling with the
   frame rate. Sample consumption is paced to `dt × sample_rate`, and sources
-  gain a `SignalSource::advance_time(dt)` hook (used by CODFM's dt-driven
+  gain a `SignalSource::advance_time(dt)` hook (used by COFDM's dt-driven
   phases and by tests).
 - Frequency pan steps are span-relative and scale across sources: coarse pan is
   1/12 of the current span per keypress, fine is 10 % of coarse, extra-fine is

@@ -15,8 +15,8 @@ and waterfall from a configurable signal source.
   pane (`W`) that toggles between a vertical waterfall and a horizontal spectrogram centered on the primary
   marker (±freq delta, configurable time range)
 - **Multiple signal sources** — synthetic test tone (sine + AWGN), CW (Morse code), AM DSB from looped
-  audio, PSK31 (BPSK31/QPSK31), FT8/FT4, and CODFM (wideband coded-OFDM at 1.92 MHz, with a selectable
-  occupied-bandwidth fraction and live out-of-band [spectral shaping](#codfm-spectral-shaping) —
+  audio, PSK31 (BPSK31/QPSK31), FT8/FT4, and COFDM (wideband coded-OFDM at 1.92 MHz, with a selectable
+  occupied-bandwidth fraction and live out-of-band [spectral shaping](#cofdm-spectral-shaping) —
   edge-carrier guard, symbol-window taper, and baseband mask)
 - **Decode bar** — optional bottom bar (cycled by `D`) showing signal info
   (Di: modulation, carrier, BW, SNR) or decoded text (Dt: smooth-scrolling teletype ticker)
@@ -108,7 +108,7 @@ view:
       carrier_hz: 12000.0
       gap_secs:   15.0
       noise_amp:  0.05
-    codfm:
+    cofdm:
       bandwidth:  1/4    # occupied BW as a fraction of span: 1/8 1/4 1/3 1/2 2/3 3/4 7/8
       shaping:    true   # out-of-band spectral shaping (default true)
       edge_guard: 111    # null carriers per band edge; omit to derive from `bandwidth`
@@ -122,10 +122,10 @@ view:
 
 All fields are optional; missing fields fall back to built-in defaults.
 
-### CODFM spectral shaping
+### COFDM spectral shaping
 
 Plain OFDM's out-of-band spectrum decays only as `~1/f`, so the transmitted signal carries a wide
-skirt beyond its occupied band. The CODFM source composes the three shaping levers `orion-sdr`
+skirt beyond its occupied band. The COFDM source composes the three shaping levers `orion-sdr`
 provides, all reachable live from the settings popover (`S`) under a `Shaping` toggle that is **on by
 default**:
 
@@ -143,7 +143,7 @@ authoritative. With `Shaping` off, all four parameters are ignored and the sourc
 fraction's plain carrier set.
 
 The taper and the mask's group delay share one budget — `roll_off + group_delay ≤ cp_len/2` — since
-both have to live in the guard samples a receiver discards. At CODFM's numerology (`n_fft` 256,
+both have to live in the guard samples a receiver discards. At COFDM's numerology (`n_fft` 256,
 `cp_len` 32) that leaves 16 samples, so the mask is necessarily short and the payoff is tens of dB
 rather than the 60+ dB a long-guard profile reaches. Tap count is derived from the current edge guard
 and clamped to the remaining budget, which is why it is not a setting: no reachable combination can

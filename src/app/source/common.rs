@@ -64,7 +64,7 @@ pub(in crate::app) static FACTORIES: &[&'static (dyn SourceFactory + Sync)] = &[
     &super::amdsb::Factory,
     &super::psk31::Factory,
     &super::ft8::Factory,
-    &super::codfm::Factory,
+    &super::cofdm::Factory,
 ];
 
 /// Belt-and-suspenders: panic loudly at startup if `FACTORIES` ever drifts
@@ -106,9 +106,9 @@ pub(in crate::app) fn debug_assert_factory_order(settings: &SettingsState) {
         "FACTORIES order mismatch at Ft8"
     );
     debug_assert_eq!(
-        FACTORIES[SourceMode::Codfm as usize].decode_mode(settings, &view),
-        DecodeMode::Codfm,
-        "FACTORIES order mismatch at Codfm"
+        FACTORIES[SourceMode::Cofdm as usize].decode_mode(settings, &view),
+        DecodeMode::Cofdm,
+        "FACTORIES order mismatch at Cofdm"
     );
 }
 

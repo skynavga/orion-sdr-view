@@ -1,36 +1,36 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use crate::app::settings::{CodfmSettings, SettingsState};
+use crate::app::settings::{CofdmSettings, SettingsState};
 use crate::decode::DecodeMode;
 use crate::source::SignalSource;
-use crate::source::codfm::{
-    self, CODFM_FS, CODFM_NOMINAL_CENTER, CODFM_PREFERRED_REF_DB, CodfmSource, codfm_occupied_bw,
+use crate::source::cofdm::{
+    self, COFDM_FS, COFDM_NOMINAL_CENTER, COFDM_PREFERRED_REF_DB, CofdmSource, cofdm_occupied_bw,
 };
 use crate::source::ft8::Ft8ViewState;
 
-/// Build a fresh `CodfmSource` from current settings.  The sample rate is a
-/// fixed source property (`CODFM_FS`), not a settings value.
-pub(in crate::app) fn make(settings: &SettingsState) -> CodfmSource {
-    CodfmSource::new(
-        settings.codfm_sig_secs(),
-        settings.codfm_gap_secs(),
-        settings.codfm_noise_amp(),
-        settings.codfm_bw_fraction(),
-        settings.codfm_shaping(),
-        CODFM_FS,
+/// Build a fresh `CofdmSource` from current settings.  The sample rate is a
+/// fixed source property (`COFDM_FS`), not a settings value.
+pub(in crate::app) fn make(settings: &SettingsState) -> CofdmSource {
+    CofdmSource::new(
+        settings.cofdm_sig_secs(),
+        settings.cofdm_gap_secs(),
+        settings.cofdm_noise_amp(),
+        settings.cofdm_bw_fraction(),
+        settings.cofdm_shaping(),
+        COFDM_FS,
     )
 }
 
-/// Push current CODFM settings into the active source if applicable.
+/// Push current COFDM settings into the active source if applicable.
 pub(in crate::app) fn sync(source: &mut dyn SignalSource, settings: &SettingsState) {
-    if let Some(codfm) = source.as_any_mut().downcast_mut::<CodfmSource>() {
-        codfm.apply_params(
-            settings.codfm_sig_secs(),
-            settings.codfm_gap_secs(),
-            settings.codfm_noise_amp(),
-            settings.codfm_bw_fraction(),
-            settings.codfm_shaping(),
+    if let Some(cofdm) = source.as_any_mut().downcast_mut::<CofdmSource>() {
+        cofdm.apply_params(
+            settings.cofdm_sig_secs(),
+            settings.cofdm_gap_secs(),
+            settings.cofdm_noise_amp(),
+            settings.cofdm_bw_fraction(),
+            settings.cofdm_shaping(),
         );
     }
 }
@@ -39,14 +39,14 @@ pub(in crate::app) fn sync(source: &mut dyn SignalSource, settings: &SettingsSta
 /// Keyed off the *effective* edge guard, which the shaping rows can override
 /// away from what the bandwidth fraction alone implies.
 pub(in crate::app) fn occupied_bw_hz(settings: &SettingsState) -> f32 {
-    let fraction = settings.codfm_bw_fraction();
-    let guard = settings.codfm_shaping().effective(fraction).edge_guard;
-    codfm_occupied_bw(CODFM_FS, guard)
+    let fraction = settings.cofdm_bw_fraction();
+    let guard = settings.cofdm_shaping().effective(fraction).edge_guard;
+    cofdm_occupied_bw(COFDM_FS, guard)
 }
 
-/// Submode line for the top HUD when CODFM is the active source.
+/// Submode line for the top HUD when COFDM is the active source.
 pub(in crate::app) fn hud_submode_str(settings: &SettingsState) -> String {
-    codfm::hud_submode_str(settings.codfm_bw_fraction(), &settings.codfm_shaping())
+    cofdm::hud_submode_str(settings.cofdm_bw_fraction(), &settings.cofdm_shaping())
 }
 
 pub(super) struct Factory;
@@ -55,30 +55,30 @@ impl super::SourceFactory for Factory {
         Box::new(make(settings))
     }
     fn decode_mode(&self, _: &SettingsState, _: &Ft8ViewState) -> DecodeMode {
-        DecodeMode::Codfm
+        DecodeMode::Cofdm
     }
     fn decode_carrier_hz(&self, _settings: &SettingsState) -> f32 {
         // The band center — used for the Di "ctr" readout only.
-        CODFM_NOMINAL_CENTER
+        COFDM_NOMINAL_CENTER
     }
     fn set_carrier_hz(&self, _settings: &mut SettingsState, _hz: f32) {
-        // No-op: CODFM occupies a fixed wideband sub-band, not a single
+        // No-op: COFDM occupies a fixed wideband sub-band, not a single
         // tunable carrier, so the source-lock (L key) does not retune it.
     }
 
     // ── Wideband viewport preferences ───────────────────────────────────────
     fn nominal_center_hz(&self, _settings: &SettingsState) -> Option<f32> {
-        Some(CODFM_NOMINAL_CENTER)
+        Some(COFDM_NOMINAL_CENTER)
     }
     fn preferred_span_hz(&self, _settings: &SettingsState) -> Option<f32> {
         // Full Nyquist: the bandwidth fraction (a settings toggle) then controls
         // how much of this fixed span the occupied band fills.  Clamped to
         // Nyquist by `FreqView::reframe`.  The horizontal spectrogram follows
         // this same viewport span, so it needs no separate preference.
-        Some(CODFM_FS / 2.0)
+        Some(COFDM_FS / 2.0)
     }
     fn preferred_ref_db(&self, _settings: &SettingsState) -> Option<f32> {
         // Match the ~-15 dB signal peaks produced by the modulator gain.
-        Some(CODFM_PREFERRED_REF_DB)
+        Some(COFDM_PREFERRED_REF_DB)
     }
 }
