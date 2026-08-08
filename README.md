@@ -16,7 +16,8 @@ and waterfall from a configurable signal source.
   marker (±freq delta, configurable time range)
 - **Multiple signal sources** — synthetic test tone (sine + AWGN), CW (Morse code), AM DSB from looped
   audio, PSK31 (BPSK31/QPSK31), FT8/FT4, and CODFM (wideband coded-OFDM at 1.92 MHz, with a selectable
-  occupied-bandwidth fraction)
+  occupied-bandwidth fraction and live out-of-band [spectral shaping](#codfm-spectral-shaping) —
+  edge-carrier guard, symbol-window taper, and baseband mask)
 - **Decode bar** — optional bottom bar (cycled by `D`) showing signal info
   (Di: modulation, carrier, BW, SNR) or decoded text (Dt: smooth-scrolling teletype ticker)
 - **Frequency pan and zoom** — keyboard-driven viewport with coarse/fine pan snap, coarse/fine zoom, and span steps
@@ -29,7 +30,7 @@ and waterfall from a configurable signal source.
 
 - Rust (edition 2024)
 - macOS or Linux (renders via `eframe` wgpu backend — Metal/Vulkan)
-- [orion-sdr](https://crates.io/crates/orion-sdr) 0.0.53 (pulled automatically from crates.io)
+- [orion-sdr](https://crates.io/crates/orion-sdr) 0.0.56 (pulled automatically from crates.io)
 
 The GUI dependencies (`eframe`, `egui`) are behind an optional `gui` feature
 (enabled by default). Use `--no-default-features` to build and test the library
@@ -109,12 +110,48 @@ view:
       noise_amp:  0.05
     codfm:
       bandwidth:  1/4    # occupied BW as a fraction of span: 1/8 1/4 1/3 1/2 2/3 3/4 7/8
+      shaping:    true   # out-of-band spectral shaping (default true)
+      edge_guard: 111    # null carriers per band edge; omit to derive from `bandwidth`
+      include_dc: false  # occupy the DC subcarrier
+      taper:      1/4    # symbol-window roll-off, as a fraction of the guard: off 1/8 1/4 3/8
+      mask:       60     # baseband-mask stop-band depth in dB: off 40 60 80
       sig_secs:   10.0   # signal-burst duration (wall-clock seconds)
       gap_secs:   2.0    # silence gap between bursts (wall-clock seconds)
       noise_amp:  0.05
 ```
 
 All fields are optional; missing fields fall back to built-in defaults.
+
+### CODFM spectral shaping
+
+Plain OFDM's out-of-band spectrum decays only as `~1/f`, so the transmitted signal carries a wide
+skirt beyond its occupied band. The CODFM source composes the three shaping levers `orion-sdr`
+provides, all reachable live from the settings popover (`S`) under a `Shaping` toggle that is **on by
+default**:
+
+| Lever | Setting | Where it acts |
+| --- | --- | --- |
+| Edge-carrier guard | `Edge guard` (null carriers per edge) | narrows the occupied band, moving the strongest `sinc` generators inward |
+| Symbol-window taper | `Taper` (roll-off as a fraction of the guard) | the symbol seam — the near skirt, just outside the band edge |
+| Baseband mask | `Mask` (stop-band depth) | the spectrum directly — dominates far out |
+
+They compose, and together they beat either alone. `Edge guard` is seeded from the `Bandwidth`
+fraction — the two are the same lever, so a narrower fraction already *is* a wider guard — and
+nudging it overrides the fraction until `Bandwidth` moves again. Note that the top-line HUD keeps
+naming the fraction; once the guard is overridden it is the decode bar's `BW` readout that is
+authoritative. With `Shaping` off, all four parameters are ignored and the source emits the
+fraction's plain carrier set.
+
+The taper and the mask's group delay share one budget — `roll_off + group_delay ≤ cp_len/2` — since
+both have to live in the guard samples a receiver discards. At CODFM's numerology (`n_fft` 256,
+`cp_len` 32) that leaves 16 samples, so the mask is necessarily short and the payoff is tens of dB
+rather than the 60+ dB a long-guard profile reaches. Tap count is derived from the current edge guard
+and clamped to the remaining budget, which is why it is not a setting: no reachable combination can
+overrun it, and no mask you ask for is silently dropped. `Taper` stops at `3/8` for the same reason —
+`1/2` would spend the whole budget and leave the mask nothing.
+
+See `orion-sdr`'s [modulate.md](https://docs.rs/orion-sdr) → *Out-of-band spectral shaping* for the
+geometry and the transparency argument.
 
 ## Keyboard Shortcuts
 

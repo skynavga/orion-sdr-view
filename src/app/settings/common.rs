@@ -53,6 +53,13 @@ pub(super) trait SourceRows: std::any::Any {
     /// row-level default reset that `Row::reset()` already does.
     fn reset_extras(&mut self) {}
 
+    /// Re-derive rows whose value depends on another row of the same source,
+    /// after that row was nudged.  `local_idx` is the nudged row.
+    ///
+    /// CODFM uses this so its `Edge guard` row re-seeds from the `Bandwidth`
+    /// toggle; sources with independent rows rely on the no-op default.
+    fn after_nudge(&mut self, _local_idx: usize) {}
+
     /// Discard any in-progress pending text edit.
     fn discard_pending(&mut self) {}
 
@@ -552,6 +559,9 @@ impl SettingsState {
         match dir {
             NudgeDir::Left => self.row_mut(target).nudge_left(),
             NudgeDir::Right => self.row_mut(target).nudge_right(),
+        }
+        if let RowTarget::ActiveSource(i) = target {
+            self.active_source_mut().after_nudge(i);
         }
         if matches!(target, RowTarget::Selector) && self.source_index() != prev_source_idx {
             result.source_switched = true;

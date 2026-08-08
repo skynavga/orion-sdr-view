@@ -3,16 +3,32 @@
 
 //! Integration tests for the CODFM (wideband COFDM) source: signal generation,
 //! the `SignalSource` trait surface, per-source sample rate, occupied
-//! bandwidth, and the frame-rate-independent (dt-driven) signal/gap timing.
+//! bandwidth, out-of-band spectral shaping, and the frame-rate-independent
+//! (dt-driven) signal/gap timing.
 
 use orion_sdr_view::source::{
-    CODFM_FS, CODFM_NOMINAL_CENTER, CodfmBwFraction, CodfmSource, SignalSource, codfm_occupied_bw,
+    CODFM_FS, CODFM_MAX_EDGE_GUARD, CODFM_MIN_EDGE_GUARD, CODFM_NOMINAL_CENTER,
+    CODFM_SHAPING_SLACK, CodfmBwFraction, CodfmMask, CodfmShaping, CodfmSource, CodfmTaper,
+    SignalSource, codfm_edge_guard_for, codfm_occupied_bw, codfm_occupied_half,
 };
 
 /// Default construction used by most tests: 2 s signal, 1 s gap, no noise so
-/// signal/silence are unambiguous, 1/4 bandwidth.
+/// signal/silence are unambiguous, 1/4 bandwidth, shaping off (so these tests
+/// exercise the same waveform they always did).
 fn make() -> CodfmSource {
-    CodfmSource::new(2.0, 1.0, 0.0, CodfmBwFraction::OneQuarter, CODFM_FS)
+    make_with(CodfmShaping::derived(CodfmBwFraction::OneQuarter))
+}
+
+/// Like [`make`], with an explicit shaping configuration.
+fn make_with(shaping: CodfmShaping) -> CodfmSource {
+    CodfmSource::new(
+        2.0,
+        1.0,
+        0.0,
+        CodfmBwFraction::OneQuarter,
+        shaping,
+        CODFM_FS,
+    )
 }
 
 /// RMS of a sample block.
@@ -57,7 +73,7 @@ fn occupied_bandwidth_scales_with_fraction() {
     let nyquist = CODFM_FS / 2.0;
     let mut prev = 0.0;
     for &fr in CodfmBwFraction::ALL {
-        let bw = codfm_occupied_bw(CODFM_FS, fr);
+        let bw = codfm_occupied_bw(CODFM_FS, codfm_edge_guard_for(fr));
         assert!(bw > prev, "bw not increasing at {}", fr.label());
         assert!(bw < nyquist, "bw {} exceeds Nyquist at {}", bw, fr.label());
         // Band centered on the nominal center stays within [0, Nyquist].
@@ -156,4 +172,329 @@ fn restart_returns_to_signal_start() {
     assert!(!src.in_signal());
     src.restart();
     assert!(src.in_signal(), "restart returns to the signal phase");
+}
+
+// ── Out-of-band spectral shaping ───────────────────────────────────────────
+//
+// Three composing levers (see `orion-sdr/docs/modulate.md`): the edge-carrier
+// guard moves the strongest `sinc` generators inward, the symbol-window taper
+// softens the symbol seam, and the baseband mask attenuates the skirt directly
+// in the frequency domain.  At CODFM's numerology (`n_fft` 256, `cp_len` 32)
+// the shared guard budget is only 16 samples, so the mask is necessarily short
+// and its payoff is measured in tens of dB far out rather than the ~60 dB a
+// long-guard profile reaches.
+
+/// Frequency bands of the *display* spectrum (real signal, 0…960 kHz) at the
+/// 1/4 fraction, whose occupied band is 360…600 kHz.
+const IN_BAND: (f32, f32) = (380_000.0, 580_000.0);
+/// A few carriers past the band edge — where the taper acts, and where the
+/// mask deliberately leaves its own transition unattenuated.
+const NEAR_SKIRT: (f32, f32) = (630_000.0, 780_000.0);
+/// Far out, where the mask dominates.
+const FAR_SKIRT: (f32, f32) = (900_000.0, 955_000.0);
+
+/// Welch-averaged power spectrum of a real signal through a 4-term
+/// Blackman–Harris window (sidelobes ≈ −92 dB).
+///
+/// The window is not incidental: a rectangular slice leaks roughly 35 dB below
+/// its in-band power, which would measure the *analysis*'s own sidelobes rather
+/// than the mask's stop band.  Any claim about deep attenuation has to be read
+/// through a window whose sidelobes sit below the attenuation being claimed.
+fn bh_power_spectrum(samples: &[f32], n: usize) -> Vec<f32> {
+    use rustfft::FftPlanner;
+    use rustfft::num_complex::Complex;
+    const A: [f32; 4] = [0.35875, 0.48829, 0.14128, 0.01168];
+    let segments = samples.len() / n;
+    let fft = FftPlanner::new().plan_fft_forward(n);
+    let mut acc = vec![0.0f32; n / 2];
+    for s in 0..segments {
+        let mut buf: Vec<Complex<f32>> = (0..n)
+            .map(|i| {
+                let x = core::f32::consts::TAU * i as f32 / n as f32;
+                let w = A[0] - A[1] * x.cos() + A[2] * (2.0 * x).cos() - A[3] * (3.0 * x).cos();
+                Complex::new(samples[s * n + i] * w, 0.0)
+            })
+            .collect();
+        fft.process(&mut buf);
+        for (k, a) in acc.iter_mut().enumerate() {
+            *a += buf[k].norm_sqr();
+        }
+    }
+    acc.iter().map(|&p| p / segments as f32).collect()
+}
+
+/// Mean power (dB) of `spec` over a frequency band.
+fn band_db(spec: &[f32], n: usize, band: (f32, f32)) -> f32 {
+    let bin = |f: f32| ((f / CODFM_FS) * n as f32).round() as usize;
+    let (lo, hi) = (bin(band.0), bin(band.1).min(spec.len() - 1));
+    let mean = spec[lo..=hi].iter().sum::<f32>() / (hi - lo + 1) as f32;
+    10.0 * (mean + 1e-30).log10()
+}
+
+/// FFT size for the shaping measurements: 7.5 kHz subcarriers at 1.92 MHz need
+/// fine resolution to separate the band edge from the skirt.
+const SPEC_N: usize = 8192;
+
+/// Render a shaping configuration and return its display power spectrum.
+fn spectrum_of(shaping: CodfmShaping) -> Vec<f32> {
+    let mut src = make_with(shaping);
+    bh_power_spectrum(&src.next_samples(1 << 20), SPEC_N)
+}
+
+/// A shaping set at the 1/4 fraction's own edge guard.
+fn shaping(taper: CodfmTaper, mask: CodfmMask) -> CodfmShaping {
+    CodfmShaping {
+        enabled: true,
+        edge_guard: codfm_edge_guard_for(CodfmBwFraction::OneQuarter),
+        include_dc: false,
+        taper,
+        mask,
+    }
+}
+
+#[test]
+fn derived_edge_guard_reproduces_the_fraction_band() {
+    // The bandwidth toggle IS the edge-guard lever: the guard it implies must
+    // put the occupied band back where the fraction asked for it, to within the
+    // subcarrier spacing the carrier count is quantized to.
+    let spacing = CODFM_FS / 256.0;
+    for &fr in CodfmBwFraction::ALL {
+        let bw = codfm_occupied_bw(CODFM_FS, codfm_edge_guard_for(fr));
+        let want = fr.value() * CODFM_FS / 2.0;
+        assert!(
+            (bw - want).abs() <= spacing,
+            "{}: guard band {bw} Hz vs fraction {want} Hz",
+            fr.label()
+        );
+    }
+}
+
+#[test]
+fn edge_guard_override_narrows_the_occupied_band() {
+    // Nudging the guard past what the fraction implies takes carriers off both
+    // edges — the Di bar's BW readout has to follow the guard, not the label.
+    let g = codfm_edge_guard_for(CodfmBwFraction::OneQuarter);
+    let spacing = CODFM_FS / 256.0;
+    assert_eq!(codfm_occupied_half(g + 8), codfm_occupied_half(g) - 8);
+    let narrowed = codfm_occupied_bw(CODFM_FS, g) - codfm_occupied_bw(CODFM_FS, g + 8);
+    assert!(
+        (narrowed - 16.0 * spacing).abs() < 1.0,
+        "narrowed {narrowed} Hz"
+    );
+}
+
+#[test]
+fn disabled_shaping_resolves_to_the_fraction_defaults() {
+    // With `Shaping` off the four shaping rows are ignored entirely: whatever
+    // they hold, the rendered configuration is the fraction's own.
+    let fr = CodfmBwFraction::SevenEighths;
+    let stale = CodfmShaping {
+        enabled: false,
+        edge_guard: 3,
+        include_dc: true,
+        taper: CodfmTaper::ThreeEighths,
+        mask: CodfmMask::Db80,
+    };
+    assert_eq!(stale.effective(fr), CodfmShaping::derived(fr));
+    assert_eq!(stale.effective(fr).edge_guard, codfm_edge_guard_for(fr));
+    assert!(
+        stale.mask_filter(16).is_none(),
+        "disabled shaping has no mask"
+    );
+}
+
+#[test]
+fn no_reachable_setting_overruns_the_guard_budget() {
+    // The taper and the mask's group delay share `CODFM_SHAPING_SLACK`. The
+    // `Taper` toggle deliberately stops at 3/8 for this reason: 1/2 would spend
+    // the whole budget and silently drop the mask while the row still named a
+    // stop-band depth.
+    for &fr in CodfmBwFraction::ALL {
+        let occupied_half = codfm_occupied_half(codfm_edge_guard_for(fr));
+        for &taper in CodfmTaper::ALL {
+            for &mask in CodfmMask::ALL {
+                let sh = CodfmShaping {
+                    enabled: true,
+                    edge_guard: codfm_edge_guard_for(fr),
+                    include_dc: false,
+                    taper,
+                    mask,
+                };
+                let delay = sh.mask_filter(occupied_half).map_or(0, |m| m.group_delay());
+                assert!(
+                    taper.roll_off() + delay <= CODFM_SHAPING_SLACK,
+                    "{} / {} / {}: roll_off {} + delay {delay} > {CODFM_SHAPING_SLACK}",
+                    fr.label(),
+                    taper.label(),
+                    mask.label(),
+                    taper.roll_off(),
+                );
+                // A mask that was asked for is never silently dropped.
+                assert_eq!(
+                    sh.mask_filter(occupied_half).is_some(),
+                    mask != CodfmMask::Off,
+                    "{} / {} lost its mask",
+                    taper.label(),
+                    mask.label()
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn shaping_cuts_out_of_band_energy_and_leaves_the_band_alone() {
+    let off = spectrum_of(CodfmShaping::derived(CodfmBwFraction::OneQuarter));
+    let on = spectrum_of(shaping(CodfmTaper::Quarter, CodfmMask::Db60));
+
+    let in_band = band_db(&off, SPEC_N, IN_BAND) - band_db(&on, SPEC_N, IN_BAND);
+    assert!(
+        in_band.abs() < 1.0,
+        "shaping moved in-band power by {in_band:.2} dB"
+    );
+
+    let far = band_db(&off, SPEC_N, FAR_SKIRT) - band_db(&on, SPEC_N, FAR_SKIRT);
+    assert!(far > 12.0, "far skirt dropped only {far:.2} dB");
+
+    let near = band_db(&off, SPEC_N, NEAR_SKIRT) - band_db(&on, SPEC_N, NEAR_SKIRT);
+    assert!(near > 2.5, "near skirt dropped only {near:.2} dB");
+}
+
+#[test]
+fn taper_and_mask_stack() {
+    // They attack different things — the taper the symbol seam, the mask the
+    // spectrum directly — so together they beat either alone.  Measured far
+    // out, where the mask is the stronger lever.
+    let taper_only = band_db(
+        &spectrum_of(shaping(CodfmTaper::Quarter, CodfmMask::Off)),
+        SPEC_N,
+        FAR_SKIRT,
+    );
+    let mask_only = band_db(
+        &spectrum_of(shaping(CodfmTaper::Off, CodfmMask::Db60)),
+        SPEC_N,
+        FAR_SKIRT,
+    );
+    let both = band_db(
+        &spectrum_of(shaping(CodfmTaper::Quarter, CodfmMask::Db60)),
+        SPEC_N,
+        FAR_SKIRT,
+    );
+    let baseline = band_db(
+        &spectrum_of(CodfmShaping::derived(CodfmBwFraction::OneQuarter)),
+        SPEC_N,
+        FAR_SKIRT,
+    );
+    assert!(
+        taper_only < baseline - 2.0,
+        "taper alone: {taper_only:.2} vs {baseline:.2}"
+    );
+    assert!(
+        mask_only < baseline - 2.0,
+        "mask alone: {mask_only:.2} vs {baseline:.2}"
+    );
+    assert!(
+        both < taper_only - 2.0,
+        "both {both:.2} vs taper {taper_only:.2}"
+    );
+    assert!(
+        both < mask_only - 2.0,
+        "both {both:.2} vs mask {mask_only:.2}"
+    );
+}
+
+#[test]
+fn every_shaping_knob_reaches_the_rendered_buffer() {
+    // Guards the settings→source wiring: each parameter must change the samples
+    // (and `apply_params` must notice, rather than keeping a stale buffer).
+    let base = shaping(CodfmTaper::Quarter, CodfmMask::Db60);
+    let variants = [
+        CodfmShaping {
+            include_dc: true,
+            ..base
+        },
+        CodfmShaping {
+            edge_guard: base.edge_guard + 8,
+            ..base
+        },
+        CodfmShaping {
+            taper: CodfmTaper::Off,
+            ..base
+        },
+        CodfmShaping {
+            mask: CodfmMask::Off,
+            ..base
+        },
+        CodfmShaping {
+            enabled: false,
+            ..base
+        },
+    ];
+    let reference = make_with(base).next_samples(4096);
+    for (i, v) in variants.into_iter().enumerate() {
+        let mut src = make_with(base);
+        src.apply_params(2.0, 1.0, 0.0, CodfmBwFraction::OneQuarter, v);
+        assert_ne!(
+            src.next_samples(4096),
+            reference,
+            "variant {i} changed nothing"
+        );
+    }
+}
+
+#[test]
+fn edge_guard_range_brackets_every_fraction() {
+    // The `Edge guard` row's range has to admit every guard the `Bandwidth`
+    // toggle can seed into it, or re-seeding would clamp and the two rows would
+    // disagree about the band.
+    for &fr in CodfmBwFraction::ALL {
+        let g = codfm_edge_guard_for(fr);
+        assert!(
+            (CODFM_MIN_EDGE_GUARD..=CODFM_MAX_EDGE_GUARD).contains(&g),
+            "{}: guard {g} outside {CODFM_MIN_EDGE_GUARD}..={CODFM_MAX_EDGE_GUARD}",
+            fr.label()
+        );
+    }
+}
+
+#[test]
+fn narrowest_guard_keeps_the_band_inside_the_display() {
+    // Below `CODFM_MIN_EDGE_GUARD` the occupied band, once upconverted to the
+    // nominal center, would run past 0 / Nyquist and fold back on itself.
+    let bw = codfm_occupied_bw(CODFM_FS, CODFM_MIN_EDGE_GUARD);
+    assert!(
+        CODFM_NOMINAL_CENTER - bw / 2.0 > 0.0 && CODFM_NOMINAL_CENTER + bw / 2.0 < CODFM_FS / 2.0,
+        "widest band {bw} Hz does not fit around {CODFM_NOMINAL_CENTER} Hz"
+    );
+}
+
+#[test]
+fn every_fraction_renders_with_shaping_on() {
+    // Exercises the whole render path — plan, taper, mask sizing, upconversion —
+    // across the reachable band widths and both guard extremes, which is where a
+    // clamped filter design or an empty carrier set would surface.
+    let mut cases: Vec<(String, CodfmShaping)> = CodfmBwFraction::ALL
+        .iter()
+        .map(|&fr| {
+            (
+                fr.label().to_string(),
+                CodfmShaping::default_for(fr).effective(fr),
+            )
+        })
+        .collect();
+    for guard in [CODFM_MIN_EDGE_GUARD, CODFM_MAX_EDGE_GUARD] {
+        cases.push((
+            format!("guard {guard}"),
+            CodfmShaping {
+                edge_guard: guard,
+                ..CodfmShaping::default_for(CodfmBwFraction::OneQuarter)
+            },
+        ));
+    }
+    for (name, sh) in cases {
+        let mut src = make_with(sh);
+        let s = src.next_samples(65_536);
+        assert!(s.iter().all(|v| v.is_finite()), "{name}: non-finite sample");
+        assert!(rms(&s) > 0.1, "{name}: RMS {} too low", rms(&s));
+    }
 }
