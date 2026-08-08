@@ -522,3 +522,78 @@ fn time_zone_mode_parses_all_variants() {
     assert_eq!(tz_cfg("garbage").time_zone_mode(), TzMode::Utc);
     assert_eq!(tz_cfg("\"+15:00\"").time_zone_mode(), TzMode::Utc);
 }
+
+// ── CODFM spectral shaping ────────────────────────────────────────────────
+
+use orion_sdr_view::source::{CodfmBwFraction, CodfmMask, CodfmTaper, codfm_edge_guard_for};
+
+/// Load a config from a `sources: codfm:` block body (already indented).
+fn codfm_cfg(body: &str) -> ViewConfig {
+    let yaml = format!("view:\n  sources:\n    codfm:\n{body}");
+    let mut f = NamedTempFile::new().unwrap();
+    f.write_all(yaml.as_bytes()).unwrap();
+    ViewConfig::load(Some(f.path().to_path_buf()))
+}
+
+#[test]
+fn codfm_shaping_defaults_when_absent() {
+    // A `codfm:` block that mentions none of the shaping keys still gets the
+    // enabled defaults — shaping is on out of the box.
+    let cfg = codfm_cfg("      bandwidth: 1/2\n");
+    assert_eq!(cfg.codfm_bw_fraction(), CodfmBwFraction::OneHalf);
+    assert!(cfg.codfm_shaping_enabled());
+    assert_eq!(cfg.codfm_taper(), CodfmTaper::Quarter);
+    assert_eq!(cfg.codfm_mask(), CodfmMask::Db60);
+    assert!(!cfg.codfm_include_dc());
+    // No `edge_guard` key means "derive it from the bandwidth fraction".
+    assert_eq!(cfg.codfm_edge_guard(), None);
+}
+
+#[test]
+fn codfm_shaping_keys_parse() {
+    let cfg = codfm_cfg(concat!(
+        "      bandwidth:  7/8\n",
+        "      shaping:    false\n",
+        "      edge_guard: 90\n",
+        "      include_dc: true\n",
+        "      taper:      3/8\n",
+        "      mask:       80\n",
+    ));
+    assert_eq!(cfg.codfm_bw_fraction(), CodfmBwFraction::SevenEighths);
+    assert!(!cfg.codfm_shaping_enabled());
+    assert_eq!(cfg.codfm_edge_guard(), Some(90));
+    assert!(cfg.codfm_include_dc());
+    assert_eq!(cfg.codfm_taper(), CodfmTaper::ThreeEighths);
+    assert_eq!(cfg.codfm_mask(), CodfmMask::Db80);
+}
+
+#[test]
+fn codfm_mask_accepts_bare_and_labelled_depths() {
+    // YAML authors write `mask: 60`; the settings row's label is "60 dB".
+    assert_eq!(codfm_cfg("      mask: 40\n").codfm_mask(), CodfmMask::Db40);
+    assert_eq!(
+        codfm_cfg("      mask: \"80 dB\"\n").codfm_mask(),
+        CodfmMask::Db80
+    );
+    assert_eq!(codfm_cfg("      mask: off\n").codfm_mask(), CodfmMask::Off);
+    // Unparseable values fall back to the default rather than failing the load.
+    assert_eq!(
+        codfm_cfg("      mask: \"120 dB\"\n").codfm_mask(),
+        CodfmMask::Db60
+    );
+    assert_eq!(
+        codfm_cfg("      taper: 5/8\n").codfm_taper(),
+        CodfmTaper::Quarter
+    );
+}
+
+#[test]
+fn codfm_edge_guard_derives_from_every_fraction() {
+    for &fr in CodfmBwFraction::ALL {
+        let cfg = codfm_cfg(&format!("      bandwidth: {}\n", fr.label()));
+        assert_eq!(cfg.codfm_bw_fraction(), fr);
+        assert_eq!(cfg.codfm_edge_guard(), None, "{}", fr.label());
+        // The derived guard is what the settings row seeds from.
+        assert!(codfm_edge_guard_for(fr) > 0);
+    }
+}

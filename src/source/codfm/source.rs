@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use num_complex::Complex32 as C32;
+use orion_sdr::dsp::Rotator;
 use orion_sdr::fec::{CrcKind, FrameMetadata, FramePacket};
 use orion_sdr::modulate::{ConstellationOrder, McsTable, OfdmConfig, OfdmFrameMod};
-use orion_sdr::multicarrier::CarrierPlan;
+use orion_sdr::multicarrier::{CarrierPlan, TxLowpass};
 use orion_sdr::sync::OfdmPreamble;
 
 use crate::source::{MAX_SIG_SECS, SignalSource};
@@ -17,11 +18,81 @@ use crate::source::{MAX_SIG_SECS, SignalSource};
 // per-source (see `ViewApp::apply_source_sample_rate`).  The signal is rendered
 // natively at `CODFM_FS` — there is NO resampling, so the source mirrors the
 // PSK31 single-play→gap→repeat shape rather than FT8's resample+shift path.
+//
+// **Modulation is at baseband, upconversion is ours.**  `OfdmConfig`'s `rf_hz`
+// applies its rotation *inside* `OfdmMod::process`, i.e. per symbol, before
+// `OfdmFrameMod::modulate_frame` runs its spectral-shaping post-passes.  The
+// symbol-window taper is a real-valued magnitude ramp and commutes with that
+// rotation, but `TxLowpass` is a low-pass centered on DC: applied to a stream
+// already sitting at `CODFM_NOMINAL_CENTER` it would delete the signal outright.
+// So the config is built with `rf_hz = 0.0` and `render` upconverts afterwards
+// with a single continuous `Rotator`.  Two artifacts of the old arrangement go
+// away with it: `generate_ofdm_preamble` ignores its config, so the preamble and
+// training symbol used to be emitted at baseband while header/payload sat at
+// 480 kHz; and `map_bits_to_iq` builds a fresh rotator per block, so there was a
+// phase step at every header→payload and frame→frame seam.
 
 /// OFDM FFT size (number of subcarriers).
 const CODFM_N_FFT: usize = 256;
 /// Cyclic-prefix length in samples.
 const CODFM_CP_LEN: usize = 32;
+
+/// Largest usable signed carrier index: the Nyquist bin at `-(n_fft/2)` is
+/// conventionally null, so the plan spans `±(n_fft/2 - 1)`.
+const CODFM_MAX_CARRIER: usize = CODFM_N_FFT / 2 - 1;
+
+/// Narrowest edge guard the settings row allows.
+///
+/// The upconversion sits at `CODFM_NOMINAL_CENTER` = `fs/4`, i.e. `n_fft/4`
+/// bins from DC, so a carrier further out than that from DC lands outside the
+/// display's `0..Nyquist` window and folds back on itself.  One bin of margin
+/// keeps the outermost carrier clear of both ends.
+pub const CODFM_MIN_EDGE_GUARD: usize = CODFM_MAX_CARRIER - (CODFM_N_FFT / 4 - 1);
+
+/// Widest edge guard the settings row allows: the narrowest bandwidth
+/// fraction's own guard (1/8 ⇒ `n_fft/32` carriers per side).
+///
+/// This is a practical bound, not a numerical one.  Fewer carriers spread the
+/// same fixed-size payload over proportionally more OFDM symbols, so the frame
+/// — and the 40-frame render buffer with it — grows without bound as the guard
+/// approaches `n_fft/2`, for a band too narrow to be worth looking at.
+pub const CODFM_MAX_EDGE_GUARD: usize = CODFM_MAX_CARRIER - CODFM_N_FFT / 32;
+
+/// Receiver FFT-window back-off, in samples.  RX-only — it does not change what
+/// is transmitted — but it is what makes the TX shaping below transparent, so it
+/// is set on the config now: the taper and the mask's group delay live in
+/// exactly the guard samples a backed-off window discards.  `cp_len/2` maximizes
+/// the resulting slack, `min(cp_len - b, b)`.
+///
+/// COFDM is the favorable case for this.  The `TrainingSymbolHold` equalizer
+/// estimates every bin at full resolution and absorbs any back-off the guard
+/// allows; it is DVB-T's scattered-pilot *interpolation* that caps the back-off.
+const CODFM_RX_WINDOW_BACKOFF: usize = CODFM_CP_LEN / 2;
+
+/// Guard samples available to TX spectral shaping: `min(cp_len - b, b)`.  The
+/// symbol taper and the mask's group delay share this one budget —
+/// `roll_off + group_delay ≤ CODFM_SHAPING_SLACK`.
+pub const CODFM_SHAPING_SLACK: usize = {
+    let a = CODFM_CP_LEN - CODFM_RX_WINDOW_BACKOFF;
+    if a < CODFM_RX_WINDOW_BACKOFF {
+        a
+    } else {
+        CODFM_RX_WINDOW_BACKOFF
+    }
+};
+
+/// Schmidl & Cox preamble geometry: `CODFM_PREAMBLE_REPEATS` copies of a
+/// `CODFM_PREAMBLE_REPEAT_LEN`-sample segment.
+///
+/// The repeat length is set by the spectral mask, not by acquisition: a TX
+/// low-pass filters the whole burst, preamble included, and the repetition the
+/// receiver correlates on only survives where the taps see repeated samples —
+/// so `group_delay ≪ repeat_len`.  The mask's group delay is bounded by
+/// `CODFM_SHAPING_SLACK` (16), which a 16-sample repeat would not clear at all;
+/// 64 keeps it under ~15%.  Costs 192 extra samples on a frame of several
+/// thousand.
+const CODFM_PREAMBLE_REPEATS: usize = 4;
+const CODFM_PREAMBLE_REPEAT_LEN: usize = 64;
 
 /// Native sample rate of the CODFM waveform (Hz).  Nyquist = 960 kHz.
 /// Subcarrier spacing = `CODFM_FS / CODFM_N_FFT` = 7 500 Hz.
@@ -69,7 +140,7 @@ pub const CODFM_DEFAULT_NOISE_AMP: f32 = 0.05;
 /// Occupied bandwidth as a fraction of the full display span (Nyquist).  The
 /// viewport span is pinned to full Nyquist for CODFM, so this directly controls
 /// how much of the display width the band fills.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CodfmBwFraction {
     OneEighth,
     OneQuarter,
@@ -132,18 +203,225 @@ impl CodfmBwFraction {
 /// Default bandwidth fraction on startup / reset.
 pub const CODFM_DEFAULT_BW_FRACTION: CodfmBwFraction = CodfmBwFraction::OneQuarter;
 
-/// Occupied bandwidth (Hz) for a given fraction at `fs`:
-/// `2 * carrier_half * fs / n_fft`.
-pub fn codfm_occupied_bw(fs: f32, fraction: CodfmBwFraction) -> f32 {
-    let active = (2 * fraction.carrier_half()) as f32;
+/// The edge guard (null carriers per band edge) that reproduces `fraction`'s
+/// occupied band.  The bandwidth toggle *is* the edge-guard lever: the carrier
+/// set it selects, `±1..=±half`, is exactly what
+/// `CarrierPlan::with_contiguous_data(CODFM_MAX_CARRIER - half, false)` fills.
+pub fn codfm_edge_guard_for(fraction: CodfmBwFraction) -> usize {
+    CODFM_MAX_CARRIER - fraction.carrier_half() as usize
+}
+
+/// Outermost occupied carrier, in bins from DC, for an edge guard.
+pub fn codfm_occupied_half(edge_guard: usize) -> usize {
+    CODFM_MAX_CARRIER.saturating_sub(edge_guard)
+}
+
+/// Occupied bandwidth (Hz) at `fs` for an edge guard:
+/// `2 * occupied_half * fs / n_fft`.  Keyed off the guard rather than the
+/// bandwidth fraction, since the guard is separately overridable in settings.
+pub fn codfm_occupied_bw(fs: f32, edge_guard: usize) -> f32 {
+    let active = (2 * codfm_occupied_half(edge_guard)) as f32;
     active * fs / CODFM_N_FFT as f32
+}
+
+// ── Spectral shaping ────────────────────────────────────────────────────────
+
+/// Symbol-window roll-off, as a fraction of the guard (cyclic prefix).
+///
+/// There is deliberately **no `1/2` option** even though `cp_len/2` is the
+/// maximum RX-transparent taper: a roll-off of 16 consumes the whole of
+/// [`CODFM_SHAPING_SLACK`], leaving zero group delay for the mask, which would
+/// silently drop the mask while the settings row still named a stop-band depth.
+/// Capping at `3/8` keeps at least 4 samples of delay — a 9-tap filter — for it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CodfmTaper {
+    Off,
+    Eighth,
+    Quarter,
+    ThreeEighths,
+}
+
+impl CodfmTaper {
+    /// All variants in display order (matches the settings toggle options).
+    pub const ALL: &'static [CodfmTaper] = &[
+        CodfmTaper::Off,
+        CodfmTaper::Eighth,
+        CodfmTaper::Quarter,
+        CodfmTaper::ThreeEighths,
+    ];
+
+    /// Raised-cosine taper length per symbol edge, in samples.
+    pub fn roll_off(self) -> usize {
+        match self {
+            CodfmTaper::Off => 0,
+            CodfmTaper::Eighth => CODFM_CP_LEN / 8,
+            CodfmTaper::Quarter => CODFM_CP_LEN / 4,
+            CodfmTaper::ThreeEighths => 3 * CODFM_CP_LEN / 8,
+        }
+    }
+
+    /// Short label for the HUD / settings toggle.
+    pub fn label(self) -> &'static str {
+        match self {
+            CodfmTaper::Off => "off",
+            CodfmTaper::Eighth => "1/8",
+            CodfmTaper::Quarter => "1/4",
+            CodfmTaper::ThreeEighths => "3/8",
+        }
+    }
+}
+
+/// Baseband spectral-mask stop-band depth.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CodfmMask {
+    Off,
+    Db40,
+    Db60,
+    Db80,
+}
+
+impl CodfmMask {
+    /// All variants in display order (matches the settings toggle options).
+    pub const ALL: &'static [CodfmMask] = &[
+        CodfmMask::Off,
+        CodfmMask::Db40,
+        CodfmMask::Db60,
+        CodfmMask::Db80,
+    ];
+
+    /// Kaiser stop-band attenuation target, or `None` when the mask is off.
+    pub fn stopband_db(self) -> Option<f32> {
+        match self {
+            CodfmMask::Off => None,
+            CodfmMask::Db40 => Some(40.0),
+            CodfmMask::Db60 => Some(60.0),
+            CodfmMask::Db80 => Some(80.0),
+        }
+    }
+
+    /// Short label for the HUD / settings toggle.
+    pub fn label(self) -> &'static str {
+        match self {
+            CodfmMask::Off => "off",
+            CodfmMask::Db40 => "40 dB",
+            CodfmMask::Db60 => "60 dB",
+            CodfmMask::Db80 => "80 dB",
+        }
+    }
+}
+
+/// Default taper and mask when shaping is enabled.
+pub const CODFM_DEFAULT_TAPER: CodfmTaper = CodfmTaper::Quarter;
+pub const CODFM_DEFAULT_MASK: CodfmMask = CodfmMask::Db60;
+/// Shaping is on by default.
+pub const CODFM_DEFAULT_SHAPING_ENABLED: bool = true;
+
+/// The out-of-band spectral-shaping parameter set.
+///
+/// Three levers, all off by default in `orion-sdr` and composed here: the
+/// edge-carrier guard (fewer carriers, so the strongest `sinc` generators move
+/// inward), the symbol-window taper (softens the symbol seam; acts on the near
+/// skirt), and the baseband mask (a FIR low-pass over the composite stream;
+/// acts far out, and is the only lever not bounded by the taper's ceiling).
+///
+/// Grouped into a struct so `CodfmSource::new` / `apply_params` stay under the
+/// clippy argument threshold and so `!=` decides the re-render.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct CodfmShaping {
+    pub enabled: bool,
+    /// Null carriers per band edge.  Seeded from the bandwidth fraction, then
+    /// overridable — see [`codfm_edge_guard_for`].
+    pub edge_guard: usize,
+    /// Occupy the DC subcarrier (null by default, as OFDM convention has it).
+    pub include_dc: bool,
+    pub taper: CodfmTaper,
+    pub mask: CodfmMask,
+}
+
+impl CodfmShaping {
+    /// The shaping-disabled configuration for a fraction: the guard the
+    /// bandwidth toggle implies, no DC, no taper, no mask.  This is the carrier
+    /// layout and shaping state the source had before shaping existed — though
+    /// not sample-for-sample the old buffer, since the move to baseband
+    /// modulation also upconverted the preamble and removed the per-block
+    /// rotator phase steps (see the module header).
+    pub fn derived(fraction: CodfmBwFraction) -> Self {
+        Self {
+            enabled: false,
+            edge_guard: codfm_edge_guard_for(fraction),
+            include_dc: false,
+            taper: CodfmTaper::Off,
+            mask: CodfmMask::Off,
+        }
+    }
+
+    /// The enabled defaults for a fraction.
+    pub fn default_for(fraction: CodfmBwFraction) -> Self {
+        Self {
+            enabled: CODFM_DEFAULT_SHAPING_ENABLED,
+            edge_guard: codfm_edge_guard_for(fraction),
+            include_dc: false,
+            taper: CODFM_DEFAULT_TAPER,
+            mask: CODFM_DEFAULT_MASK,
+        }
+    }
+
+    /// What is actually rendered: this set with its edge guard clamped to the
+    /// usable range when shaping is on, [`derived`](Self::derived) otherwise.
+    /// One resolver rather than a per-field pile, so every consumer — the
+    /// renderer and the Di bar's bandwidth readout — agrees.
+    pub fn effective(&self, fraction: CodfmBwFraction) -> Self {
+        if self.enabled {
+            Self {
+                edge_guard: self
+                    .edge_guard
+                    .clamp(CODFM_MIN_EDGE_GUARD, CODFM_MAX_EDGE_GUARD),
+                ..*self
+            }
+        } else {
+            Self::derived(fraction)
+        }
+    }
+
+    /// The mask spec for a plan whose outermost occupied carrier sits
+    /// `occupied_half` bins from DC, or `None` when the mask is off.
+    ///
+    /// `taps_for_null_band` returns the shortest filter whose transition reaches
+    /// the stop band inside the null band; that answers only one of the two
+    /// constraints, so the result is clamped to what the guard budget leaves
+    /// after the taper (`roll_off + group_delay ≤ CODFM_SHAPING_SLACK`).  A
+    /// clamped filter is shorter than ideal, and `for_null_band` then centers
+    /// its transition rather than pushing it against the band edge — a shallower
+    /// mask, not a broken one.
+    pub fn mask_filter(&self, occupied_half: usize) -> Option<TxLowpass> {
+        if !self.enabled {
+            return None;
+        }
+        let stopband_db = self.mask.stopband_db()?;
+        // Cannot underflow: `CodfmTaper` caps `roll_off` below the slack.
+        let max_delay = CODFM_SHAPING_SLACK.checked_sub(self.taper.roll_off())?;
+        let taps = TxLowpass::taps_for_null_band(CODFM_N_FFT, occupied_half, stopband_db)
+            .min(2 * max_delay + 1);
+        (taps >= 3).then(|| TxLowpass::for_null_band(CODFM_N_FFT, occupied_half, taps, stopband_db))
+    }
 }
 
 // ── CODFM HUD helper ──────────────────────────────────────────────────────────
 
-/// Submode line for the top HUD: the selected bandwidth fraction, e.g. "  bw 1/4".
-pub fn hud_submode_str(fraction: CodfmBwFraction) -> String {
-    format!("  bw {}", fraction.label())
+/// Submode line for the top HUD: the bandwidth fraction, plus a compact shaping
+/// tag when shaping is on, e.g. "  bw 1/4  shp 1/4·60 dB".  The bandwidth label
+/// names the *fraction*, which no longer implies the occupied band once the edge
+/// guard is overridden — the Di bar's BW readout is authoritative there.
+pub fn hud_submode_str(fraction: CodfmBwFraction, shaping: &CodfmShaping) -> String {
+    let mut s = format!("  bw {}", fraction.label());
+    if shaping.enabled {
+        s.push_str(&format!(
+            "  shp {}·{}",
+            shaping.taper.label(),
+            shaping.mask.label()
+        ));
+    }
+    s
 }
 
 // ── CodfmSource ───────────────────────────────────────────────────────────────
@@ -170,6 +448,7 @@ pub struct CodfmSource {
     pub gap_secs: f32,
     pub noise_amp: f32,
     pub fraction: CodfmBwFraction,
+    pub shaping: CodfmShaping,
     fs: f32,
     /// Looping COFDM signal buffer (fixed length; content, not duration).
     samples: Vec<f32>,
@@ -188,6 +467,7 @@ impl CodfmSource {
         gap_secs: f32,
         noise_amp: f32,
         fraction: CodfmBwFraction,
+        shaping: CodfmShaping,
         fs: f32,
     ) -> Self {
         let mut src = Self {
@@ -195,6 +475,7 @@ impl CodfmSource {
             gap_secs,
             noise_amp,
             fraction,
+            shaping,
             fs,
             samples: Vec::new(),
             pos: 0,
@@ -212,27 +493,41 @@ impl CodfmSource {
         self.in_signal
     }
 
-    /// Build the carrier plan (sized by the bandwidth fraction), config,
-    /// preamble, and MCS table, then stream enough COFDM frames to fill the
-    /// target burst duration, storing the real part.
+    /// Build the carrier plan (sized by the edge guard), config, preamble, and
+    /// MCS table, then stream enough COFDM frames to fill the looping buffer,
+    /// mask the result, upconvert it, and store the real part.
     fn render(&mut self) {
-        // DC-centered data carriers ±1..=±half (DC null), so the occupied band
-        // is symmetric about DC and centers at the RF frequency.
-        let half = self.fraction.carrier_half();
-        let data: Vec<i32> = (-half..=-1).chain(1..=half).collect();
-        let plan = CarrierPlan::new(CODFM_N_FFT, CODFM_CP_LEN).with_data_carriers(data);
+        let shaping = self.shaping.effective(self.fraction);
+        let roll_off = shaping.taper.roll_off();
 
-        let cfg = OfdmConfig::new(
+        // DC-centered data carriers ±1..=±(CODFM_MAX_CARRIER - edge_guard), so
+        // the occupied band is symmetric about DC and centers on the RF
+        // frequency after upconversion.  This is Track A's edge-carrier guard:
+        // the same contiguous span the bandwidth fraction always selected, now
+        // built by the library so `occupied_half_carriers()` can size the mask.
+        let plan = CarrierPlan::new(CODFM_N_FFT, CODFM_CP_LEN)
+            .with_contiguous_data(shaping.edge_guard, shaping.include_dc);
+        let mask = shaping.mask_filter(plan.occupied_half_carriers());
+
+        let mut cfg = OfdmConfig::new(
             plan,
             self.fs,
-            CODFM_NOMINAL_CENTER,
+            0.0, // baseband — `render` upconverts, see the module header
             CODFM_GAIN,
             ConstellationOrder::Qpsk,
         )
         .with_payload_crc(CrcKind::Crc32)
-        .with_header_crc(CrcKind::Crc16);
+        .with_header_crc(CrcKind::Crc16)
+        .with_rx_window_backoff(CODFM_RX_WINDOW_BACKOFF);
+        if roll_off > 0 {
+            cfg = cfg.with_symbol_window(roll_off);
+        }
+        debug_assert!(
+            mask.is_none_or(|m| m.fits_guard(CODFM_CP_LEN, roll_off, CODFM_RX_WINDOW_BACKOFF)),
+            "shaping overran the guard budget"
+        );
 
-        let preamble = OfdmPreamble::new(4, 16)
+        let preamble = OfdmPreamble::new(CODFM_PREAMBLE_REPEATS, CODFM_PREAMBLE_REPEAT_LEN)
             .with_training_symbol(cfg.carrier_plan.n_fft(), cfg.carrier_plan.cp_len());
         let table = McsTable::default_ladder();
         let modu = OfdmFrameMod::new(cfg, table, preamble);
@@ -243,13 +538,32 @@ impl CodfmSource {
         // carries a fresh deterministic pseudo-random payload with an
         // incrementing sequence number, so the spectrum stays fully populated
         // across all subcarriers and the loop point isn't obvious.
-        self.samples.clear();
+        //
+        // The symbol taper is `modulate_frame`'s own per-frame post-pass, but
+        // the mask is applied ONCE over the concatenation rather than per frame:
+        // a filter run per frame leaves a group-delay-long transient at each of
+        // the 39 interior seams, which is exactly the spectral step the mask is
+        // there to remove.  `DvbTSuperFrameMod` filters across its frame seams
+        // for the same reason.
+        let mut iq: Vec<C32> = Vec::new();
         for seq in 0..CODFM_BUFFER_FRAMES as u32 {
             let payload = self.build_payload();
             let frame = FramePacket::new(FrameMetadata::new(seq, CODFM_MCS_INDEX), payload);
-            let iq: Vec<C32> = modu.modulate_frame(&frame, 0);
-            self.samples.extend(iq.iter().map(|c| c.re));
+            iq.extend_from_slice(&modu.modulate_frame(&frame, 0));
         }
+        if let Some(mask) = mask {
+            mask.apply(&mut iq);
+        }
+
+        // Upconvert to the nominal center with one continuous rotator (no phase
+        // step at symbol, block, or frame boundaries) and keep the real part.
+        let mut rot = Rotator::new(CODFM_NOMINAL_CENTER, self.fs);
+        self.samples.clear();
+        self.samples.reserve(iq.len());
+        self.samples.extend(iq.iter().map(|c| {
+            let r = rot.next();
+            c.re * r.re - c.im * r.im
+        }));
         self.pos = 0;
     }
 
@@ -260,21 +574,23 @@ impl CodfmSource {
             .collect()
     }
 
-    /// Apply fresh parameters.  Only the bandwidth fraction changes the rendered
-    /// buffer; `sig_secs` / `gap_secs` are wall-clock phase durations applied
-    /// live (no re-render), and `noise_amp` is read per sample.
+    /// Apply fresh parameters.  Only the bandwidth fraction and the shaping set
+    /// change the rendered buffer; `sig_secs` / `gap_secs` are wall-clock phase
+    /// durations applied live (no re-render), and `noise_amp` is read per sample.
     pub fn apply_params(
         &mut self,
         sig_secs: f32,
         gap_secs: f32,
         noise_amp: f32,
         fraction: CodfmBwFraction,
+        shaping: CodfmShaping,
     ) {
-        let rerender = self.fraction != fraction;
+        let rerender = self.fraction != fraction || self.shaping != shaping;
         self.sig_secs = sig_secs;
         self.gap_secs = gap_secs;
         self.noise_amp = noise_amp;
         self.fraction = fraction;
+        self.shaping = shaping;
         if rerender {
             self.render();
         }

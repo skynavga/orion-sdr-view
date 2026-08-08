@@ -17,6 +17,7 @@ pub(in crate::app) fn make(settings: &SettingsState) -> CodfmSource {
         settings.codfm_gap_secs(),
         settings.codfm_noise_amp(),
         settings.codfm_bw_fraction(),
+        settings.codfm_shaping(),
         CODFM_FS,
     )
 }
@@ -29,18 +30,23 @@ pub(in crate::app) fn sync(source: &mut dyn SignalSource, settings: &SettingsSta
             settings.codfm_gap_secs(),
             settings.codfm_noise_amp(),
             settings.codfm_bw_fraction(),
+            settings.codfm_shaping(),
         );
     }
 }
 
 /// Occupied bandwidth (Hz) for the current settings — reported in the Di bar.
+/// Keyed off the *effective* edge guard, which the shaping rows can override
+/// away from what the bandwidth fraction alone implies.
 pub(in crate::app) fn occupied_bw_hz(settings: &SettingsState) -> f32 {
-    codfm_occupied_bw(CODFM_FS, settings.codfm_bw_fraction())
+    let fraction = settings.codfm_bw_fraction();
+    let guard = settings.codfm_shaping().effective(fraction).edge_guard;
+    codfm_occupied_bw(CODFM_FS, guard)
 }
 
 /// Submode line for the top HUD when CODFM is the active source.
 pub(in crate::app) fn hud_submode_str(settings: &SettingsState) -> String {
-    codfm::hud_submode_str(settings.codfm_bw_fraction())
+    codfm::hud_submode_str(settings.codfm_bw_fraction(), &settings.codfm_shaping())
 }
 
 pub(super) struct Factory;
