@@ -9,6 +9,44 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.19] - 2026-08-08
+
+### Added
+
+- **CODFM out-of-band spectral shaping** — the three `orion-sdr` transmit
+  shaping levers, composed and reachable live from the settings popover under
+  a `Shaping` toggle that is on by default: an edge-carrier guard (`Edge
+  guard`, seeded from the `Bandwidth` fraction — the two are the same lever),
+  a symbol-window taper (`Taper`, roll-off as a fraction of the guard), and a
+  baseband spectral mask (`Mask`, stop-band depth). `Include DC` occupies the
+  DC subcarrier. Measured at the 1/4 fraction, the skirt drops ~1.4 dB just
+  outside the band edge, ~6 dB at 700 kHz and ~15 dB from 800 kHz out, while
+  in-band power holds within ±0.4 dB. The levers act in different places and
+  stack. The effect is largest at the narrow fractions, which leave the mask
+  unoccupied bandwidth to filter into.
+- YAML `codfm:` keys `shaping`, `edge_guard`, `include_dc`, `taper`, `mask`.
+
+### Changed
+
+- Bumped `orion-sdr` 0.0.53 → 0.0.56 (spectral-shaping API).
+- **CODFM now modulates at baseband and upconverts in the source.**
+  `OfdmConfig`'s `rf_hz` rotates per symbol inside `modulate_frame`, before the
+  shaping post-passes, so a DC-centered `TxLowpass` applied there would have
+  deleted the signal. Two artifacts went with it: the preamble and training
+  symbol were emitted at baseband while header/payload sat at 480 kHz, and
+  per-block rotators left a phase step at every header/payload and frame seam.
+  A single continuous rotator now spans the whole buffer.
+- The spectral mask is applied once over the 40-frame concatenation rather
+  than per frame, so the interior frame seams stay continuous.
+- Lengthened the Schmidl & Cox preamble repeats from 16 to 64 samples. A mask
+  filters the whole burst, and the repetition a receiver correlates on only
+  survives where the filter's group delay is small against the repeat length.
+- Set the receiver FFT-window back-off to `cp_len/2` on the CODFM config, so
+  the taper and the mask's group delay land in guard samples a receiver
+  discards.
+- The decode bar's `BW` readout follows the effective edge guard rather than
+  the bandwidth fraction, which the guard can now be nudged away from.
+
 ## [0.0.18] - 2026-08-04
 
 ### Documentation
