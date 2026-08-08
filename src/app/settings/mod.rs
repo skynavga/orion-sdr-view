@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 mod amdsb;
-mod codfm;
+mod cofdm;
 mod common;
 mod cw;
 mod display;
@@ -19,7 +19,7 @@ pub use common::HandleKeysResult;
 // Per-source typed-accessor traits.  Bin call sites bring them in scope via
 // `use crate::app::settings::{CwSettings, ...}` (or the `*` umbrella).
 pub(in crate::app) use amdsb::AmDsbSettings;
-pub(in crate::app) use codfm::CodfmSettings;
+pub(in crate::app) use cofdm::CofdmSettings;
 pub(in crate::app) use cw::CwSettings;
 pub(in crate::app) use ft8::Ft8Settings;
 pub(in crate::app) use psk31::Psk31Settings;

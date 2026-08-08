@@ -367,8 +367,8 @@ impl ViewApp {
                         SourceMode::Ft8 => {
                             self.cycle_ft8_mode();
                         }
-                        SourceMode::Codfm => {
-                            self.cycle_codfm_bandwidth();
+                        SourceMode::Cofdm => {
+                            self.cycle_cofdm_bandwidth();
                         }
                         _ => {}
                     }
@@ -763,7 +763,7 @@ impl eframe::App for ViewApp {
         self.last_frame_time = now;
 
         // Advance the source's wall-clock timeline before pulling samples, so
-        // time-based playback (e.g. CODFM signal/gap phases) is frame-rate
+        // time-based playback (e.g. COFDM signal/gap phases) is frame-rate
         // independent.  No-op for sources that don't use it.
         self.source.advance_time(dt);
 
@@ -772,7 +772,7 @@ impl eframe::App for ViewApp {
         // seconds-based timing (gaps, Test Tone ramp/pause, …) run at true
         // wall-clock instead of scaling with the frame rate.  The clamp keeps
         // the FFT fresh at high frame rates and bounds a large `dt` (post-stall,
-        // or a high-`fs` source like CODFM at 1.92 MHz).
+        // or a high-`fs` source like COFDM at 1.92 MHz).
         let budget = (dt * self.source.sample_rate()) as usize;
         let n = budget.clamp(MIN_SAMPLES_PER_FRAME, MAX_SAMPLES_PER_FRAME);
 

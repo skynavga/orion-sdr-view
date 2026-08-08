@@ -5,7 +5,7 @@ use crate::config::ViewConfig;
 use eframe::egui;
 
 use super::amdsb::{AmDsbRows, AmDsbSettings};
-use super::codfm::CodfmRows;
+use super::cofdm::CofdmRows;
 use super::cw::CwRows;
 use super::display::{self, DisplayRows};
 use super::field::{Row, RowDrawCtx, ToggleField, draw_num, draw_toggle};
@@ -56,7 +56,7 @@ pub(super) trait SourceRows: std::any::Any {
     /// Re-derive rows whose value depends on another row of the same source,
     /// after that row was nudged.  `local_idx` is the nudged row.
     ///
-    /// CODFM uses this so its `Edge guard` row re-seeds from the `Bandwidth`
+    /// COFDM uses this so its `Edge guard` row re-seeds from the `Bandwidth`
     /// toggle; sources with independent rows rely on the no-op default.
     fn after_nudge(&mut self, _local_idx: usize) {}
 
@@ -211,7 +211,7 @@ impl SettingsState {
             Box::new(AmDsbRows::new()),
             Box::new(Psk31Rows::new()),
             Box::new(Ft8Rows::new()),
-            Box::new(CodfmRows::new()),
+            Box::new(CofdmRows::new()),
         ];
         // Belt-and-suspenders: panic loudly at startup if the per-source
         // `Vec` order ever drifts from the `SourceMode` enum.  If this fires,
@@ -237,9 +237,9 @@ impl SettingsState {
         );
         debug_assert!(sources[SourceMode::Ft8 as usize].as_any().is::<Ft8Rows>());
         debug_assert!(
-            sources[SourceMode::Codfm as usize]
+            sources[SourceMode::Cofdm as usize]
                 .as_any()
-                .is::<CodfmRows>()
+                .is::<CofdmRows>()
         );
         Self {
             visible: false,
@@ -247,7 +247,7 @@ impl SettingsState {
             focused_row: None,
             source_selector: Row::Toggle(ToggleField {
                 label: "Source",
-                options: &["Test Tone", "CW", "AM DSB", "PSK31", "FT8", "CODFM"],
+                options: &["Test Tone", "CW", "AM DSB", "PSK31", "FT8", "COFDM"],
                 index: 0,
                 default: 0,
             }),

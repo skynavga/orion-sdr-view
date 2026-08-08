@@ -1,9 +1,9 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! CODFM decode — thin, info-only wrapper around [`SpectralState`].
+//! COFDM decode — thin, info-only wrapper around [`SpectralState`].
 //!
-//! CODFM emits only the Di info line (modulation "COFDM", center, occupied
+//! COFDM emits only the Di info line (modulation "COFDM", center, occupied
 //! bandwidth, SNR).  There is no text decode.
 
 use std::sync::mpsc::SyncSender;
@@ -11,15 +11,15 @@ use std::sync::mpsc::SyncSender;
 use crate::decode::DecodeResult;
 use crate::decode::spectral::SpectralState;
 
-pub struct CodfmState(pub SpectralState);
+pub struct CofdmState(pub SpectralState);
 
-impl Default for CodfmState {
+impl Default for CofdmState {
     fn default() -> Self {
         Self(SpectralState::new())
     }
 }
 
-impl CodfmState {
+impl CofdmState {
     pub fn new() -> Self {
         Self::default()
     }
