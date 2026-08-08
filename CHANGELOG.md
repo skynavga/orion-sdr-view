@@ -9,6 +9,27 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.20] - 2026-08-08
+
+### Changed
+
+- **Renamed the wideband source `CODFM` → `COFDM`** throughout. The acronym is
+  *Coded Orthogonal Frequency-Division Multiplexing*; the transposed spelling
+  had been in place since 0.0.17, even though the surrounding prose already
+  used the correct one. **This is a breaking change with no back-compat shim:**
+  - The module path `source::codfm` becomes `source::cofdm`.
+  - Public items rename accordingly — `CodfmSource`, `CodfmConfig`,
+    `CodfmBwFraction`, `CodfmShaping`, `CodfmTaper`, `CodfmMask`, the
+    `CODFM_*` constants, and the `codfm_*` free functions.
+  - The YAML key `sources.codfm:` becomes `sources.cofdm:`. Unknown keys are
+    ignored rather than rejected, so a config still using the old spelling
+    loses that block **silently** — rename it.
+  - The source-selector entry and HUD label now read `COFDM`.
+
+  Rename only: no behavior, numerics, or layout changed, and no test's numeric
+  assertion moved. Historical entries below are written with the corrected
+  spelling even where the old one shipped.
+
 ## [0.0.19] - 2026-08-08
 
 ### Added
