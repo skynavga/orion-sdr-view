@@ -9,6 +9,54 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.21] - 2026-08-09
+
+### Added
+
+- **COFDM instrumentation panel, on the `X` key.** Nine left-aligned columns
+  covering tuning, RF level, signal quality, the error ladder, channel delay
+  spread, the carrier plan, and demodulator lock states. The decode bar's info
+  line (`D` → Di) carries a prioritised subset and drops the lowest-priority
+  fields as the window narrows rather than clipping or scrolling. `X` is
+  mutually exclusive with the help overlay and the settings popover.
+
+  **Most readings are simulated.** The viewer does not run a COFDM receiver, so
+  only tuning, RF level, C/N and the carrier-plan facts are measured or known;
+  the rest are placeholders driven from the measured C/N, rendered dim behind a
+  `SIM` badge. Every metric is provenance-tagged, so an over-the-air provider
+  replaces the simulated block without touching the render path.
+
+  Error metrics are named for the stage whose output they measure — `CBER` at
+  the channel, `IBER` at the inner decoder, `FER`/`err` after the whole chain —
+  and all FEC-derived fields refer to the **inner** code. No label names a
+  decoder or code family, since the inner FEC may be LDPC, convolutional, or
+  absent.
+
+### Changed
+
+- **COFDM's Di bar now uses the wideband SNR estimator.** `SpectralState`
+  hard-coded the narrowband single-tone estimator, which takes the strongest
+  bin as signal and the median of the surrounding bins as noise — on a
+  multi-carrier signal those bins are mostly signal, so it measured the band
+  against itself. The error grew with occupied bandwidth; at the 7/8 fraction
+  it reported a clean burst as 4 dB *below* the noise floor. AM DSB and Test
+  Tone keep the narrowband estimator, which is correct for them.
+
+### Fixed
+
+- **Crash when pressing `R` in the settings popover with no row focused.** The
+  handler iterated a snapshot of the visible-row list while resetting the
+  source selector, which switches the active source mid-iteration and then
+  indexed past the end of the new source's rows. Affects every source, not just
+  COFDM. That path also failed to report the source switch, leaving the
+  settings panel and playback disagreeing about which source was active.
+- **Signal-gap detection above `Noise amp` 0.173 for COFDM.** The gap carries
+  only amplitude-scaled noise, whose RMS is `noise_amp/sqrt(3)`, against a
+  shared signal threshold of 0.1 — so the top two-thirds of the setting's
+  0–0.50 range silently produced no gaps at all: the loop timer never flipped
+  to `gap` and the decode bar never showed "waiting for signal". The threshold
+  is now per-source.
+
 ## [0.0.20] - 2026-08-08
 
 ### Changed
