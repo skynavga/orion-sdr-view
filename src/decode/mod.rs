@@ -24,5 +24,5 @@ pub use crate::source::psk31::{
 pub use orion_sdr::codec::psk31::Psk31Stream;
 #[allow(unused_imports)]
 pub use orion_sdr::util::{
-    PSK31_BW_HZ, best_sync, nb_spectrum_snr_db, power_spectrum, spectrum_bw_hz,
+    PSK31_BW_HZ, best_sync, nb_spectrum_snr_db, power_spectrum, spectrum_bw_hz, wb_spectrum_snr_db,
 };

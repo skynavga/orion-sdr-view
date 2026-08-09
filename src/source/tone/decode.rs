@@ -34,7 +34,7 @@ impl ToneState {
         fs: f32,
         tx: &SyncSender<DecodeResult>,
     ) {
-        self.0.process(
+        self.0.process_nb(
             samples,
             is_signal,
             gap_edge,

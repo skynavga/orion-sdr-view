@@ -9,7 +9,7 @@
 use std::sync::mpsc::SyncSender;
 
 use crate::decode::DecodeResult;
-use crate::decode::spectral::SpectralState;
+use crate::decode::spectral::{SpectralState, wb_spectrum_snr_db};
 
 pub struct CofdmState(pub SpectralState);
 
@@ -46,6 +46,12 @@ impl CofdmState {
             "COFDM",
             carrier_hz,
             fs,
+            // COFDM spreads its energy over the whole occupied band, so the
+            // narrowband estimator every other mode uses — one peak bin against
+            // the noise floor — measures a single subcarrier and reports a
+            // number tens of dB off.  Compare the mean power across the
+            // occupied window instead.
+            |real, fs, carrier_hz| wb_spectrum_snr_db(real, fs, carrier_hz, bw_hz),
             // The occupied bandwidth of a COFDM band is a fixed property of the
             // carrier plan (it depends on the selected bandwidth fraction), not
             // a value to measure.  `spectrum_bw_hz` is a narrowband estimator

@@ -6,6 +6,7 @@
 //! bandwidth, out-of-band spectral shaping, and the frame-rate-independent
 //! (dt-driven) signal/gap timing.
 
+use orion_sdr_view::decode::{SPECTRUM_WINDOW_SAMPLES, nb_spectrum_snr_db, wb_spectrum_snr_db};
 use orion_sdr_view::source::{
     COFDM_FS, COFDM_MAX_EDGE_GUARD, COFDM_MIN_EDGE_GUARD, COFDM_NOMINAL_CENTER,
     COFDM_SHAPING_SLACK, CofdmBwFraction, CofdmMask, CofdmShaping, CofdmSource, CofdmTaper,
@@ -497,4 +498,78 @@ fn every_fraction_renders_with_shaping_on() {
         assert!(s.iter().all(|v| v.is_finite()), "{name}: non-finite sample");
         assert!(rms(&s) > 0.1, "{name}: RMS {} too low", rms(&s));
     }
+}
+
+// ── SNR estimator ──────────────────────────────────────────────────────────
+//
+// COFDM's Di bar delegates to `SpectralState`, which used the narrowband
+// single-tone estimator for every mode.  That estimator takes the strongest bin
+// as "signal" and the median of the bins outside a narrow exclusion window as
+// "noise" — and on a multi-carrier signal those bins are mostly *signal*, so
+// the floor it measures is the band itself.  The error therefore grows with
+// occupied bandwidth, which is why the narrowband default is right for the
+// genuinely narrowband sources and wrong here.
+
+/// SNR of a COFDM burst by both estimators, at a given fraction and noise
+/// amplitude.  Returns `(narrowband, wideband)` in dB.
+fn snr_pair(fraction: CofdmBwFraction, noise_amp: f32) -> (f32, f32) {
+    let shaping = CofdmShaping::default_for(fraction);
+    let mut src = CofdmSource::new(2.0, 1.0, noise_amp, fraction, shaping, COFDM_FS);
+    let s = src.next_samples(SPECTRUM_WINDOW_SAMPLES);
+    let bw = cofdm_occupied_bw(COFDM_FS, shaping.effective(fraction).edge_guard);
+    (
+        nb_spectrum_snr_db(&s, COFDM_FS, COFDM_NOMINAL_CENTER),
+        wb_spectrum_snr_db(&s, COFDM_FS, COFDM_NOMINAL_CENTER, bw),
+    )
+}
+
+#[test]
+fn narrowband_snr_reads_a_wide_cofdm_band_as_below_the_noise_floor() {
+    // At 7/8 the band fills most of the spectrum, so nearly every bin the
+    // narrowband estimator samples for its noise floor is a subcarrier.  It
+    // reports a *negative* SNR for a burst that is unmistakably present, while
+    // the wideband estimator reads it well above the floor.  This is a
+    // qualitative failure, not a calibration difference — which is what makes
+    // it worth pinning against a silent revert.
+    let (nb, wb) = snr_pair(CofdmBwFraction::SevenEighths, 0.05);
+    assert!(nb.is_finite() && wb.is_finite(), "nb {nb} wb {wb}");
+    assert!(
+        nb < 0.0,
+        "narrowband estimator should mis-read a full-width COFDM band as \
+         below the noise floor, got {nb:.1} dB"
+    );
+    assert!(
+        wb > 10.0,
+        "wideband estimator should read the same band well above the floor, \
+         got {wb:.1} dB"
+    );
+}
+
+#[test]
+fn narrowband_snr_error_grows_with_occupied_bandwidth() {
+    // The two estimators nearly agree on a narrow band and diverge as it
+    // widens.  This is the shape of the bug: `SpectralState`'s default is
+    // sound for AM DSB / CW / Test Tone and degrades in proportion to how
+    // wideband the signal is.
+    let (nb_narrow, wb_narrow) = snr_pair(CofdmBwFraction::OneEighth, 0.05);
+    let (nb_wide, wb_wide) = snr_pair(CofdmBwFraction::SevenEighths, 0.05);
+    let narrow_err = wb_narrow - nb_narrow;
+    let wide_err = wb_wide - nb_wide;
+    assert!(
+        wide_err > narrow_err + 6.0,
+        "error should grow with occupied bandwidth: 1/8 {narrow_err:.1} dB, \
+         7/8 {wide_err:.1} dB"
+    );
+}
+
+#[test]
+fn wideband_snr_tracks_noise_amplitude() {
+    // The wideband estimator must be monotone in noise — this is what makes the
+    // Di bar's C/N respond to the `Noise amp` setting.
+    let (_, quiet) = snr_pair(CofdmBwFraction::OneQuarter, 0.01);
+    let (_, noisy) = snr_pair(CofdmBwFraction::OneQuarter, 0.5);
+    assert!(
+        quiet > noisy,
+        "more noise must lower wideband C/N: quiet {quiet:.1} dB, noisy {noisy:.1} dB"
+    );
 }

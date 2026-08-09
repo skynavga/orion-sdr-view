@@ -13,7 +13,7 @@ use num_complex::Complex32 as C32;
 
 use super::{DecodeResult, SPECTRUM_WINDOW_SAMPLES};
 use crate::source::psk31::INFO_INTERVAL;
-pub use orion_sdr::util::{nb_spectrum_snr_db, power_spectrum, spectrum_bw_hz};
+pub use orion_sdr::util::{nb_spectrum_snr_db, power_spectrum, spectrum_bw_hz, wb_spectrum_snr_db};
 
 #[derive(Default)]
 pub struct SpectralState {
@@ -37,6 +37,15 @@ impl SpectralState {
 
     /// Run one block of spectral analysis.
     ///
+    /// `snr_fn` computes the *raw* SNR for the current window; the EMA smoothing
+    /// is applied here, so every caller gets the same response.  The estimator
+    /// is caller-supplied because it is not one-size-fits-all: AM DSB, CW and
+    /// Test Tone are single-tone signals and want [`nb_spectrum_snr_db`], which
+    /// compares one peak bin against the noise floor, while a multi-carrier
+    /// signal defeats that comparison entirely and needs
+    /// [`wb_spectrum_snr_db`].  See [`SpectralState::process_nb`] for the
+    /// narrowband default.
+    ///
     /// `bw_fn` computes the bandwidth value for the current window.  Callers
     /// supply a mode-specific closure so that AM DSB can use EMA-smoothed
     /// `spectrum_bw_hz` while Test Tone uses raw `power_spectrum` peak, etc.
@@ -51,6 +60,7 @@ impl SpectralState {
         label: &str,
         carrier_hz: f32,
         fs: f32,
+        snr_fn: impl FnOnce(&[f32], f32, f32) -> f32,
         bw_fn: impl FnOnce(&[f32], f32, f32, &mut Self) -> f32,
         tx: &SyncSender<DecodeResult>,
     ) {
@@ -80,7 +90,7 @@ impl SpectralState {
         self.spec_buf.drain(..SPECTRUM_WINDOW_SAMPLES / 2);
 
         let real: Vec<f32> = decode_buf.iter().map(|c| c.re).collect();
-        let raw_snr = nb_spectrum_snr_db(&real, fs, carrier_hz);
+        let raw_snr = snr_fn(&real, fs, carrier_hz);
         if self.smoothed_snr_db == 0.0 {
             self.smoothed_snr_db = raw_snr;
         } else {
@@ -99,5 +109,34 @@ impl SpectralState {
                 snr_db: self.smoothed_snr_db,
             });
         }
+    }
+
+    /// [`process`](Self::process) with the narrowband single-tone SNR
+    /// estimator — the right default for every mode whose signal energy sits in
+    /// one bin.  A wideband mode must call `process` and pass its own estimator
+    /// rather than reaching for this.
+    #[allow(clippy::too_many_arguments)]
+    pub fn process_nb(
+        &mut self,
+        samples: &[f32],
+        is_signal: bool,
+        gap_edge: bool,
+        label: &str,
+        carrier_hz: f32,
+        fs: f32,
+        bw_fn: impl FnOnce(&[f32], f32, f32, &mut Self) -> f32,
+        tx: &SyncSender<DecodeResult>,
+    ) {
+        self.process(
+            samples,
+            is_signal,
+            gap_edge,
+            label,
+            carrier_hz,
+            fs,
+            nb_spectrum_snr_db,
+            bw_fn,
+            tx,
+        );
     }
 }
