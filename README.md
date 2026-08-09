@@ -157,8 +157,16 @@ geometry and the transparency argument.
 
 `X` opens an instrumentation panel for the COFDM source: tuning and RF level, signal quality, the
 error ladder, channel delay spread, the carrier-plan configuration, and demodulator lock states. The
-decode bar's info line (`D` → Di) carries a prioritised subset of the same readings and drops the
-lowest-priority fields as the window narrows rather than clipping them.
+decode bar's info line (`D` → Di) carries a prioritised subset of the same readings:
+
+```text
+COFDM 480.0kHz 240kHz  C/N 28.0   MER 26.5   CBER <1E-9   Δf +80 Hz   lvl -36.6 dBFS   lck ●●●●  SIM
+```
+
+As the window narrows the **lowest-priority fields are dropped** rather than the line being clipped
+or scrolled — level first, then frequency error, then the lock run (`lck`, pinned to the right so it
+always sits just before the `SIM` badge), leaving `C/N` last. Field widths are fixed, so a value
+gaining or losing a digit cannot shift its neighbours.
 
 **Most of it is simulated.** The viewer does not run a COFDM receiver yet, so only the tuning, RF
 level, C/N, and the carrier-plan facts are real; everything else is a placeholder driven from the
@@ -167,6 +175,11 @@ panel carries a `SIM` badge — a placeholder that looked measured would be the 
 designing against. `C/N` itself is a real fix rather than a relabelled SNR: the shared narrowband
 estimator compares one peak bin against the noise floor, which a multi-carrier signal defeats, so
 COFDM uses the wideband estimator instead.
+
+`lvl`, `pk` and `OVL` are measured against **the source's own full scale, not 1.0**. The COFDM
+modulator applies a large fixed gain — bare OFDM at unit gain sits below the decode threshold, and
+the f32 spectrum pipeline has no `[-1, 1]` clamp — so raw samples routinely peak above 30. Read
+against 1.0 they would report positive dBFS and a permanent overload.
 
 The error metrics form a ladder, each rung named for the stage whose *output* it measures, and all of
 them refer to the **inner** FEC — the outer block code is a separate stage:
