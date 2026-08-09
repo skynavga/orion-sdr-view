@@ -3,7 +3,7 @@
 
 use num_complex::Complex32 as C32;
 use orion_sdr::dsp::Rotator;
-use orion_sdr::fec::{CrcKind, FrameMetadata, FramePacket};
+use orion_sdr::fec::{CrcKind, FrameMetadata, FramePacket, InnerFec, PunctureRate};
 use orion_sdr::modulate::{ConstellationOrder, McsTable, OfdmConfig, OfdmFrameMod};
 use orion_sdr::multicarrier::{CarrierPlan, TxLowpass};
 use orion_sdr::sync::OfdmPreamble;
@@ -33,9 +33,9 @@ use crate::source::{MAX_SIG_SECS, SignalSource};
 // phase step at every header→payload and frame→frame seam.
 
 /// OFDM FFT size (number of subcarriers).
-const COFDM_N_FFT: usize = 256;
+pub const COFDM_N_FFT: usize = 256;
 /// Cyclic-prefix length in samples.
-const COFDM_CP_LEN: usize = 32;
+pub const COFDM_CP_LEN: usize = 32;
 
 /// Largest usable signed carrier index: the Nyquist bin at `-(n_fft/2)` is
 /// conventionally null, so the plan spans `±(n_fft/2 - 1)`.
@@ -106,7 +106,7 @@ pub const COFDM_NOMINAL_CENTER: f32 = COFDM_FS / 4.0; // 480 kHz = Nyquist/2
 /// QPSK payload from the default MCS ladder (index 1: BPSK/QPSK/QAM16/QAM64).
 const COFDM_MCS_INDEX: u8 = 1;
 /// Payload bytes per COFDM frame (RS(204,188)-style block minus a 4-byte CRC).
-const COFDM_PAYLOAD_BYTES: usize = 184;
+pub const COFDM_PAYLOAD_BYTES: usize = 184;
 
 /// Number of back-to-back COFDM frames in the looping signal buffer.  This sets
 /// the buffer *content* (enough frames that the loop point isn't obvious), not
@@ -122,7 +122,7 @@ const COFDM_BUFFER_FRAMES: usize = 40;
 /// detection threshold on every payload block for all bandwidth fractions.
 /// The f32 spectrum pipeline has no [-1, 1] clamp, so the resulting large
 /// time-domain peak is fine.
-const COFDM_GAIN: f32 = 121.0;
+pub const COFDM_GAIN: f32 = 121.0;
 
 /// Display reference level (dBFS, spectrum-scale top) preferred by COFDM, set
 /// to match the ~-15 dB signal peaks produced by `COFDM_GAIN`.
@@ -134,6 +134,27 @@ pub const COFDM_DEFAULT_SIG_SECS: f32 = 10.0;
 pub const COFDM_DEFAULT_GAP_SECS: f32 = 2.0;
 /// Default additive-noise amplitude.
 pub const COFDM_DEFAULT_NOISE_AMP: f32 = 0.05;
+/// Largest `Noise amp` the settings row allows.
+pub const COFDM_MAX_NOISE_AMP: f32 = 0.50;
+
+/// Block-RMS threshold separating COFDM's signal phase from its gap.
+///
+/// The shared [`orion_sdr::util::SIGNAL_THRESHOLD`] (0.1) assumes a unit-scale
+/// source.  COFDM is not one: [`COFDM_GAIN`] puts its signal-phase RMS at
+/// 1.3–3.3 depending on the bandwidth fraction, while the gap carries only
+/// `Noise amp` noise — uniform on `[-1, 1)` scaled by the amplitude, so its RMS
+/// is `noise_amp / sqrt(3)`, up to 0.289 at the row's maximum.
+///
+/// 0.1 therefore sits *below the gap noise* for any `Noise amp` above
+/// `0.1 * sqrt(3)` = 0.173 — the top two-thirds of the row's 0–0.50 range — and
+/// gap detection silently stops: the loop timer never flips to `gap`, the Di
+/// bar never shows "waiting for signal", and the instrumentation panel is never
+/// cleared between bursts.
+///
+/// 0.6 splits the two populations with better than 2x margin on both sides
+/// across the entire settings space: it is at least 2.0x above the loudest
+/// reachable gap and at least 2.1x below the quietest reachable signal phase.
+pub const COFDM_SIGNAL_THRESHOLD: f32 = 0.6;
 
 // ── Bandwidth fraction ──────────────────────────────────────────────────────
 
@@ -222,6 +243,55 @@ pub fn cofdm_occupied_half(edge_guard: usize) -> usize {
 pub fn cofdm_occupied_bw(fs: f32, edge_guard: usize) -> f32 {
     let active = (2 * cofdm_occupied_half(edge_guard)) as f32;
     active * fs / COFDM_N_FFT as f32
+}
+
+/// Number of *data* carriers in the plan an edge guard produces.
+///
+/// Read off a real [`CarrierPlan`] rather than re-derived from the guard, so
+/// the instrumentation's bit rate cannot drift from the waveform actually
+/// transmitted.  This matters more than it looks: carrier counts across the
+/// profiles this must eventually serve span two orders of magnitude — the
+/// synthetic source is 32 carriers at the default 1/4 fraction, while DVB-T 2K
+/// carries 1512 data carriers out of 2048 bins at a reduced sample rate.
+/// Anything derived from `n_fft` would be silently wrong for the latter.
+pub fn cofdm_data_carriers(edge_guard: usize, include_dc: bool) -> usize {
+    CarrierPlan::new(COFDM_N_FFT, COFDM_CP_LEN)
+        .with_contiguous_data(edge_guard, include_dc)
+        .data_carriers()
+        .len()
+}
+
+/// The MCS the source transmits, as instrumentation facts: the constellation
+/// name, its bits per symbol, and the **inner** code rate as `(k, n)`.
+///
+/// The outer code (`BCH t=8`) is deliberately not folded into the rate — `CR`
+/// and the derived bit rate both advertise the inner code alone.  Note also
+/// that the inner code is whatever the MCS selects, not "LDPC": `InnerFec` is
+/// `None | Ldpc | Convolutional`, and the default ladder's LDPC entry is a
+/// current default, not a property of the format.
+pub fn cofdm_mcs_facts() -> (&'static str, usize, (usize, usize)) {
+    let mcs = McsTable::default_ladder()
+        .get(COFDM_MCS_INDEX)
+        .expect("default MCS ladder covers COFDM_MCS_INDEX");
+    let name = match mcs.constellation {
+        ConstellationOrder::Bpsk => "BPSK",
+        ConstellationOrder::Qpsk => "QPSK",
+        ConstellationOrder::Qam16 => "QAM16",
+        ConstellationOrder::Qam64 => "QAM64",
+        ConstellationOrder::Qam256 => "QAM256",
+    };
+    let rate = match mcs.inner_fec {
+        InnerFec::None => (1, 1),
+        InnerFec::Ldpc(code) => (code.k(), code.n()),
+        InnerFec::Convolutional { rate, .. } => match rate {
+            PunctureRate::R1_2 => (1, 2),
+            PunctureRate::R2_3 => (2, 3),
+            PunctureRate::R3_4 => (3, 4),
+            PunctureRate::R5_6 => (5, 6),
+            PunctureRate::R7_8 => (7, 8),
+        },
+    };
+    (name, mcs.constellation.bits_per_symbol(), rate)
 }
 
 // ── Spectral shaping ────────────────────────────────────────────────────────

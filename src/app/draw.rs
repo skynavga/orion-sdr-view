@@ -309,7 +309,13 @@ impl ViewApp {
             );
         } else {
             // ── Static left-aligned text (Di mode or waiting) ────────────────
-            let (text, color) = if self.decode_bar == DecodeBarMode::Info {
+            // COFDM replaces the shared four-field line with its prioritised
+            // instrumentation summary, fitted to the width the loop timer and
+            // FT counter leave free.  Every other source is untouched.
+            let budget = (((scroll_right - content_x) / em_w).floor() as isize).max(0) as usize;
+            let (text, color) = if let Some(line) = self.di_instrument_line(budget) {
+                (line, TEXT_COL)
+            } else if self.decode_bar == DecodeBarMode::Info {
                 // Di mode: show last_info if available.
                 if let Some(DecodeResult::Info {
                     modulation,
@@ -883,6 +889,7 @@ impl ViewApp {
             ("Alt+← / →\tmove active marker (one bin)", 2),
             ("Display", 1),
             ("S\topen/close settings popover", 2),
+            ("X\ttoggle extended instrumentation panel", 2),
             ("? or H\ttoggle this help overlay", 2),
             ("Escape\tdismiss overlays", 2),
             ("Q\tquit", 2),

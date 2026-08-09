@@ -521,11 +521,39 @@ impl SettingsState {
                 if let Some(row_vis) = self.focused_row {
                     let target = self.active_rows()[row_vis];
                     self.row_mut(target).reset();
-                } else {
+                } else if self.active_tab == TAB_DISPLAY {
                     let targets: Vec<_> = self.active_rows();
                     for target in targets {
                         self.row_mut(target).reset();
                     }
+                } else {
+                    // A source tab must NOT iterate a snapshot of
+                    // `active_rows()`.  That list is `[Selector, ActiveSource(i)
+                    // ..]` with the indices of the *current* source, and
+                    // resetting the selector switches the active source — so
+                    // every remaining target would then index into a different
+                    // source's row list.  Resetting COFDM (9 rows) snaps the
+                    // selector to Test Tone (5 rows) and the next target,
+                    // `ActiveSource(5)`, panics.
+                    //
+                    // Reset every source's rows outright, then the selector.
+                    let prev_source_idx = self.source_index();
+                    self.reset_source_rows();
+                    self.source_selector.reset();
+                    // Resetting the selector is a source switch, and the app
+                    // has to be told — otherwise the panel lists the default
+                    // source's rows while playback continues on the old one.
+                    if self.source_index() != prev_source_idx {
+                        result.source_switched = true;
+                    }
+                }
+                // Visible-row count changes with both the source and any
+                // visibility toggle that just reset.
+                let n = self.n_visible_rows();
+                if let Some(r) = self.focused_row
+                    && r >= n
+                {
+                    self.focused_row = n.checked_sub(1);
                 }
             }
         });

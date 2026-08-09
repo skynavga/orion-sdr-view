@@ -50,6 +50,10 @@ impl SpectralState {
     /// supply a mode-specific closure so that AM DSB can use EMA-smoothed
     /// `spectrum_bw_hz` while Test Tone uses raw `power_spectrum` peak, etc.
     ///
+    /// Returns `true` when an `Info` was sent on this call.  COFDM uses that to
+    /// emit its instrumentation on exactly the same cadence, so no field
+    /// updates at a visibly different rate from its neighbours.
+    ///
     /// Returns without sending if the spec buffer hasn't filled a window yet.
     #[allow(clippy::too_many_arguments)]
     pub fn process(
@@ -63,7 +67,7 @@ impl SpectralState {
         snr_fn: impl FnOnce(&[f32], f32, f32) -> f32,
         bw_fn: impl FnOnce(&[f32], f32, f32, &mut Self) -> f32,
         tx: &SyncSender<DecodeResult>,
-    ) {
+    ) -> bool {
         if !is_signal {
             if gap_edge {
                 self.spec_buf.clear();
@@ -77,13 +81,13 @@ impl SpectralState {
                     snr_db: 0.0,
                 });
             }
-            return;
+            return false;
         }
 
         self.spec_buf
             .extend(samples.iter().map(|&s| C32::new(s, 0.0)));
         if self.spec_buf.len() < SPECTRUM_WINDOW_SAMPLES {
-            return;
+            return false;
         }
 
         let decode_buf: Vec<C32> = self.spec_buf[..SPECTRUM_WINDOW_SAMPLES].to_vec();
@@ -100,15 +104,17 @@ impl SpectralState {
         let bw = bw_fn(&real, fs, carrier_hz, self);
 
         self.info_counter += SPECTRUM_WINDOW_SAMPLES / 2;
-        if self.info_counter >= INFO_INTERVAL {
-            self.info_counter = 0;
-            let _ = tx.try_send(DecodeResult::Info {
-                modulation: label.to_owned(),
-                center_hz: carrier_hz,
-                bw_hz: bw,
-                snr_db: self.smoothed_snr_db,
-            });
+        if self.info_counter < INFO_INTERVAL {
+            return false;
         }
+        self.info_counter = 0;
+        let _ = tx.try_send(DecodeResult::Info {
+            modulation: label.to_owned(),
+            center_hz: carrier_hz,
+            bw_hz: bw,
+            snr_db: self.smoothed_snr_db,
+        });
+        true
     }
 
     /// [`process`](Self::process) with the narrowband single-tone SNR
@@ -126,7 +132,7 @@ impl SpectralState {
         fs: f32,
         bw_fn: impl FnOnce(&[f32], f32, f32, &mut Self) -> f32,
         tx: &SyncSender<DecodeResult>,
-    ) {
+    ) -> bool {
         self.process(
             samples,
             is_signal,
@@ -137,6 +143,6 @@ impl SpectralState {
             nb_spectrum_snr_db,
             bw_fn,
             tx,
-        );
+        )
     }
 }

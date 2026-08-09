@@ -148,7 +148,9 @@ impl CofdmRows {
                     default: crate::source::cofdm::COFDM_DEFAULT_NOISE_AMP,
                     step: 0.01,
                     min: 0.0,
-                    max: 0.50,
+                    // The source's signal-detection threshold is derived from
+                    // this bound, so the two must not drift apart.
+                    max: crate::source::cofdm::COFDM_MAX_NOISE_AMP,
                     unit: "",
                     coarse: None,
                 }),

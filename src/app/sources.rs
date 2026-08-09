@@ -150,6 +150,8 @@ impl ViewApp {
         if let Ok(mut cfg) = self.decode_config.lock() {
             cfg.mode = mode;
             cfg.carrier_hz = carrier_hz;
+            // Both sides must agree on where a burst ends.
+            cfg.signal_threshold = self.signal_threshold();
             if self.source_mode == SourceMode::Cw {
                 cfg.cw_message = self.settings.cw_message().to_owned();
                 cfg.cw_wpm = self.settings.cw_wpm();
@@ -160,6 +162,9 @@ impl ViewApp {
             }
             if self.source_mode == SourceMode::Cofdm {
                 cfg.cofdm_bw_hz = cofdm::occupied_bw_hz(&self.settings);
+                let (guard, include_dc) = cofdm::carrier_plan_params(&self.settings);
+                cfg.cofdm_edge_guard = guard;
+                cfg.cofdm_include_dc = include_dc;
             }
         }
     }

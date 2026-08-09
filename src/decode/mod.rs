@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 mod common;
+pub mod instrument;
 pub mod spectral;
 
 pub use common::{

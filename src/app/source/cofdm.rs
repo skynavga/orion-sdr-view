@@ -44,6 +44,15 @@ pub(in crate::app) fn occupied_bw_hz(settings: &SettingsState) -> f32 {
     cofdm_occupied_bw(COFDM_FS, guard)
 }
 
+/// The *effective* carrier-plan parameters — edge guard and DC occupancy — for
+/// the current settings.  The instrumentation reads its data-carrier count off
+/// the plan these produce rather than deriving it from `n_fft`.
+pub(in crate::app) fn carrier_plan_params(settings: &SettingsState) -> (usize, bool) {
+    let fraction = settings.cofdm_bw_fraction();
+    let shaping = settings.cofdm_shaping().effective(fraction);
+    (shaping.edge_guard, shaping.include_dc)
+}
+
 /// Submode line for the top HUD when COFDM is the active source.
 pub(in crate::app) fn hud_submode_str(settings: &SettingsState) -> String {
     cofdm::hud_submode_str(settings.cofdm_bw_fraction(), &settings.cofdm_shaping())

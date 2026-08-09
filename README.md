@@ -153,6 +153,41 @@ overrun it, and no mask you ask for is silently dropped. `Taper` stops at `3/8` 
 See `orion-sdr`'s [modulate.md](https://docs.rs/orion-sdr) → *Out-of-band spectral shaping* for the
 geometry and the transparency argument.
 
+### COFDM instrumentation
+
+`X` opens an instrumentation panel for the COFDM source: tuning and RF level, signal quality, the
+error ladder, channel delay spread, the carrier-plan configuration, and demodulator lock states. The
+decode bar's info line (`D` → Di) carries a prioritised subset of the same readings and drops the
+lowest-priority fields as the window narrows rather than clipping them.
+
+**Most of it is simulated.** The viewer does not run a COFDM receiver yet, so only the tuning, RF
+level, C/N, and the carrier-plan facts are real; everything else is a placeholder driven from the
+measured C/N so the panel responds to `Noise amp` and `Shaping`. Simulated values render dim and the
+panel carries a `SIM` badge — a placeholder that looked measured would be the failure mode worth
+designing against. `C/N` itself is a real fix rather than a relabelled SNR: the shared narrowband
+estimator compares one peak bin against the noise floor, which a multi-carrier signal defeats, so
+COFDM uses the wideband estimator instead.
+
+The error metrics form a ladder, each rung named for the stage whose *output* it measures, and all of
+them refer to the **inner** FEC — the outer block code is a separate stage:
+
+| Reading | Measured at the output of |
+| --- | --- |
+| `CBER` | the channel, i.e. before the inner decoder |
+| `IBER` | the inner decoder, before the outer |
+| `FER` | the whole chain — the *fraction* of frames that fail to decode (`PER` under a packet-oriented profile) |
+| `err` | the whole chain — the *count* of frames that have failed in the current burst |
+
+`FER` is a rate and `err` is a running total, so they correlate through the frame rate: `err` advances at
+roughly `FER × frames-per-second`, which is in the hundreds here. The count is per-burst — it resets at
+each signal gap, since the panel it annotates clears there too — and it wraps at 1 000 000, with a
+trailing `+` once it has rolled over.
+
+`CR` is likewise the inner code rate, and the `FEC` lock indicator is the inner decoder converging.
+The labels deliberately avoid naming a decoder or a code family — the inner FEC can be LDPC,
+convolutional, or absent, so DVB's `VBER` spelling (after the Viterbi algorithm) would only ever be
+right for one of them.
+
 ## Keyboard Shortcuts
 
 | Key | Action |
@@ -167,6 +202,7 @@ geometry and the transparency argument.
 | `W` | Cycle pane 3 between vertical waterfall and horizontal spectrogram |
 | `R` | Reset source, timers, decode state, and frequency view |
 | `S` | Open/close settings popover |
+| `X` | Toggle extended instrumentation panel |
 | `H` or `?` | Toggle help overlay |
 | `Escape` | Dismiss overlays |
 | `Q` | Quit |
