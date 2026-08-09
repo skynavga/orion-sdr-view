@@ -6,10 +6,12 @@
 //! bandwidth, out-of-band spectral shaping, and the frame-rate-independent
 //! (dt-driven) signal/gap timing.
 
+use orion_sdr_view::decode::{SPECTRUM_WINDOW_SAMPLES, nb_spectrum_snr_db, wb_spectrum_snr_db};
 use orion_sdr_view::source::{
-    COFDM_FS, COFDM_MAX_EDGE_GUARD, COFDM_MIN_EDGE_GUARD, COFDM_NOMINAL_CENTER,
-    COFDM_SHAPING_SLACK, CofdmBwFraction, CofdmMask, CofdmShaping, CofdmSource, CofdmTaper,
-    SignalSource, cofdm_edge_guard_for, cofdm_occupied_bw, cofdm_occupied_half,
+    COFDM_FS, COFDM_MAX_EDGE_GUARD, COFDM_MAX_NOISE_AMP, COFDM_MIN_EDGE_GUARD,
+    COFDM_NOMINAL_CENTER, COFDM_SHAPING_SLACK, COFDM_SIGNAL_THRESHOLD, CofdmBwFraction, CofdmMask,
+    CofdmShaping, CofdmSource, CofdmTaper, SignalSource, cofdm_edge_guard_for, cofdm_occupied_bw,
+    cofdm_occupied_half,
 };
 
 /// Default construction used by most tests: 2 s signal, 1 s gap, no noise so
@@ -497,4 +499,153 @@ fn every_fraction_renders_with_shaping_on() {
         assert!(s.iter().all(|v| v.is_finite()), "{name}: non-finite sample");
         assert!(rms(&s) > 0.1, "{name}: RMS {} too low", rms(&s));
     }
+}
+
+// ── SNR estimator ──────────────────────────────────────────────────────────
+//
+// COFDM's Di bar delegates to `SpectralState`, which used the narrowband
+// single-tone estimator for every mode.  That estimator takes the strongest bin
+// as "signal" and the median of the bins outside a narrow exclusion window as
+// "noise" — and on a multi-carrier signal those bins are mostly *signal*, so
+// the floor it measures is the band itself.  The error therefore grows with
+// occupied bandwidth, which is why the narrowband default is right for the
+// genuinely narrowband sources and wrong here.
+
+/// SNR of a COFDM burst by both estimators, at a given fraction and noise
+/// amplitude.  Returns `(narrowband, wideband)` in dB.
+fn snr_pair(fraction: CofdmBwFraction, noise_amp: f32) -> (f32, f32) {
+    let shaping = CofdmShaping::default_for(fraction);
+    let mut src = CofdmSource::new(2.0, 1.0, noise_amp, fraction, shaping, COFDM_FS);
+    let s = src.next_samples(SPECTRUM_WINDOW_SAMPLES);
+    let bw = cofdm_occupied_bw(COFDM_FS, shaping.effective(fraction).edge_guard);
+    (
+        nb_spectrum_snr_db(&s, COFDM_FS, COFDM_NOMINAL_CENTER),
+        wb_spectrum_snr_db(&s, COFDM_FS, COFDM_NOMINAL_CENTER, bw),
+    )
+}
+
+#[test]
+fn narrowband_snr_reads_a_wide_cofdm_band_as_below_the_noise_floor() {
+    // At 7/8 the band fills most of the spectrum, so nearly every bin the
+    // narrowband estimator samples for its noise floor is a subcarrier.  It
+    // reports a *negative* SNR for a burst that is unmistakably present, while
+    // the wideband estimator reads it well above the floor.  This is a
+    // qualitative failure, not a calibration difference — which is what makes
+    // it worth pinning against a silent revert.
+    let (nb, wb) = snr_pair(CofdmBwFraction::SevenEighths, 0.05);
+    assert!(nb.is_finite() && wb.is_finite(), "nb {nb} wb {wb}");
+    assert!(
+        nb < 0.0,
+        "narrowband estimator should mis-read a full-width COFDM band as \
+         below the noise floor, got {nb:.1} dB"
+    );
+    assert!(
+        wb > 10.0,
+        "wideband estimator should read the same band well above the floor, \
+         got {wb:.1} dB"
+    );
+}
+
+#[test]
+fn narrowband_snr_error_grows_with_occupied_bandwidth() {
+    // The two estimators nearly agree on a narrow band and diverge as it
+    // widens.  This is the shape of the bug: `SpectralState`'s default is
+    // sound for AM DSB / CW / Test Tone and degrades in proportion to how
+    // wideband the signal is.
+    let (nb_narrow, wb_narrow) = snr_pair(CofdmBwFraction::OneEighth, 0.05);
+    let (nb_wide, wb_wide) = snr_pair(CofdmBwFraction::SevenEighths, 0.05);
+    let narrow_err = wb_narrow - nb_narrow;
+    let wide_err = wb_wide - nb_wide;
+    assert!(
+        wide_err > narrow_err + 6.0,
+        "error should grow with occupied bandwidth: 1/8 {narrow_err:.1} dB, \
+         7/8 {wide_err:.1} dB"
+    );
+}
+
+#[test]
+fn wideband_snr_tracks_noise_amplitude() {
+    // The wideband estimator must be monotone in noise — this is what makes the
+    // Di bar's C/N respond to the `Noise amp` setting.
+    let (_, quiet) = snr_pair(CofdmBwFraction::OneQuarter, 0.01);
+    let (_, noisy) = snr_pair(CofdmBwFraction::OneQuarter, 0.5);
+    assert!(
+        quiet > noisy,
+        "more noise must lower wideband C/N: quiet {quiet:.1} dB, noisy {noisy:.1} dB"
+    );
+}
+
+// ── Gap detection vs the source's own noise floor ──────────────────────────
+//
+// The signal/gap split is decided by comparing block RMS against a threshold.
+// COFDM's gap carries `Noise amp` noise — uniform on [-1, 1) scaled by the
+// amplitude, so RMS = noise_amp/sqrt(3) — while its signal phase is scaled by
+// the modulator gain.  The shared `SIGNAL_THRESHOLD` (0.1) assumes a unit-scale
+// source and falls *below* the gap noise once `Noise amp` passes 0.173, at
+// which point the viewer stops seeing gaps entirely.
+
+/// Mean block RMS over `blocks` reads of `n` samples.
+fn mean_rms(src: &mut CofdmSource, blocks: usize, n: usize) -> f32 {
+    (0..blocks).map(|_| rms(&src.next_samples(n))).sum::<f32>() / blocks as f32
+}
+
+#[test]
+fn the_shared_threshold_would_miss_gaps_across_most_of_the_noise_range() {
+    // Pins the defect the COFDM threshold exists to fix: at the row's default
+    // this is fine, but over most of its range the gap is louder than 0.1.
+    let fr = CofdmBwFraction::OneQuarter;
+    let mut loud = CofdmSource::new(1.0, 5.0, 0.30, fr, CofdmShaping::default_for(fr), COFDM_FS);
+    loud.advance_time(1.5);
+    assert!(!loud.in_signal());
+    let gap_rms = mean_rms(&mut loud, 50, 2048);
+    assert!(
+        gap_rms > orion_sdr_view::decode::SIGNAL_THRESHOLD,
+        "gap RMS {gap_rms:.4} no longer exceeds the shared threshold — \
+         has the noise range or scaling changed?"
+    );
+}
+
+#[test]
+fn the_cofdm_threshold_separates_signal_from_gap_across_the_whole_settings_space() {
+    // Every reachable (bandwidth, noise) pair must land the gap below the
+    // threshold and the signal phase above it, with margin on both sides.
+    let mut worst_gap = 0.0_f32;
+    let mut worst_signal = f32::MAX;
+    for &fr in CofdmBwFraction::ALL {
+        for noise in [0.0_f32, 0.05, 0.10, 0.20, 0.35, COFDM_MAX_NOISE_AMP] {
+            let sh = CofdmShaping::default_for(fr);
+
+            let mut src = CofdmSource::new(60.0, 60.0, noise, fr, sh, COFDM_FS);
+            let sig = mean_rms(&mut src, 20, 2048);
+            assert!(
+                sig > COFDM_SIGNAL_THRESHOLD,
+                "{} / noise {noise}: signal RMS {sig:.4} below the threshold",
+                fr.label()
+            );
+            worst_signal = worst_signal.min(sig);
+
+            let mut src = CofdmSource::new(1.0, 60.0, noise, fr, sh, COFDM_FS);
+            src.advance_time(1.5);
+            assert!(!src.in_signal(), "expected the gap phase");
+            let gap = mean_rms(&mut src, 20, 2048);
+            assert!(
+                gap < COFDM_SIGNAL_THRESHOLD,
+                "{} / noise {noise}: gap RMS {gap:.4} at or above the threshold — \
+                 the viewer would never show a gap",
+                fr.label()
+            );
+            worst_gap = worst_gap.max(gap);
+        }
+    }
+    // Better than 2x margin on both sides, so neither edge is marginal.
+    assert!(
+        COFDM_SIGNAL_THRESHOLD > 2.0 * worst_gap,
+        "only {:.2}x above the loudest gap ({worst_gap:.4})",
+        COFDM_SIGNAL_THRESHOLD / worst_gap
+    );
+    assert!(
+        worst_signal > 2.0 * COFDM_SIGNAL_THRESHOLD,
+        "only {:.2}x below the quietest signal ({worst_signal:.4})",
+        worst_signal / COFDM_SIGNAL_THRESHOLD
+    );
 }

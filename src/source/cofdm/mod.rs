@@ -9,9 +9,11 @@ mod source;
 pub use config::CofdmConfig;
 pub use decode::CofdmState;
 pub use source::{
-    COFDM_DEFAULT_BW_FRACTION, COFDM_DEFAULT_GAP_SECS, COFDM_DEFAULT_MASK, COFDM_DEFAULT_NOISE_AMP,
-    COFDM_DEFAULT_SHAPING_ENABLED, COFDM_DEFAULT_SIG_SECS, COFDM_DEFAULT_TAPER, COFDM_FS,
-    COFDM_MAX_EDGE_GUARD, COFDM_MIN_EDGE_GUARD, COFDM_NOMINAL_CENTER, COFDM_PREFERRED_REF_DB,
-    COFDM_SHAPING_SLACK, CofdmBwFraction, CofdmMask, CofdmShaping, CofdmSource, CofdmTaper,
-    cofdm_edge_guard_for, cofdm_occupied_bw, cofdm_occupied_half, hud_submode_str,
+    COFDM_CP_LEN, COFDM_DEFAULT_BW_FRACTION, COFDM_DEFAULT_GAP_SECS, COFDM_DEFAULT_MASK,
+    COFDM_DEFAULT_NOISE_AMP, COFDM_DEFAULT_SHAPING_ENABLED, COFDM_DEFAULT_SIG_SECS,
+    COFDM_DEFAULT_TAPER, COFDM_FS, COFDM_GAIN, COFDM_MAX_EDGE_GUARD, COFDM_MAX_NOISE_AMP,
+    COFDM_MIN_EDGE_GUARD, COFDM_N_FFT, COFDM_NOMINAL_CENTER, COFDM_PAYLOAD_BYTES,
+    COFDM_PREFERRED_REF_DB, COFDM_SHAPING_SLACK, COFDM_SIGNAL_THRESHOLD, CofdmBwFraction,
+    CofdmMask, CofdmShaping, CofdmSource, CofdmTaper, cofdm_data_carriers, cofdm_edge_guard_for,
+    cofdm_mcs_facts, cofdm_occupied_bw, cofdm_occupied_half, hud_submode_str,
 };

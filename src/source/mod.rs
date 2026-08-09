@@ -16,9 +16,11 @@ pub use common::{MAX_SIG_SECS, SignalSource};
 pub use amdsb::{AmDsbSource, BuiltinAudio, load_builtin};
 #[allow(unused_imports)]
 pub use cofdm::{
-    COFDM_FS, COFDM_MAX_EDGE_GUARD, COFDM_MIN_EDGE_GUARD, COFDM_NOMINAL_CENTER,
-    COFDM_SHAPING_SLACK, CofdmBwFraction, CofdmMask, CofdmShaping, CofdmSource, CofdmTaper,
-    cofdm_edge_guard_for, cofdm_occupied_bw, cofdm_occupied_half,
+    COFDM_CP_LEN, COFDM_FS, COFDM_GAIN, COFDM_MAX_EDGE_GUARD, COFDM_MAX_NOISE_AMP,
+    COFDM_MIN_EDGE_GUARD, COFDM_N_FFT, COFDM_NOMINAL_CENTER, COFDM_PAYLOAD_BYTES,
+    COFDM_SHAPING_SLACK, COFDM_SIGNAL_THRESHOLD, CofdmBwFraction, CofdmMask, CofdmShaping,
+    CofdmSource, CofdmTaper, cofdm_data_carriers, cofdm_edge_guard_for, cofdm_mcs_facts,
+    cofdm_occupied_bw, cofdm_occupied_half,
 };
 #[allow(unused_imports)]
 pub use cw::CwSource;

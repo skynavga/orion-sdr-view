@@ -24,6 +24,14 @@ use super::{
     SAMPLE_RATE, SourceMode, WaterfallMode,
 };
 
+/// The three mutually-exclusive overlays.  Only one can be up at a time.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Overlay {
+    Help,
+    Instrument,
+    Settings,
+}
+
 // ── ViewApp ───────────────────────────────────────────────────────────────────
 
 pub(crate) struct ViewApp {
@@ -32,6 +40,9 @@ pub(crate) struct ViewApp {
     // remembered when re-shown. Future resize handles will mutate these values.
     pub(super) pane_frac: [f32; 3],
     pub(super) show_help: bool,
+    /// COFDM instrumentation panel (`X`).  Mutually exclusive with the help
+    /// overlay so the two can never stack.
+    pub(super) show_instrument: bool,
     pub(super) mono_font_id: egui::FontId,
 
     // Active signal source (Box<dyn SignalSource> for easy future extension)
@@ -134,6 +145,7 @@ impl ViewApp {
             pane_visible: [true; 3],
             pane_frac: [1.0 / 3.0; 3],
             show_help: false,
+            show_instrument: false,
             mono_font_id: egui::FontId::new(14.0, egui::FontFamily::Monospace),
 
             source_mode: SourceMode::TestTone,
@@ -199,6 +211,20 @@ impl ViewApp {
         }
     }
 
+    /// Block-RMS level that counts as signal for the active source.
+    ///
+    /// `SIGNAL_THRESHOLD` assumes a unit-scale source.  COFDM is not one — its
+    /// modulator gain puts the signal an order of magnitude above that level,
+    /// and its own `Noise amp` floor can rise above it, which would leave the
+    /// gap indistinguishable from the burst.  See `COFDM_SIGNAL_THRESHOLD`.
+    pub(super) fn signal_threshold(&self) -> f32 {
+        if self.source_mode == SourceMode::Cofdm {
+            crate::source::cofdm::COFDM_SIGNAL_THRESHOLD
+        } else {
+            SIGNAL_THRESHOLD
+        }
+    }
+
     /// Hard reset: revert all source-mode settings rows to defaults, then
     /// restart the source.  Call on the R key (when settings popover is
     /// closed) and on `switch_source` — i.e. anything that should snap state
@@ -225,6 +251,8 @@ impl ViewApp {
         self.apply_source_sample_rate();
         self.loop_timer.reset();
         self.loop_timer.set_holdoff(self.loop_timer_holdoff_secs());
+        self.loop_timer
+            .set_signal_threshold(self.signal_threshold());
         self.decode_ticker.reset();
         self.last_block_was_signal = false;
         self.spectrogram.clear();
@@ -298,6 +326,15 @@ impl ViewApp {
         if !has_text && self.decode_bar == DecodeBarMode::Text {
             self.decode_bar = DecodeBarMode::Info;
         }
+    }
+
+    /// Close every overlay but `keep`.  The three are mutually exclusive: only
+    /// one can be up at a time, so opening one dismisses the others rather than
+    /// stacking them.
+    fn close_overlays_except(&mut self, keep: Overlay) {
+        self.show_help = keep == Overlay::Help;
+        self.show_instrument = keep == Overlay::Instrument;
+        self.settings.visible = keep == Overlay::Settings;
     }
 
     pub(super) fn handle_keys(&mut self, ctx: &egui::Context) {
@@ -475,17 +512,34 @@ impl ViewApp {
             }
             if i.key_pressed(egui::Key::S) {
                 self.settings.visible ^= true;
+                if self.settings.visible {
+                    self.close_overlays_except(Overlay::Settings);
+                }
             }
             if i.key_pressed(egui::Key::W) {
                 self.waterfall_mode = self.waterfall_mode.next();
             }
             if i.key_pressed(egui::Key::H) {
                 self.show_help ^= true;
+                if self.show_help {
+                    self.close_overlays_except(Overlay::Help);
+                }
+            }
+            if i.key_pressed(egui::Key::X) {
+                self.show_instrument ^= true;
+                if self.show_instrument {
+                    self.close_overlays_except(Overlay::Instrument);
+                }
             }
             for e in &i.events {
                 if let egui::Event::Text(s) = e {
                     match s.as_str() {
-                        "?" => self.show_help ^= true,
+                        "?" => {
+                            self.show_help ^= true;
+                            if self.show_help {
+                                self.close_overlays_except(Overlay::Help);
+                            }
+                        }
                         // Shift+A / Shift+B: snap marker to center and make it active
                         "A" => place_marker_a = true,
                         "B" => place_marker_b = true,
@@ -528,6 +582,7 @@ impl ViewApp {
             }
             if i.key_pressed(egui::Key::Escape) {
                 self.show_help = false;
+                self.show_instrument = false;
                 self.settings.visible = false;
             }
             if i.key_pressed(egui::Key::Q) {
@@ -795,7 +850,7 @@ impl eframe::App for ViewApp {
         };
         self.loop_timer.tick(block_rms, dt);
 
-        let block_is_signal = block_rms >= SIGNAL_THRESHOLD;
+        let block_is_signal = block_rms >= self.signal_threshold();
 
         // Track signal onset for timestamp capture.
         let is_ft8_mode = self.source_mode == SourceMode::Ft8;
@@ -945,6 +1000,9 @@ impl eframe::App for ViewApp {
             self.draw_panes(ui);
             if self.show_help {
                 self.draw_help_overlay(ui);
+            }
+            if self.show_instrument {
+                self.draw_instrument_overlay(ui);
             }
             let mono = self.mono_font_id.clone();
             self.settings.draw(ui, &mono);

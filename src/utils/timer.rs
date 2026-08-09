@@ -19,6 +19,9 @@ pub struct LoopTimer {
     /// Holdoff duration: silence must exceed this to declare a gap.
     /// Zero disables holdoff (immediate transition).
     holdoff_secs: f32,
+    /// Block RMS at or above which the source counts as transmitting.
+    /// Per-source; see [`LoopTimer::set_signal_threshold`].
+    signal_threshold: f32,
     /// True for one frame on gap → signal transition.
     pub signal_onset: bool,
     /// True for one frame on signal → gap transition (after holdoff).
@@ -39,6 +42,7 @@ impl LoopTimer {
             loop_count: 0,
             silence_secs: 0.0,
             holdoff_secs: 0.0,
+            signal_threshold: SIGNAL_THRESHOLD,
             signal_onset: false,
             gap_onset: false,
         }
@@ -58,9 +62,18 @@ impl LoopTimer {
         self.holdoff_secs = secs.max(0.0);
     }
 
+    /// Set the block-RMS level that counts as signal.
+    ///
+    /// Defaults to [`SIGNAL_THRESHOLD`], which assumes a unit-scale source.  A
+    /// source that is not unit-scale — or whose own noise floor can rise above
+    /// that level — must supply its own, or its gaps stop being detected.
+    pub fn set_signal_threshold(&mut self, rms: f32) {
+        self.signal_threshold = rms.max(0.0);
+    }
+
     /// Call once per frame with the measured block RMS and the frame duration.
     pub fn tick(&mut self, rms: f32, dt: f32) {
-        let active = rms >= SIGNAL_THRESHOLD;
+        let active = rms >= self.signal_threshold;
         self.signal_onset = false;
         self.gap_onset = false;
 

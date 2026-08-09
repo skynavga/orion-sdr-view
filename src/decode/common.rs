@@ -26,6 +26,7 @@ use std::sync::{Arc, Mutex};
 use orion_sdr::util::SIGNAL_THRESHOLD;
 use orion_sdr::util::rms;
 
+use crate::decode::instrument::CofdmInstrument;
 use crate::source::{amdsb, cofdm, cw, ft8, psk31, tone};
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -54,6 +55,17 @@ pub struct DecodeConfig {
     /// COFDM occupied bandwidth (Hz), reported directly in the Di bar since the
     /// narrowband `spectrum_bw_hz` estimator cannot measure a wideband band.
     pub cofdm_bw_hz: f32,
+    /// Effective COFDM edge guard and DC occupancy.  The instrumentation reads
+    /// the data-carrier count off the plan these produce rather than deriving
+    /// it from `n_fft`, which would be wrong for any profile whose active
+    /// carriers are a small fraction of the FFT (DVB-T 2K: 1512 of 2048).
+    pub cofdm_edge_guard: usize,
+    pub cofdm_include_dc: bool,
+    /// Block RMS at or above which the source counts as transmitting.  Must
+    /// match the main thread's `LoopTimer` threshold, or the two disagree about
+    /// where a burst ends: the decode side keeps emitting into a gap the loop
+    /// timer has already declared.
+    pub signal_threshold: f32,
     // CW-specific fields for character-timed text decode.
     pub cw_message: String,
     pub cw_wpm: f32,
@@ -70,6 +82,9 @@ impl DecodeConfig {
             carrier_hz: 0.0,
             fs,
             cofdm_bw_hz: 0.0,
+            cofdm_edge_guard: 0,
+            cofdm_include_dc: false,
+            signal_threshold: SIGNAL_THRESHOLD,
             cw_message: String::new(),
             cw_wpm: 0.0,
             cw_dash_weight: 3.0,
@@ -91,6 +106,14 @@ pub enum DecodeResult {
         bw_hz: f32,
         snr_db: f32,
     },
+    /// COFDM instrumentation, for the Di bar's prioritised line and the `X`
+    /// panel.  A new variant rather than a widening of `Info`: widening would
+    /// touch all eight `Info` construction sites across psk31/cw/ft8/spectral
+    /// for no benefit, while this touches none of them.
+    ///
+    /// `None` **clears** the panel at a gap edge, so it falls back to em-dashes
+    /// rather than holding numbers from a burst that has ended.
+    Instrument(Option<Box<CofdmInstrument>>),
     /// No signal detected or carrier not found.
     NoSignal,
     /// Definite signal gap — bypasses hold timer.
@@ -132,6 +155,11 @@ pub struct DecodeTicker {
     /// Most recent Info result, retained independently of `last_result` so the
     /// Di bar can show signal data even while a Text hold is in effect.
     pub last_info: Option<DecodeResult>,
+    /// Most recent COFDM instrumentation, retained on the same terms as
+    /// `last_info`.  The `X` panel re-reads this every frame, so it is live
+    /// rather than a snapshot: opening it freezes nothing and closing it loses
+    /// nothing.  Cleared alongside `last_info` on a gap.
+    pub last_instrument: Option<Box<CofdmInstrument>>,
     /// True while in a signal gap — drives SPACE injection in `tick()`.
     pub in_gap: bool,
 }
@@ -151,6 +179,7 @@ impl DecodeTicker {
             last_result: DecodeResult::NoSignal,
             hold_elapsed: 0.0,
             last_info: None,
+            last_instrument: None,
             in_gap: false,
         }
     }
@@ -178,7 +207,11 @@ impl DecodeTicker {
                 let hold = match self.last_result {
                     DecodeResult::Text(_) => 0.0,
                     DecodeResult::Info { .. } => INFO_HOLD_SECS,
-                    DecodeResult::NoSignal | DecodeResult::Gap { .. } => 0.0,
+                    // `Instrument` never becomes `last_result` (it does not
+                    // participate in the hold), so it imposes none.
+                    DecodeResult::Instrument(_)
+                    | DecodeResult::NoSignal
+                    | DecodeResult::Gap { .. } => 0.0,
                 };
                 if self.hold_elapsed >= hold {
                     self.last_result = r;
@@ -189,17 +222,28 @@ impl DecodeTicker {
                 let hold = match self.last_result {
                     DecodeResult::Text(_) => 0.0,
                     DecodeResult::Info { .. } => INFO_HOLD_SECS,
-                    DecodeResult::NoSignal | DecodeResult::Gap { .. } => 0.0,
+                    // `Instrument` never becomes `last_result` (it does not
+                    // participate in the hold), so it imposes none.
+                    DecodeResult::Instrument(_)
+                    | DecodeResult::NoSignal
+                    | DecodeResult::Gap { .. } => 0.0,
                 };
                 if self.hold_elapsed >= hold {
                     self.last_result = r;
                     self.hold_elapsed = 0.0;
                 }
             }
+            DecodeResult::Instrument(inst) => {
+                // Does not participate in the Info hold: the instrument feeds
+                // the panel and the COFDM Di line directly, both of which read
+                // it every frame.  `None` is the gap-edge clear.
+                self.last_instrument = inst.clone();
+            }
             DecodeResult::Gap { .. } => {
                 self.last_result = DecodeResult::NoSignal;
                 self.hold_elapsed = 0.0;
                 self.last_info = None;
+                self.last_instrument = None;
                 self.in_gap = true;
             }
         }
@@ -246,6 +290,7 @@ impl DecodeTicker {
         self.hold_elapsed = 0.0;
         self.last_result = DecodeResult::NoSignal;
         self.last_info = None;
+        self.last_instrument = None;
         self.in_gap = false;
     }
 }
@@ -291,7 +336,15 @@ impl DecodeWorker {
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
             };
 
-            let (mode, carrier_hz, fs, cofdm_bw_hz) = {
+            let (
+                mode,
+                carrier_hz,
+                fs,
+                cofdm_bw_hz,
+                cofdm_edge_guard,
+                cofdm_include_dc,
+                signal_threshold,
+            ) = {
                 let cfg = self.config.lock().unwrap();
                 if cfg.mode == DecodeMode::Cw {
                     cw.message.clone_from(&cfg.cw_message);
@@ -301,7 +354,15 @@ impl DecodeWorker {
                     cw.word_space = cfg.cw_word_space;
                     cw.msg_repeat = cfg.cw_msg_repeat;
                 }
-                (cfg.mode, cfg.carrier_hz, cfg.fs, cfg.cofdm_bw_hz)
+                (
+                    cfg.mode,
+                    cfg.carrier_hz,
+                    cfg.fs,
+                    cfg.cofdm_bw_hz,
+                    cfg.cofdm_edge_guard,
+                    cfg.cofdm_include_dc,
+                    cfg.signal_threshold,
+                )
             };
 
             // Empty vec is a flush signal (sent by main thread on source reset).
@@ -331,7 +392,7 @@ impl DecodeWorker {
                 last_carrier = carrier_hz;
             }
 
-            let is_signal = rms(&samples) >= SIGNAL_THRESHOLD;
+            let is_signal = rms(&samples) >= signal_threshold;
             let gap_edge = !is_signal && was_signal;
             was_signal = is_signal;
 
@@ -362,6 +423,8 @@ impl DecodeWorker {
                         gap_edge,
                         carrier_hz,
                         cofdm_bw_hz,
+                        cofdm_edge_guard,
+                        cofdm_include_dc,
                         fs,
                         &self.tx,
                     );

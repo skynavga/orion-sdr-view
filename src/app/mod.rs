@@ -3,6 +3,7 @@
 
 mod common;
 mod draw;
+mod instrument;
 mod source;
 mod sources;
 mod view;

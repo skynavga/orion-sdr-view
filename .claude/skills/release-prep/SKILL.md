@@ -5,6 +5,8 @@ allowed-tools: Read, Edit, Write, Bash, Glob, Grep
 argument-hint: <new-version>  (e.g. 0.0.2)
 ---
 
+# orion-sdr-view release prep
+
 Prepare an orion-sdr-view release for version $ARGUMENTS.
 
 The previous version is the one currently in `Cargo.toml`. Determine it by
@@ -27,10 +29,25 @@ call it NEW_VERSION.
 Update OLD_VERSION → NEW_VERSION in every file listed below. Read each file
 before editing it.
 
-| File | What to change |
-|------|----------------|
+| File         | What to change            |
+|--------------|---------------------------|
 | `Cargo.toml` | `version = "OLD_VERSION"` |
-| `CLAUDE.md` | `vOLD_VERSION` in the project description |
+
+`Cargo.toml` is the only file carrying the version. **`CLAUDE.md` does not** —
+it describes layout and conventions, not the release. Do not add a version
+string to it just to have one here; the fewer places a version lives, the
+fewer can go stale.
+
+Before editing, confirm nothing else has picked up a version string:
+
+```sh
+grep -rn "OLD_VERSION" --include="*.toml" --include="*.md" --include="*.rs" . \
+  | grep -v CHANGELOG.md | grep -v "^./target/"
+```
+
+Anything this turns up besides `Cargo.toml` (and `Cargo.lock`, updated
+automatically by the test run in step 4) needs a decision: bump it and add it
+to the table above, or leave it and say why.
 
 ## Step 3 — Prepend CHANGELOG entry
 
@@ -44,7 +61,7 @@ The entry should document what actually changed since OLD_VERSION. Inspect
 `vOLD_VERSION`) to find the commits, then write a concise Added/Changed/Fixed
 list. If there are no real changes (test release), write a minimal entry such as:
 
-```
+```markdown
 ## [NEW_VERSION] - TODAY
 
 ### Changed
@@ -56,7 +73,7 @@ list. If there are no real changes (test release), write a minimal entry such as
 
 Run the test suite and verify all tests pass:
 
-```
+```sh
 cargo test --release
 ```
 
@@ -66,8 +83,8 @@ If tests fail, stop and report the failure. Do not proceed.
 
 Stage only the files changed in steps 2 and 3 (never `git add -A`):
 
-```
-git add Cargo.toml Cargo.lock CLAUDE.md CHANGELOG.md
+```sh
+git add Cargo.toml Cargo.lock CHANGELOG.md
 ```
 
 Commit with message: `Bump version to NEW_VERSION`
@@ -78,13 +95,13 @@ Do not include a co-author trailer.
 
 Push the current branch to origin if it has no upstream yet:
 
-```
+```sh
 git push -u origin HEAD
 ```
 
 Check whether a PR already exists for the current branch:
 
-```
+```sh
 gh pr list --head CURRENT_BRANCH --state open
 ```
 
@@ -93,7 +110,7 @@ understand all changes in the branch, then write a concise BLUF-style summary
 (one short paragraph) covering all significant changes. Follow it with a
 "Release prep for NEW_VERSION." line. Example format:
 
-```
+```text
 <One short paragraph summarizing all significant changes in the branch.>
 
 Release prep for NEW_VERSION.
@@ -101,13 +118,13 @@ Release prep for NEW_VERSION.
 
 Merge the PR:
 
-```
+```sh
 gh pr merge --merge --delete-branch
 ```
 
 Switch to `main` and pull so the local branch is up to date:
 
-```
+```sh
 git checkout main
 git pull
 ```
@@ -116,12 +133,13 @@ Confirm the current branch is now `main` before proceeding.
 
 ## Step 7 — Create signed tag
 
-```
+```sh
 git tag -s vNEW_VERSION -m "Release NEW_VERSION"
 ```
 
 Then verify it:
-```
+
+```sh
 git tag -v vNEW_VERSION
 ```
 
@@ -130,6 +148,7 @@ Confirm the GPG signature is good before reporting success.
 ## Step 8 — Report
 
 Tell the user:
+
 - What version was bumped (OLD → NEW)
 - That all tests passed
 - That the commit and signed tag are ready locally
