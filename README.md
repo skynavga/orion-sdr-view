@@ -44,6 +44,18 @@ without a windowing system, e.g. on headless CI runners.
   <img alt="AM-DSB Input Source" src="./docs/images/source-am-dsb.png" width="66%">
 </a>
 
+### COFDM Image Source
+
+<a href="./docs/images/source-cofdm.png">
+  <img alt="COFDM Input Source" src="./docs/images/source-cofdm.png" width="66%">
+</a>
+
+### COFDM Image Source with Instrumentation
+
+<a href="./docs/images/source-cofdm-instrumented.png">
+  <img alt="COFDM Input Source with Instrumentation" src="./docs/images/source-cofdm-instrumented.png" width="66%">
+</a>
+
 ## Building
 
 ```sh
