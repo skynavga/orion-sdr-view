@@ -8,12 +8,17 @@ use eframe::egui;
 
 use super::freqview::{FreqMarker, FreqView};
 use super::persistence::PersistenceRenderer;
-use super::settings::{AmDsbSettings, CwSettings, Psk31Settings, SettingsState, ToneSettings};
+use super::settings::{
+    AmDsbSettings, CofdmSettings, CwSettings, Ft8Settings, Psk31Settings, SettingsState,
+    ToneSettings,
+};
 use super::spectrogram::SpectrogramDisplay;
 use super::spectrum::{RingBuffer, SpectrumProcessor};
 use super::waterfall::WaterfallDisplay;
 use crate::config::ViewConfig;
-use crate::decode::{DecodeConfig, DecodeResult, DecodeTicker, DecodeWorker, SIGNAL_THRESHOLD};
+use crate::decode::{
+    DecodeChunk, DecodeConfig, DecodeResult, DecodeTicker, DecodeWorker, SIGNAL_THRESHOLD,
+};
 use crate::source::SignalSource;
 use crate::source::tone::TestSignalGen;
 use crate::source::tone::TestToneSource;
@@ -90,7 +95,9 @@ pub(crate) struct ViewApp {
 
     // Decode thread channels and shared config.
     pub(super) decode_config: Arc<Mutex<DecodeConfig>>,
-    pub(super) decode_tx: mpsc::SyncSender<Vec<f32>>,
+    pub(super) decode_tx: mpsc::SyncSender<DecodeChunk>,
+    /// Monotonic counter stamped on each `DecodeChunk`; see its `seq` field.
+    decode_seq: u64,
     pub(super) decode_rx: mpsc::Receiver<DecodeResult>,
     pub(super) decode_ticker: DecodeTicker,
     /// True if the previous frame's sample block was above SIGNAL_THRESHOLD.
@@ -134,7 +141,7 @@ impl ViewApp {
         let decode_config = Arc::new(Mutex::new(DecodeConfig::new(SAMPLE_RATE)));
         // Capacity 256: at 60 fps each block is ~16 ms; 256 slots ≈ 4 s of buffer,
         // enough to absorb a slow psk31_sync pass without dropping gap blocks.
-        let (decode_tx, sample_rx) = mpsc::sync_channel::<Vec<f32>>(256);
+        let (decode_tx, sample_rx) = mpsc::sync_channel::<DecodeChunk>(256);
         let (result_tx, decode_rx) = mpsc::sync_channel::<DecodeResult>(16);
         {
             let worker_cfg = Arc::clone(&decode_config);
@@ -142,6 +149,7 @@ impl ViewApp {
         }
 
         let mut app = Self {
+            decode_seq: 0,
             pane_visible: [true; 3],
             pane_frac: [1.0 / 3.0; 3],
             show_help: false,
@@ -217,6 +225,24 @@ impl ViewApp {
     /// modulator gain puts the signal an order of magnitude above that level,
     /// and its own `Noise amp` floor can rise above it, which would leave the
     /// gap indistinguishable from the burst.  See `COFDM_SIGNAL_THRESHOLD`.
+    /// The active source's injected-noise amplitude, for the HUD.
+    ///
+    /// Each source owns its own row rather than sharing one, so this is a
+    /// per-source lookup; the units differ between them (COFDM's is an absolute
+    /// amplitude against a large modulator gain, the narrowband sources' is
+    /// against a unit-scale signal), which is why the HUD shows the raw setting
+    /// rather than pretending it is a comparable SNR.
+    pub(super) fn hud_noise_amp(&self) -> f32 {
+        match self.source_mode {
+            SourceMode::Cofdm => self.settings.cofdm_noise_amp(),
+            SourceMode::Ft8 => self.settings.ft8_noise_amp(),
+            SourceMode::AmDsb => self.settings.am_noise_amp(),
+            SourceMode::Psk31 => self.settings.psk31_noise_amp(),
+            SourceMode::Cw => self.settings.cw_noise_amp(),
+            SourceMode::TestTone => self.settings.noise_amp(),
+        }
+    }
+
     pub(super) fn signal_threshold(&self) -> f32 {
         if self.source_mode == SourceMode::Cofdm {
             crate::source::cofdm::COFDM_SIGNAL_THRESHOLD
@@ -258,7 +284,10 @@ impl ViewApp {
         self.spectrogram.clear();
         self.ft8_view.reset();
         while self.decode_rx.try_recv().is_ok() {}
-        let _ = self.decode_tx.try_send(Vec::new());
+        self.decode_seq = self.decode_seq.wrapping_add(1);
+        let _ = self
+            .decode_tx
+            .try_send(DecodeChunk::real(self.decode_seq, Vec::new()));
     }
 
     /// Re-derive the sample-rate-dependent display pipeline from the currently
@@ -367,14 +396,29 @@ impl ViewApp {
                 self.apply_ft8_free_text();
             }
             self.sync_settings();
-            // Let global keys (Q, M, N) work even while settings is open,
-            // but not when a text field is actively consuming input.
+            // Let global keys (Q, I, M, N) and the other overlay toggles (H, X)
+            // work even while settings is open, but not when a text field is
+            // actively consuming input.
+            //
+            // The overlay toggles have to be repeated here because this branch
+            // returns before the main key handler runs.  Without them the
+            // relationship is asymmetric in a way that reads as a bug: from the
+            // instrument panel, `S` swaps to settings, but from settings `X`
+            // did nothing at all.
             if !result.text_editing {
                 let mut quit = false;
                 let mut toggle_source = false;
                 let mut cycle_mode = false;
                 let mut cycle_audio = false;
+                let mut show_instrument = false;
+                let mut show_help = false;
                 ctx.input(|i| {
+                    if i.key_pressed(egui::Key::X) {
+                        show_instrument = true;
+                    }
+                    if i.key_pressed(egui::Key::H) {
+                        show_help = true;
+                    }
                     if i.key_pressed(egui::Key::Q) {
                         quit = true;
                     }
@@ -388,6 +432,18 @@ impl ViewApp {
                         cycle_audio = true;
                     }
                 });
+                // Swapping overlays, so the same exclusion the main handler
+                // applies: showing one closes the others, settings included.
+                if show_instrument {
+                    self.show_instrument = true;
+                    self.close_overlays_except(Overlay::Instrument);
+                    return;
+                }
+                if show_help {
+                    self.show_help = true;
+                    self.close_overlays_except(Overlay::Help);
+                    return;
+                }
                 if quit {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
@@ -833,8 +889,17 @@ impl eframe::App for ViewApp {
 
         // Feed new samples and process spectrum before drawing.
         let samples = self.source.next_samples(n);
-        // Non-blocking send to decode thread; drop if channel is full.
-        let _ = self.decode_tx.try_send(samples.clone());
+        // Both representations of this block travel together — see
+        // `DecodeChunk`. `last_samples_iq` returns the complex counterpart of
+        // the block just emitted, so the decoder and the display cannot end up
+        // looking at different samples.
+        self.decode_seq = self.decode_seq.wrapping_add(1);
+        let _ = self.decode_tx.try_send(DecodeChunk {
+            seq: self.decode_seq,
+            real: samples.clone(),
+            iq: self.source.last_samples_iq().map(<[_]>::to_vec),
+            signal: self.source.signal_phase(),
+        });
         for s in &samples {
             self.ring_buf.push(*s);
         }
@@ -848,9 +913,13 @@ impl eframe::App for ViewApp {
             let sq_sum: f32 = samples.iter().map(|v| v * v).sum();
             (sq_sum / samples.len() as f32).sqrt()
         };
-        self.loop_timer.tick(block_rms, dt);
-
-        let block_is_signal = block_rms >= self.signal_threshold();
+        // Prefer the source's own answer; fall back to the RMS heuristic for
+        // sources that do not know (and for anything over the air).
+        let block_is_signal = self
+            .source
+            .signal_phase()
+            .unwrap_or(block_rms >= self.signal_threshold());
+        self.loop_timer.tick_active(block_is_signal, dt);
 
         // Track signal onset for timestamp capture.
         let is_ft8_mode = self.source_mode == SourceMode::Ft8;

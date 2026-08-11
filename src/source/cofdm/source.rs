@@ -112,16 +112,29 @@ pub const COFDM_PAYLOAD_BYTES: usize = 184;
 /// the buffer *content* (enough frames that the loop point isn't obvious), not
 /// the signal-phase duration — that is timed by real `dt` in `next_samples`.
 /// ~40 frames ≈ 0.3 s of native signal at `COFDM_FS`.
-const COFDM_BUFFER_FRAMES: usize = 40;
+pub(crate) const COFDM_BUFFER_FRAMES: usize = 40;
 
-/// Modulator output gain.  Bare OFDM spreads its energy across the active
-/// subcarriers, so per-sample RMS at unit gain sits *below* the decoder's
-/// `SIGNAL_THRESHOLD` (0.1) — the Di bar would never register signal.  This
-/// gain places the spectrum peaks at roughly -15 dBFS on the viewer's dB scale
-/// (matched by the source's preferred -15 dB reference level) and clears the
-/// detection threshold on every payload block for all bandwidth fractions.
-/// The f32 spectrum pipeline has no [-1, 1] clamp, so the resulting large
-/// time-domain peak is fine.
+/// Display scaling applied to the rendered burst.
+///
+/// Bare OFDM spreads its energy across the active subcarriers, so per-sample
+/// RMS at unit gain sits *below* the decoder's `SIGNAL_THRESHOLD` (0.1) — the Di
+/// bar would never register signal.  This places the spectrum peaks at roughly
+/// -15 dBFS on the viewer's dB scale (matched by [`COFDM_PREFERRED_REF_DB`]) and
+/// clears the detection threshold on every payload block for all bandwidth
+/// fractions.  The f32 spectrum pipeline has no [-1, 1] clamp, so the resulting
+/// large time-domain peak is fine.
+///
+/// **Applied in [`CofdmSource::render`], not through `OfdmConfig::gain`.**  It
+/// is a property of how this viewer wants the signal *drawn*, not of the
+/// waveform — and it was the only non-unity gain at any `OfdmConfig::new` call
+/// site in either crate, source, tests and docs alike.  Keeping it in the
+/// waveform config also made `Noise amp` an absolute amplitude measured against
+/// a display constant, which is why one noise setting still means different
+/// SNRs at different bandwidth fractions.  Moving it here is what lets the
+/// impairment eventually be expressed as a C/N applied *before* this scalar.
+///
+/// The receiver is indifferent: score, decode and both BER rungs are identical
+/// at gain 1 and 121, since a uniform scalar cannot change a spectrum's shape.
 pub const COFDM_GAIN: f32 = 121.0;
 
 /// Display reference level (dBFS, spectrum-scale top) preferred by COFDM, set
@@ -135,25 +148,31 @@ pub const COFDM_DEFAULT_GAP_SECS: f32 = 2.0;
 /// Default additive-noise amplitude.
 pub const COFDM_DEFAULT_NOISE_AMP: f32 = 0.05;
 /// Largest `Noise amp` the settings row allows.
-pub const COFDM_MAX_NOISE_AMP: f32 = 0.50;
+pub const COFDM_MAX_NOISE_AMP: f32 = 2.0;
 
 /// Block-RMS threshold separating COFDM's signal phase from its gap.
 ///
+/// **A fallback.**  `CofdmSource` reports its phase directly through
+/// [`SignalSource::signal_phase`], so nothing in the viewer consults this for
+/// COFDM any more; it remains the answer for a caller measuring a stream it was
+/// handed rather than one it generated.
+///
 /// The shared [`orion_sdr::util::SIGNAL_THRESHOLD`] (0.1) assumes a unit-scale
 /// source.  COFDM is not one: [`COFDM_GAIN`] puts its signal-phase RMS at
-/// 1.3–3.3 depending on the bandwidth fraction, while the gap carries only
+/// 1.34–3.65 depending on the bandwidth fraction, while the gap carries only
 /// `Noise amp` noise — uniform on `[-1, 1)` scaled by the amplitude, so its RMS
-/// is `noise_amp / sqrt(3)`, up to 0.289 at the row's maximum.
+/// is `noise_amp / sqrt(3)`.  0.1 sits *below the gap noise* for any `Noise amp`
+/// above 0.173, and gap detection then silently stops: the loop timer never
+/// flips to `gap`, the Di bar never shows "waiting for signal", and the
+/// instrumentation panel is never cleared between bursts.
 ///
-/// 0.1 therefore sits *below the gap noise* for any `Noise amp` above
-/// `0.1 * sqrt(3)` = 0.173 — the top two-thirds of the row's 0–0.50 range — and
-/// gap detection silently stops: the loop timer never flips to `gap`, the Di
-/// bar never shows "waiting for signal", and the instrumentation panel is never
-/// cleared between bursts.
-///
-/// 0.6 splits the two populations with better than 2x margin on both sides
-/// across the entire settings space: it is at least 2.0x above the loudest
-/// reachable gap and at least 2.1x below the quietest reachable signal phase.
+/// 0.6 splits the two populations for `Noise amp` up to about 0.9.  **Which is
+/// why measuring it was the wrong arrangement**: it made the impairment range a
+/// hostage to burst detection, capping `Noise amp` at 0.50 — far below the
+/// 1.5–2.0 where the FEC cliff actually is (measured: FER 0.00 at 1.00 and 0.25
+/// at 1.50 for the 1/4 fraction).  No absolute threshold could have covered
+/// both, since the loudest reachable gap must stay under the quietest reachable
+/// signal phase and `2.33 * sqrt(3) > 1.34`.
 pub const COFDM_SIGNAL_THRESHOLD: f32 = 0.6;
 
 // ── Bandwidth fraction ──────────────────────────────────────────────────────
@@ -476,6 +495,56 @@ impl CofdmShaping {
     }
 }
 
+/// The `OfdmConfig` and preamble for one COFDM link, from the *effective*
+/// shaping.
+///
+/// **Both ends build from this.**  The modulator in [`CofdmSource::render`] and
+/// the receiver in [`crate::source::cofdm::rx`] must agree on every field of the
+/// numerology, and a demodulator that differs by one — a window back-off, a
+/// symbol taper, a single edge carrier — does not fail loudly.  It simply never
+/// acquires, which looks identical to a dead signal.  One builder makes that
+/// class of drift unrepresentable.
+///
+/// **`rf_hz` is 0.0 and must stay so.**  orion-sdr 0.0.58's frame layer asserts
+/// it and panics otherwise: the frame assembler restarted its rotator at every
+/// seam and the receiver never applied `rf_hz` at all.  `render` upconverts the
+/// whole burst itself with one continuous [`Rotator`] — see the module header.
+pub fn cofdm_link_config(shaping: &CofdmShaping, fs: f32) -> (OfdmConfig, OfdmPreamble) {
+    let roll_off = shaping.taper.roll_off();
+
+    // DC-centered data carriers ±1..=±(COFDM_MAX_CARRIER - edge_guard), so
+    // the occupied band is symmetric about DC and centers on the RF
+    // frequency after upconversion.  This is Track A's edge-carrier guard:
+    // the same contiguous span the bandwidth fraction always selected, now
+    // built by the library so `occupied_half_carriers()` can size the mask.
+    let plan = CarrierPlan::new(COFDM_N_FFT, COFDM_CP_LEN)
+        .with_contiguous_data(shaping.edge_guard, shaping.include_dc);
+
+    let mut cfg = OfdmConfig::new(
+        plan,
+        fs,
+        0.0, // baseband — `render` upconverts, see the module header
+        1.0, // unit scale — `render` applies COFDM_GAIN, see that constant
+        ConstellationOrder::Qpsk,
+    )
+    .with_payload_crc(CrcKind::Crc32)
+    .with_header_crc(CrcKind::Crc16)
+    .with_rx_window_backoff(COFDM_RX_WINDOW_BACKOFF);
+    if roll_off > 0 {
+        cfg = cfg.with_symbol_window(roll_off);
+    }
+    debug_assert!(
+        shaping
+            .mask_filter(cfg.carrier_plan.occupied_half_carriers())
+            .is_none_or(|m| m.fits_guard(COFDM_CP_LEN, roll_off, COFDM_RX_WINDOW_BACKOFF)),
+        "shaping overran the guard budget"
+    );
+
+    let preamble = OfdmPreamble::new(COFDM_PREAMBLE_REPEATS, COFDM_PREAMBLE_REPEAT_LEN)
+        .with_training_symbol(cfg.carrier_plan.n_fft(), cfg.carrier_plan.cp_len());
+    (cfg, preamble)
+}
+
 // ── COFDM HUD helper ──────────────────────────────────────────────────────────
 
 /// Submode line for the top HUD: the bandwidth fraction, plus a compact shaping
@@ -520,10 +589,24 @@ pub struct CofdmSource {
     pub fraction: CofdmBwFraction,
     pub shaping: CofdmShaping,
     fs: f32,
-    /// Looping COFDM signal buffer (fixed length; content, not duration).
-    samples: Vec<f32>,
-    /// Wrapping read cursor into `samples` during the signal phase.
+    /// Looping COFDM signal buffer, **complex baseband and noise-free** (fixed
+    /// length; content, not duration).
+    ///
+    /// The buffer is stored pre-upconversion because the receiver needs an
+    /// analytic signal and the real projection cannot supply one: mixing a real
+    /// stream back down leaves the conjugate image, which forces the Schmidl &
+    /// Cox correlation to be real and its frequency-offset estimate to be a
+    /// constant.  See [`crate::source::cofdm::rx`].
+    iq: Vec<C32>,
+    /// Wrapping read cursor into `iq` during the signal phase.
     pos: usize,
+    /// Upconversion oscillator, advanced once per emitted sample and never
+    /// reset mid-run, so there is no phase step at a block, loop or phase
+    /// boundary.
+    rot: Rotator,
+    /// Impaired complex baseband for the block most recently returned by
+    /// `next_samples`, exposed through [`SignalSource::last_samples_iq`].
+    last_iq: Vec<C32>,
     /// True during the signal phase, false during the silence gap.
     in_signal: bool,
     /// Wall-clock seconds elapsed in the current phase.
@@ -547,8 +630,10 @@ impl CofdmSource {
             fraction,
             shaping,
             fs,
-            samples: Vec::new(),
+            iq: Vec::new(),
             pos: 0,
+            rot: Rotator::new(COFDM_NOMINAL_CENTER, fs),
+            last_iq: Vec::new(),
             in_signal: true,
             phase_secs: 0.0,
             rng: 0x853c_49e6_748f_ea9b,
@@ -564,41 +649,17 @@ impl CofdmSource {
     }
 
     /// Build the carrier plan (sized by the edge guard), config, preamble, and
-    /// MCS table, then stream enough COFDM frames to fill the looping buffer,
-    /// mask the result, upconvert it, and store the real part.
+    /// MCS table, then stream enough COFDM frames to fill the looping buffer
+    /// and mask the result.
+    ///
+    /// **Stops at complex baseband.**  Noise and upconversion both happen at
+    /// read time in `next_samples`, so the two outputs — the real projection the
+    /// display consumes and the complex baseband the decoder consumes — are
+    /// derived from one impaired sample each rather than being built twice.
     fn render(&mut self) {
         let shaping = self.shaping.effective(self.fraction);
-        let roll_off = shaping.taper.roll_off();
-
-        // DC-centered data carriers ±1..=±(COFDM_MAX_CARRIER - edge_guard), so
-        // the occupied band is symmetric about DC and centers on the RF
-        // frequency after upconversion.  This is Track A's edge-carrier guard:
-        // the same contiguous span the bandwidth fraction always selected, now
-        // built by the library so `occupied_half_carriers()` can size the mask.
-        let plan = CarrierPlan::new(COFDM_N_FFT, COFDM_CP_LEN)
-            .with_contiguous_data(shaping.edge_guard, shaping.include_dc);
-        let mask = shaping.mask_filter(plan.occupied_half_carriers());
-
-        let mut cfg = OfdmConfig::new(
-            plan,
-            self.fs,
-            0.0, // baseband — `render` upconverts, see the module header
-            COFDM_GAIN,
-            ConstellationOrder::Qpsk,
-        )
-        .with_payload_crc(CrcKind::Crc32)
-        .with_header_crc(CrcKind::Crc16)
-        .with_rx_window_backoff(COFDM_RX_WINDOW_BACKOFF);
-        if roll_off > 0 {
-            cfg = cfg.with_symbol_window(roll_off);
-        }
-        debug_assert!(
-            mask.is_none_or(|m| m.fits_guard(COFDM_CP_LEN, roll_off, COFDM_RX_WINDOW_BACKOFF)),
-            "shaping overran the guard budget"
-        );
-
-        let preamble = OfdmPreamble::new(COFDM_PREAMBLE_REPEATS, COFDM_PREAMBLE_REPEAT_LEN)
-            .with_training_symbol(cfg.carrier_plan.n_fft(), cfg.carrier_plan.cp_len());
+        let (cfg, preamble) = cofdm_link_config(&shaping, self.fs);
+        let mask = shaping.mask_filter(cfg.carrier_plan.occupied_half_carriers());
         let table = McsTable::default_ladder();
         let modu = OfdmFrameMod::new(cfg, table, preamble);
 
@@ -625,15 +686,17 @@ impl CofdmSource {
             mask.apply(&mut iq);
         }
 
-        // Upconvert to the nominal center with one continuous rotator (no phase
-        // step at symbol, block, or frame boundaries) and keep the real part.
-        let mut rot = Rotator::new(COFDM_NOMINAL_CENTER, self.fs);
-        self.samples.clear();
-        self.samples.reserve(iq.len());
-        self.samples.extend(iq.iter().map(|c| {
-            let r = rot.next();
-            c.re * r.re - c.im * r.im
-        }));
+        // Display scaling, applied **once across the whole concatenation** so
+        // preamble, training symbol and payload are scaled alike.  That
+        // uniformity is the invariant: a non-uniform gain is what made this
+        // source unacquirable before orion-sdr 0.0.57, when the preamble was
+        // emitted at unit amplitude while the payload was not.  See
+        // [`COFDM_GAIN`], and `the_display_gain_scales_every_segment_alike`.
+        for c in &mut iq {
+            *c *= COFDM_GAIN;
+        }
+
+        self.iq = iq;
         self.pos = 0;
     }
 
@@ -709,31 +772,60 @@ impl SignalSource for CofdmSource {
         }
     }
 
+    /// Emits `n` real samples, and records their complex-baseband counterparts
+    /// for [`last_samples_iq`](SignalSource::last_samples_iq).
+    ///
+    /// Each sample is impaired **once**, at baseband, and the real output is the
+    /// projection of that same impaired sample:
+    ///
+    /// ```text
+    /// iq[k]   = buffer[pos] + noise[k]
+    /// real[k] = re(iq[k] * exp(j*2*pi*f0*k/fs))
+    /// ```
+    ///
+    /// That ordering is what keeps the decoder and the display honest about each
+    /// other.  Noising the real stream and handing the decoder the clean render
+    /// buffer — the obvious shortcut — would report `CBER`/`IBER` of exactly
+    /// zero at every `Noise amp` setting while the spectrum on screen was
+    /// visibly noisy.
+    ///
+    /// Noise is complex with per-component amplitude `noise_amp`, so the real
+    /// projection carries variance `noise_amp^2 / 3` — unchanged from when the
+    /// noise was added directly to the real stream, which is what
+    /// [`COFDM_SIGNAL_THRESHOLD`] is calibrated against.  Signal and noise are
+    /// projected alike, so the decoder's SNR and the display's agree.
     fn next_samples(&mut self, n: usize) -> Vec<f32> {
         let mut out = Vec::with_capacity(n);
-        if self.in_signal && !self.samples.is_empty() {
-            let len = self.samples.len();
-            for _ in 0..n {
-                let noise = if self.noise_amp > 0.0 {
-                    self.noise_amp * self.xorshift()
-                } else {
-                    0.0
-                };
-                out.push(self.samples[self.pos] + noise);
-                self.pos = (self.pos + 1) % len; // loop the content buffer
-            }
-        } else {
+        self.last_iq.clear();
+        self.last_iq.reserve(n);
+        let len = self.iq.len();
+        let live = self.in_signal && len > 0;
+        for _ in 0..n {
             // Silence gap (or empty buffer): noise only.
-            for _ in 0..n {
-                let noise = if self.noise_amp > 0.0 {
-                    self.noise_amp * self.xorshift()
-                } else {
-                    0.0
-                };
-                out.push(noise);
+            let mut c = if live {
+                let c = self.iq[self.pos];
+                self.pos = (self.pos + 1) % len; // loop the content buffer
+                c
+            } else {
+                C32::default()
+            };
+            if self.noise_amp > 0.0 {
+                c.re += self.noise_amp * self.xorshift();
+                c.im += self.noise_amp * self.xorshift();
             }
+            let r = self.rot.next();
+            out.push(c.re * r.re - c.im * r.im);
+            self.last_iq.push(c);
         }
         out
+    }
+
+    fn last_samples_iq(&self) -> Option<&[C32]> {
+        Some(&self.last_iq)
+    }
+
+    fn signal_phase(&self) -> Option<bool> {
+        Some(self.in_signal)
     }
 
     fn sample_rate(&self) -> f32 {

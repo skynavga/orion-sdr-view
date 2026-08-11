@@ -12,10 +12,13 @@
 //! # Provenance
 //!
 //! Every metric carries a [`Provenance`] so the renderer never learns where a
-//! number came from.  The viewer does not run a COFDM receiver yet, so the
-//! metrics that need one are [`Provenance::Simulated`] — rendered dim, with a
-//! `SIM` badge — and become [`Provenance::Measured`] by a change on the
-//! provider side alone when the receiver lands.
+//! number came from.  Two providers fill this model: a live COFDM receiver
+//! ([`Provenance::Measured`]), and a simulation used when the source offers no
+//! complex baseband to demodulate ([`Provenance::Simulated`] — rendered dim,
+//! behind a `SIM` badge).  Swapping between them is a change on the provider
+//! side alone; the renderer, the layout and the badge all follow without
+//! knowing.  That the badge *disappears on its own* under a receiver is
+//! asserted in `tests/instrument.rs`, not arranged by hand.
 //!
 //! # Inner vs outer FEC
 //!
@@ -57,10 +60,11 @@ pub enum Provenance {
     Simulated,
     /// No provider for this field.
     ///
-    /// Not produced by the synthetic provider — every field it fills has a
-    /// value — but part of the model's contract, and the state an OTA provider
-    /// reports for a metric its profile does not carry.
-    #[allow(dead_code)]
+    /// The simulation fills every field it models, so this is reached only
+    /// under a receiver — for the things nothing can actually measure here: a
+    /// sample-clock error (no estimator), a delay spread (the band-limited
+    /// channel estimate's spread is an occupancy artifact, not a channel
+    /// reading) and a transport-stream lock (no such layer for generic COFDM).
     Unavailable,
 }
 
@@ -93,9 +97,7 @@ impl<T> Metric<T> {
         }
     }
 
-    /// See [`Provenance::Unavailable`] — reached by an OTA provider, not by the
-    /// synthetic one.
-    #[allow(dead_code)]
+    /// See [`Provenance::Unavailable`].
     pub fn unavailable() -> Self {
         Self {
             value: None,
@@ -160,6 +162,11 @@ pub struct CofdmInstrument {
     pub iber: Metric<f32>,
     /// Whole-chain error rate at frame/packet granularity.
     pub error_rate: Metric<f32>,
+    /// Frames received intact.  Labelled `frm`, and the denominator the `err`
+    /// count is read against — an error total means little without it.
+    pub frame_count: Metric<u32>,
+    /// True once `frame_count` has rolled through [`ERROR_COUNT_WRAP`].
+    pub frame_count_wrapped: bool,
     /// Whole-chain error count.  Always labelled `err`, whatever the unit.
     pub error_count: Metric<u32>,
     /// True once `error_count` has rolled through [`ERROR_COUNT_WRAP`].
@@ -325,7 +332,9 @@ pub const COLUMNS: usize = 9;
 
 /// The column at which the `Demod` row's lock indicators begin.  Everything
 /// from here to the right edge is one merged span.
-pub const MERGED_FROM: usize = 3;
+///
+/// Column 1/2 hold `BR` and 3/4 hold `frm`, so the locks start at 5.
+pub const MERGED_FROM: usize = 5;
 
 /// Padding added to every column's widest content, in character widths.  The
 /// padding absorbs the gutter, so there is no separate inter-column spacing.
@@ -487,7 +496,12 @@ impl CofdmInstrument {
             ),
             Row {
                 section: "Demod",
-                cells: pair("BR", &self.bitrate_bps, |v| fmt_bitrate(*v)).to_vec(),
+                cells: pair("BR", &self.bitrate_bps, |v| fmt_bitrate(*v))
+                    .into_iter()
+                    .chain(pair("frm", &self.frame_count, |v| {
+                        fmt_count(*v, self.frame_count_wrapped)
+                    }))
+                    .collect(),
                 locks: vec![
                     lock("CAR", &self.carrier_lock),
                     lock("TIM", &self.timing_lock),
@@ -616,6 +630,24 @@ impl CofdmInstrument {
     /// (which is not carried at all here): the channel BER moves continuously
     /// with C/N, whereas the post-inner-FEC rate sits pinned at the floor until
     /// the code is close to giving up, so it is the less useful single number.
+    /// The `frm`/`err` counters shown left of the Di bar's loop timer, matching
+    /// the FT8/FT4 field exactly: three digits each, fixed width, trailing
+    /// space, so the layout cannot shift as the counts change.
+    ///
+    /// Three digits means these wrap at 1000 while the panel's own `frm`/`err`
+    /// wrap at [`ERROR_COUNT_WRAP`] — the same counts, rendered at the
+    /// precision each surface has room for. Returns `None` when there is no
+    /// receiver, since the simulation has no frame tally to show.
+    pub fn di_counter_str(&self) -> Option<String> {
+        let frames = self.frame_count.value?;
+        let errors = self.error_count.value.unwrap_or(0);
+        Some(format!(
+            "frm {:03} err {:03} ",
+            frames % 1000,
+            errors % 1000
+        ))
+    }
+
     pub fn di_bar_str(&self, budget_chars: usize) -> String {
         let mut line = String::from("COFDM");
         if let Some(c) = self.center_hz.value {
@@ -727,6 +759,42 @@ impl CofdmInstrument {
 
 // ── Provider input ────────────────────────────────────────────────────────────
 
+/// What a live receiver contributes, when one is running.
+///
+/// Held apart from the rest of [`CofdmFacts`] so the two providers stay
+/// distinguishable: `None` is the simulation, `Some` is measurement, and
+/// [`CofdmInstrument::from_facts`] is the one place that chooses. Every field
+/// is itself optional because upstream reports "the stage that would produce
+/// this did not run" as `None` rather than as a sentinel — and for the BER
+/// rungs that is load-bearing, since they are measured by re-encoding a
+/// *decoded* frame and so go `None` exactly when the link fails. Rendering
+/// that as `0.0` would invert its meaning.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct CofdmRxFacts {
+    pub sync_score: Option<f32>,
+    pub cfo_hz: Option<f32>,
+    pub evm_db: Option<f32>,
+    pub channel_ber: Option<f32>,
+    pub inner_ber: Option<f32>,
+    pub inner_fec_ok: Option<bool>,
+    pub outer_fec_ok: Option<bool>,
+    /// Frames that failed or never arrived, over frames expected.
+    pub frame_error_rate: Option<f32>,
+    /// Frames counted bad in this burst: decode failures plus unexplained gaps.
+    pub error_count: u32,
+    pub error_count_wrapped: bool,
+    /// Frames received intact in this burst.
+    pub frame_count: u32,
+    pub frame_count_wrapped: bool,
+}
+
+/// Minimum sync score treated as a carrier/timing lock.
+///
+/// `ofdm_sync`'s own acceptance threshold, so "locked" means exactly "the
+/// receiver was willing to decode from this candidate" rather than a second,
+/// differently-calibrated opinion about the same thing.
+const RX_LOCK_SCORE: f32 = 0.5;
+
 /// Everything the viewer can genuinely measure or declare about the COFDM
 /// signal today.  [`CofdmInstrument::from_facts`] fills the rest by simulation.
 ///
@@ -759,6 +827,8 @@ pub struct CofdmFacts {
     pub error_count: u32,
     pub error_count_wrapped: bool,
     pub error_unit: ErrorUnit,
+    /// Measurements from a live receiver; `None` keeps the simulated block.
+    pub rx: Option<CofdmRxFacts>,
     /// Amplitude that counts as 0 dBFS for this source.
     ///
     /// **Not 1.0.**  The COFDM source applies a large fixed modulator gain
@@ -893,40 +963,134 @@ impl CofdmInstrument {
         let clock_error_ppm = 5.0 * 10f32.powf(-f.cn_db / 40.0);
         let delay_spread_us = guard_us * (0.35 + 0.9 * 10f32.powf(-f.cn_db / 20.0));
 
+        // ── Provider split ───────────────────────────────────────────────
+        //
+        // The one place that chooses between measurement and simulation. Every
+        // field a receiver can supply is taken from `f.rx` when one is running
+        // and from the block above when none is; nothing downstream — layout,
+        // formatting, the `SIM` badge — knows the difference. That was the
+        // whole point of tagging provenance.
+        //
+        // `Metric::simulated` is reached only on the `None` arm, so
+        // `any_simulated()` goes false, and the badge disappears, on its own.
+        let rx = f.rx;
+        let m = |v: Option<f32>| match v {
+            Some(x) => Metric::measured(x),
+            None => Metric::unavailable(),
+        };
+
         Self {
             center_hz: Metric::measured(f.center_hz),
             bandwidth_hz: Metric::known(f.bandwidth_hz),
-            freq_error_hz: Metric::simulated(freq_error_hz),
-            clock_error_ppm: Metric::simulated(clock_error_ppm),
+            freq_error_hz: match rx {
+                Some(r) => m(r.cfo_hz),
+                None => Metric::simulated(freq_error_hz),
+            },
+            // No sample-clock estimator exists on either provider. The
+            // simulation invented one; a receiver is honest about not having it.
+            clock_error_ppm: match rx {
+                Some(_) => Metric::unavailable(),
+                None => Metric::simulated(clock_error_ppm),
+            },
 
             level_dbfs: Metric::measured(db_fs(f.level_amp, f.full_scale)),
             peak_dbfs: Metric::measured(db_fs(f.peak_amp, f.full_scale)),
             overload: Metric::measured(f.peak_amp >= f.full_scale),
 
             cn_db: Metric::measured(f.cn_db),
-            mer_db: Metric::simulated(mer_db),
-            evm_pct: Metric::simulated(evm_pct),
-            mer_margin_db: Metric::simulated(mer_db - SIM_MER_THRESHOLD_DB),
+            // EVM is measured directly; MER is its reciprocal, so one reading
+            // fills both rather than being modelled from C/N.
+            mer_db: match rx {
+                Some(r) => m(r.evm_db.map(|e| -e)),
+                None => Metric::simulated(mer_db),
+            },
+            evm_pct: match rx {
+                Some(r) => m(r.evm_db.map(|e| 100.0 * 10f32.powf(e / 20.0))),
+                None => Metric::simulated(evm_pct),
+            },
+            mer_margin_db: match rx {
+                Some(r) => m(r.evm_db.map(|e| -e - SIM_MER_THRESHOLD_DB)),
+                None => Metric::simulated(mer_db - SIM_MER_THRESHOLD_DB),
+            },
 
-            cber: Metric::simulated(cber),
-            iber: Metric::simulated(iber),
-            error_rate: Metric::simulated(error_rate),
-            error_count: Metric::simulated(f.error_count),
-            error_count_wrapped: f.error_count_wrapped,
+            cber: match rx {
+                Some(r) => m(r.channel_ber),
+                None => Metric::simulated(cber),
+            },
+            iber: match rx {
+                Some(r) => m(r.inner_ber),
+                None => Metric::simulated(iber),
+            },
+            error_rate: match rx {
+                Some(r) => m(r.frame_error_rate),
+                None => Metric::simulated(error_rate),
+            },
+            // The simulation models a *rate*, never a frame tally, so there is
+            // nothing honest to put here without a receiver.
+            frame_count: match rx {
+                Some(r) => Metric::measured(r.frame_count),
+                None => Metric::unavailable(),
+            },
+            frame_count_wrapped: rx.is_some_and(|r| r.frame_count_wrapped),
+            error_count: match rx {
+                Some(r) => Metric::measured(r.error_count),
+                None => Metric::simulated(f.error_count),
+            },
+            error_count_wrapped: rx.map_or(f.error_count_wrapped, |r| r.error_count_wrapped),
             error_unit: f.error_unit,
 
-            delay_spread_us: Metric::simulated(delay_spread_us),
-            echo_within_guard: Metric::simulated(delay_spread_us < guard_us),
+            // Delay spread stays unavailable under a receiver: the inverse
+            // transform of a band-limited channel estimate is a Dirichlet
+            // kernel, so a flat channel measures a large spread that depends
+            // only on the occupancy — and calibrating that floor out still left
+            // a statistic that moved the *wrong way* for a small echo. A
+            // reading worse than none is worse than none.
+            delay_spread_us: match rx {
+                Some(_) => Metric::unavailable(),
+                None => Metric::simulated(delay_spread_us),
+            },
+            echo_within_guard: match rx {
+                Some(_) => Metric::unavailable(),
+                None => Metric::simulated(delay_spread_us < guard_us),
+            },
 
             constellation: Metric::known(f.constellation.to_owned()),
             n_fft: Metric::known(f.n_fft),
             guard_interval: Metric::known(fmt_fraction(f.cp_len, f.n_fft)),
             code_rate: Metric::known(fmt_fraction(k, n)),
 
-            carrier_lock: Metric::simulated(f.cn_db > 6.0),
-            timing_lock: Metric::simulated(f.cn_db > 8.0),
-            fec_lock: Metric::simulated(iber < 1.0e-3),
-            ts_lock: Metric::simulated(error_rate < 1.0e-2),
+            // Carrier and timing lock are the same acquisition event: the
+            // receiver accepted a sync candidate. Reporting one locked and the
+            // other not would be inventing a distinction the receiver does not
+            // draw.
+            carrier_lock: match rx {
+                Some(r) => match r.sync_score {
+                    Some(s) => Metric::measured(s >= RX_LOCK_SCORE),
+                    None => Metric::unavailable(),
+                },
+                None => Metric::simulated(f.cn_db > 6.0),
+            },
+            timing_lock: match rx {
+                Some(r) => match r.sync_score {
+                    Some(s) => Metric::measured(s >= RX_LOCK_SCORE),
+                    None => Metric::unavailable(),
+                },
+                None => Metric::simulated(f.cn_db > 8.0),
+            },
+            // The *inner* decoder converging, reported by the decoder itself
+            // rather than inferred from a BER threshold.
+            fec_lock: match rx {
+                Some(r) => match r.inner_fec_ok {
+                    Some(ok) => Metric::measured(ok),
+                    None => Metric::unavailable(),
+                },
+                None => Metric::simulated(iber < 1.0e-3),
+            },
+            // No transport-stream layer exists for generic COFDM.
+            ts_lock: match rx {
+                Some(_) => Metric::unavailable(),
+                None => Metric::simulated(error_rate < 1.0e-2),
+            },
 
             bitrate_bps: Metric::known(bitrate),
         }
@@ -973,6 +1137,8 @@ impl CofdmInstrument {
             cber: Metric::simulated(9.9e-9),
             iber: Metric::simulated(9.9e-9),
             error_rate: Metric::simulated(9.9e-9),
+            frame_count: Metric::measured(ERROR_COUNT_WRAP - 1),
+            frame_count_wrapped: true,
             error_count: Metric::simulated(ERROR_COUNT_WRAP - 1),
             error_count_wrapped: true,
             // `FER` and `PER` are the same width, so the unit does not matter

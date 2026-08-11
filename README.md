@@ -168,13 +168,24 @@ or scrolled — level first, then frequency error, then the lock run (`lck`, pin
 always sits just before the `SIM` badge), leaving `C/N` last. Field widths are fixed, so a value
 gaining or losing a digit cannot shift its neighbours.
 
-**Most of it is simulated.** The viewer does not run a COFDM receiver yet, so only the tuning, RF
-level, C/N, and the carrier-plan facts are real; everything else is a placeholder driven from the
-measured C/N so the panel responds to `Noise amp` and `Shaping`. Simulated values render dim and the
-panel carries a `SIM` badge — a placeholder that looked measured would be the failure mode worth
-designing against. `C/N` itself is a real fix rather than a relabelled SNR: the shared narrowband
-estimator compares one peak bin against the noise floor, which a multi-carrier signal defeats, so
-COFDM uses the wideband estimator instead.
+**It is measured.** The viewer runs a real COFDM receiver: the source's complex baseband is
+demodulated frame by frame, and the panel reads carrier offset, MER/EVM, the `CBER`/`IBER` error
+ladder, the locks and the frame error count off the received frames. The `SIM` badge is gone —
+not removed by hand, but because nothing on the panel is a placeholder any more, which is what
+provenance tagging was for.
+
+Three fields stay blank (`—`) rather than being invented: `clk` (there is no sample-clock
+estimator), `Δt` and the echo verdict (the inverse transform of a band-limited channel estimate is
+a Dirichlet kernel, so a *flat* channel measures a large spread that depends only on the occupancy
+— and calibrating that floor out still left a statistic that moved the wrong way for a small echo),
+and `TS` lock (generic COFDM has no transport-stream layer). A reading worse than none is worse
+than none.
+
+Without a complex-baseband source the panel falls back to a simulation driven from the measured
+C/N, rendered dim behind the `SIM` badge — a placeholder that looked measured would be the failure
+mode worth designing against. `C/N` itself is a real fix rather than a relabelled SNR: the shared
+narrowband estimator compares one peak bin against the noise floor, which a multi-carrier signal
+defeats, so COFDM uses the wideband estimator instead.
 
 `lvl`, `pk` and `OVL` are measured against **the source's own full scale, not 1.0**. The COFDM
 modulator applies a large fixed gain — bare OFDM at unit gain sits below the decode threshold, and

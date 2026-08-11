@@ -13,9 +13,9 @@ use orion_sdr_view::decode::instrument::*;
 use orion_sdr_view::decode::{DecodeResult, SPECTRUM_WINDOW_SAMPLES};
 use orion_sdr_view::source::cofdm::CofdmState;
 use orion_sdr_view::source::{
-    COFDM_CP_LEN, COFDM_FS, COFDM_GAIN, COFDM_N_FFT, COFDM_NOMINAL_CENTER, CofdmBwFraction,
-    CofdmShaping, CofdmSource, SignalSource, cofdm_data_carriers, cofdm_edge_guard_for,
-    cofdm_mcs_facts, cofdm_occupied_bw,
+    COFDM_CP_LEN, COFDM_FS, COFDM_GAIN, COFDM_N_FFT, COFDM_NOMINAL_CENTER, COFDM_SIGNAL_THRESHOLD,
+    CofdmBwFraction, CofdmShaping, CofdmSource, SignalSource, cofdm_data_carriers,
+    cofdm_edge_guard_for, cofdm_mcs_facts, cofdm_occupied_bw,
 };
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -42,6 +42,7 @@ fn facts_for(fraction: CofdmBwFraction, cn_db: f32) -> CofdmFacts {
         constellation,
         bits_per_symbol,
         inner_code_rate,
+        rx: None,
         error_count: 0,
         error_count_wrapped: false,
         error_unit: ErrorUnit::Frame,
@@ -308,17 +309,21 @@ fn the_grid_does_not_reflow_as_values_change() {
 }
 
 #[test]
-fn the_merged_span_starts_at_the_c3_origin() {
-    // So the lock run aligns with the bw / pk / MER / IBER column above it
-    // rather than floating.
+fn the_merged_span_starts_at_the_merged_from_origin() {
+    // So the lock run aligns with the column above it rather than floating.
     let widths = reference_column_widths(chars);
     let origins = column_origins(&widths);
     let lines = render_text(&instrument().panel_rows());
     let demod = lines.last().unwrap();
-    let at = demod.find("CAR").expect("lock run present");
+    // Byte offset, converted to characters: the layout is measured in
+    // character cells, and this row can contain the em-dash (3 bytes, one
+    // cell) when a value is absent. Comparing `find`'s byte index against a
+    // character origin reads as a two-column drift that is not there.
+    let byte = demod.find("CAR").expect("lock run present");
+    let at = demod[..byte].chars().count();
     assert_eq!(
         at as f32, origins[MERGED_FROM],
-        "merged span must begin exactly at the column-3 origin"
+        "merged span must begin exactly at the C{MERGED_FROM} origin"
     );
     // And it must be the only row with locks.
     let with_locks = instrument()
@@ -666,23 +671,37 @@ fn run_provider(
     noise: f32,
     gap_edge_at_end: bool,
 ) -> Vec<Option<Box<CofdmInstrument>>> {
+    run_provider_with(state, blocks, noise, gap_edge_at_end, false)
+}
+
+/// As [`run_provider`], choosing whether the provider is handed the complex
+/// baseband a receiver needs.  Without it the instrument falls back to the
+/// simulation, which is what the simulated-block tests below exercise.
+fn run_provider_with(
+    state: &mut CofdmState,
+    blocks: usize,
+    noise: f32,
+    gap_edge_at_end: bool,
+    with_receiver: bool,
+) -> Vec<Option<Box<CofdmInstrument>>> {
     let fraction = CofdmBwFraction::OneQuarter;
-    let shaping = CofdmShaping::default_for(fraction);
-    let guard = shaping.effective(fraction).edge_guard;
+    let shaping = CofdmShaping::default_for(fraction).effective(fraction);
+    let guard = shaping.edge_guard;
     let bw = cofdm_occupied_bw(COFDM_FS, guard);
     let mut src = CofdmSource::new(60.0, 1.0, noise, fraction, shaping, COFDM_FS);
     let (tx, rx) = std::sync::mpsc::sync_channel(4096);
 
     for _ in 0..blocks {
         let s = src.next_samples(SPECTRUM_WINDOW_SAMPLES);
+        let iq = with_receiver.then(|| src.last_samples_iq().unwrap().to_vec());
         state.process(
             &s,
             true,
             false,
             COFDM_NOMINAL_CENTER,
             bw,
-            guard,
-            false,
+            shaping,
+            iq.as_deref(),
             COFDM_FS,
             &tx,
         );
@@ -694,8 +713,8 @@ fn run_provider(
             true,
             COFDM_NOMINAL_CENTER,
             bw,
-            guard,
-            false,
+            shaping,
+            None,
             COFDM_FS,
             &tx,
         );
@@ -899,4 +918,210 @@ fn the_lock_run_outlives_the_lower_priority_readouts() {
             );
         }
     }
+}
+
+// ── Provider: the receiver replaces the simulation ────────────────────────────
+//
+// The provenance model exists so that swapping providers is a change on one
+// side of the `CofdmFacts` boundary and nothing downstream notices. These
+// assert that it actually worked: the same panel, the same layout, driven by a
+// receiver instead of a model.
+
+/// With a receiver running, nothing is left simulated — so the `SIM` badge
+/// disappears on its own rather than being removed by hand.
+#[test]
+fn a_running_receiver_clears_the_sim_badge() {
+    let mut state = CofdmState::new();
+    let out = run_provider_with(&mut state, 40, 0.05, false, true);
+    let inst = out
+        .iter()
+        .flatten()
+        .last()
+        .expect("the provider should have emitted an instrument");
+
+    assert!(
+        !inst.any_simulated(),
+        "a live receiver still leaves simulated fields on the panel"
+    );
+}
+
+/// Without one, it does not — the simulation is still the fallback.
+#[test]
+fn without_a_receiver_the_panel_stays_simulated() {
+    let mut state = CofdmState::new();
+    let out = run_provider(&mut state, 40, 0.05, false);
+    let inst = out.iter().flatten().last().expect("an instrument");
+    assert!(
+        inst.any_simulated(),
+        "the simulated fallback should still raise the badge"
+    );
+}
+
+/// The measured fields carry real readings, not just a changed provenance tag.
+#[test]
+fn the_receiver_supplies_measured_values() {
+    let mut state = CofdmState::new();
+    let out = run_provider_with(&mut state, 40, 0.05, false, true);
+    let inst = out.iter().flatten().last().expect("an instrument");
+
+    assert_eq!(inst.cber.prov, Provenance::Measured, "CBER");
+    assert_eq!(inst.iber.prov, Provenance::Measured, "IBER");
+    assert_eq!(inst.freq_error_hz.prov, Provenance::Measured, "freq error");
+    assert_eq!(inst.mer_db.prov, Provenance::Measured, "MER");
+    assert_eq!(inst.carrier_lock.prov, Provenance::Measured, "carrier lock");
+
+    assert_eq!(inst.carrier_lock.value, Some(true), "should be locked");
+    assert_eq!(inst.timing_lock.value, Some(true), "should be locked");
+    // A clean link: the demodulator's own decisions come back error-free.
+    assert_eq!(inst.cber.value, Some(0.0));
+    assert_eq!(inst.iber.value, Some(0.0));
+    // MER is EVM's reciprocal and the synthetic link is near-perfect, so this
+    // is a large positive number rather than the simulation's C/N-minus-loss.
+    assert!(
+        inst.mer_db.value.unwrap() > 40.0,
+        "MER {:?} should reflect the measured EVM",
+        inst.mer_db.value
+    );
+}
+
+/// What no provider can measure stays absent rather than being invented.
+///
+/// The simulation supplied a sample-clock error, a delay spread and a
+/// transport-stream lock; none of the three has anything behind it. A receiver
+/// reports them as unavailable, and the panel renders an em-dash.
+#[test]
+fn the_receiver_reports_what_it_cannot_measure_as_unavailable() {
+    let mut state = CofdmState::new();
+    let out = run_provider_with(&mut state, 40, 0.05, false, true);
+    let inst = out.iter().flatten().last().expect("an instrument");
+
+    for (name, prov, value) in [
+        ("clk", inst.clock_error_ppm.prov, inst.clock_error_ppm.value),
+        (
+            "delay spread",
+            inst.delay_spread_us.prov,
+            inst.delay_spread_us.value,
+        ),
+    ] {
+        assert_eq!(prov, Provenance::Unavailable, "{name} provenance");
+        assert!(value.is_none(), "{name} should carry no value");
+    }
+    assert_eq!(inst.ts_lock.prov, Provenance::Unavailable);
+    assert!(inst.echo_within_guard.value.is_none());
+}
+
+/// A clean burst produces no errors — `err` is counted, not modelled.
+#[test]
+fn a_clean_burst_counts_no_frame_errors() {
+    let mut state = CofdmState::new();
+    let out = run_provider_with(&mut state, 40, 0.05, false, true);
+    let inst = out.iter().flatten().last().expect("an instrument");
+
+    assert_eq!(inst.error_count.prov, Provenance::Measured);
+    assert_eq!(inst.error_count.value, Some(0));
+    assert_eq!(inst.error_rate.value, Some(0.0), "FER");
+}
+
+/// Frame accounting must not charge a burst for the previous one ending.
+///
+/// The source rewinds its looping buffer when the signal phase begins
+/// (`pos = 0`), so `sequence_num` restarts at 0 on every burst. A receiver that
+/// carried its last-seen sequence number across the gap reads that restart as a
+/// gap and invents losses — with `Noise amp` at zero, on a link that dropped
+/// nothing. It shows up as `err` jumping at the gap-to-signal transition rather
+/// than climbing during a burst, which is precisely backwards.
+#[test]
+fn a_new_burst_does_not_inherit_the_last_ones_sequence() {
+    let fraction = CofdmBwFraction::OneQuarter;
+    let shaping = CofdmShaping::default_for(fraction).effective(fraction);
+    let bw = cofdm_occupied_bw(COFDM_FS, shaping.edge_guard);
+    // Short phases so the run crosses several gaps quickly. No noise at all:
+    // any error counted here is invented.
+    let mut src = CofdmSource::new(0.20, 0.10, 0.0, fraction, shaping, COFDM_FS);
+    let mut state = CofdmState::new();
+    let (tx, rx) = std::sync::mpsc::sync_channel(4096);
+
+    let mut was_signal = false;
+    let mut worst = 0u32;
+    for _ in 0..600 {
+        src.advance_time(0.005);
+        let s = src.next_samples(4096);
+        let iq = src.last_samples_iq().unwrap().to_vec();
+        let block_rms = (s.iter().map(|v| v * v).sum::<f32>() / s.len() as f32).sqrt();
+        let is_signal = block_rms >= COFDM_SIGNAL_THRESHOLD;
+        let gap_edge = !is_signal && was_signal;
+        was_signal = is_signal;
+        state.process(
+            &s,
+            is_signal,
+            gap_edge,
+            COFDM_NOMINAL_CENTER,
+            bw,
+            shaping,
+            Some(&iq),
+            COFDM_FS,
+            &tx,
+        );
+        while let Ok(DecodeResult::Instrument(Some(inst))) = rx.try_recv() {
+            worst = worst.max(inst.error_count.value.unwrap_or(0));
+        }
+    }
+    assert_eq!(
+        worst, 0,
+        "invented {worst} frame errors across burst boundaries on a noiseless link"
+    );
+}
+
+// ── Di-bar frame/error counters ───────────────────────────────────────────────
+
+/// The `frm`/`err` pair shown left of the loop timer, matching FT8/FT4's field
+/// exactly so the two sources read the same way.
+#[test]
+fn the_di_counters_are_fixed_width_and_wrap_at_a_thousand() {
+    let mut inst = instrument();
+    inst.frame_count = Metric::measured(42);
+    inst.error_count = Metric::measured(3);
+    assert_eq!(inst.di_counter_str().as_deref(), Some("frm 042 err 003 "));
+
+    // Three digits, so both wrap at 1000 — the panel keeps the full count.
+    inst.frame_count = Metric::measured(1_234);
+    inst.error_count = Metric::measured(7_005);
+    let wrapped = inst.di_counter_str().expect("counters present");
+    assert_eq!(wrapped, "frm 234 err 005 ");
+
+    // Fixed width regardless of magnitude, or the loop timer beside it shifts.
+    inst.frame_count = Metric::measured(0);
+    inst.error_count = Metric::measured(0);
+    assert_eq!(
+        inst.di_counter_str().map(|s| s.chars().count()),
+        Some(wrapped.chars().count())
+    );
+}
+
+/// Without a receiver there is no frame tally, and the field is omitted rather
+/// than showing a zero that would read as "nothing has gone wrong yet".
+#[test]
+fn the_di_counters_are_absent_without_a_receiver() {
+    let inst = instrument(); // built from facts with `rx: None`
+    assert_eq!(inst.frame_count.prov, Provenance::Unavailable);
+    assert!(inst.di_counter_str().is_none());
+}
+
+/// `frm` sits in the Demod row, and the lock run still starts at its origin.
+#[test]
+fn the_demod_row_carries_the_frame_count() {
+    let rows = CofdmInstrument::layout_reference().panel_rows();
+    let demod = rows.last().expect("Demod row");
+    assert_eq!(demod.section, "Demod");
+    let labels: Vec<&str> = demod
+        .cells
+        .iter()
+        .step_by(2)
+        .map(|c| c.text.as_str())
+        .collect();
+    assert_eq!(labels, vec!["BR", "frm"]);
+    assert!(
+        !demod.locks.is_empty(),
+        "the lock run must survive the inserted column"
+    );
 }
