@@ -100,13 +100,19 @@ impl ViewApp {
                 SourceMode::Cofdm => cofdm::hud_submode_str(&self.settings),
                 SourceMode::TestTone => String::new(),
             };
+            // Injected noise amplitude. Every source has the setting, and it
+            // is the one knob that changes what the decoders see rather than
+            // how the signal is drawn — worth reading without opening settings.
+            let noise_str = format!("  noise {:.2}", self.hud_noise_amp());
+
             let status = format!(
-                "{}{}{}  ctr {}  span {}  zoom {}  ref {:.0}dB{}",
+                "{}{}{}  ctr {}  span {}{}  zoom {}  ref {:.0}dB{}",
                 self.source_mode.label(),
                 modes,
                 submode_str,
                 center_str,
                 span_str,
+                noise_str,
                 zoom_str,
                 self.db_max,
                 marker_str
@@ -249,11 +255,18 @@ impl ViewApp {
             .size()
             .x;
 
-        // For FT8/FT4 sources, show "frm xxx err yyy" to the left of the loop timer.
-        let ft_label: Option<String> = if self.source_mode == SourceMode::Ft8 {
-            Some(ft8::hud_frame_counter_str(&self.ft8_view))
-        } else {
-            None
+        // "frm xxx err yyy" to the left of the loop timer. FT8/FT4 count
+        // decoded transmissions; COFDM counts received frames, off the same
+        // receiver the panel reads — the same field, in the same place, so the
+        // two sources do not need to be read differently.
+        let ft_label: Option<String> = match self.source_mode {
+            SourceMode::Ft8 => Some(ft8::hud_frame_counter_str(&self.ft8_view)),
+            SourceMode::Cofdm => self
+                .decode_ticker
+                .last_instrument
+                .as_deref()
+                .and_then(|i| i.di_counter_str()),
+            _ => None,
         };
         let ft_label_w = ft_label.as_ref().map_or(0.0, |s| {
             painter

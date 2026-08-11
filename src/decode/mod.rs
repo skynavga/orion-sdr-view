@@ -6,7 +6,8 @@ pub mod instrument;
 pub mod spectral;
 
 pub use common::{
-    DecodeConfig, DecodeMode, DecodeResult, DecodeTicker, DecodeWorker, SPECTRUM_WINDOW_SAMPLES,
+    DecodeChunk, DecodeConfig, DecodeMode, DecodeResult, DecodeTicker, DecodeWorker,
+    SPECTRUM_WINDOW_SAMPLES,
 };
 
 // Re-export used by the binary.

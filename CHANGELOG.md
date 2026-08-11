@@ -9,6 +9,83 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.22] - 2026-08-11
+
+### Added
+
+- **A real COFDM receiver behind the instrumentation panel.** The `X` panel and
+  the Di line now read a live demodulator: carrier offset, MER/EVM, the
+  `CBER`/`IBER` error ladder, frame error rate and count, and the
+  carrier/timing/FEC locks all come off received frames. The `SIM` badge
+  disappears on its own — nothing sets `Provenance::Simulated` any more — and no
+  panel layout, formatting or rendering code changed, which is what the
+  provenance tagging was for. The simulation remains the fallback for a source
+  that offers no complex baseband.
+
+  Three fields stay blank (`—`) rather than being invented: `clk` (there is no
+  sample-clock estimator), `Δt` and the echo verdict (the inverse transform of a
+  band-limited channel estimate is a Dirichlet kernel, so a *flat* channel
+  measures a large spread set only by the occupancy — and calibrating that floor
+  out still left a statistic that moved the wrong way for a small echo), and
+  `TS` lock (generic COFDM has no transport-stream layer).
+
+- **Complex baseband as a first-class sample path.** `SignalSource` gained
+  `last_samples_iq`, returning the complex counterpart of the block just
+  emitted, so a decoder and the display cannot drift onto different samples.
+  COFDM's noise moved to baseband, impairing each sample once with the real
+  output as its projection.
+
+  The receiver does *not* decode the display's real samples. That was tried
+  first and does not survive measurement: the real projection carries a
+  conjugate image, so every Schmidl & Cox term shares one phase and the
+  carrier-offset estimate is a constant rather than a measurement — it read the
+  same −0.0134 Hz for true offsets of 0, 50, 200 and 1000 Hz. Filtering the
+  image away restores observability but leaves a bias large enough to destroy
+  the payload.
+
+- **Sources report their own signal phase** (`SignalSource::signal_phase`), so
+  burst detection no longer has to be inferred from block RMS. Real-valued
+  sources — and anything over the air — fall back to the RMS threshold
+  unchanged.
+
+- `frm`/`err` counters on the COFDM Di line, matching FT8/FT4's field, and `frm`
+  in the panel's Demod row. Injected noise amplitude shown in the top bar.
+
+- COFDM screenshots in the README.
+
+### Changed
+
+- **`COFDM_GAIN` moved out of the waveform config into `CofdmSource::render`.**
+  It is a display scalar, and it was the only non-unity gain at any
+  `OfdmConfig::new` call site in either crate. Applied once across the whole
+  concatenation so preamble, training symbol and payload scale alike — the
+  invariant whose failure made this source unacquirable before orion-sdr
+  0.0.57, so it is now asserted rather than assumed.
+
+- **`Noise amp` reaches the FEC cliff**, capped at 2.0 instead of 0.50. The old
+  ceiling was set by burst detection, not by the link: gap noise is
+  `noise_amp / sqrt(3)`, so a louder setting climbed past the RMS discriminator
+  and gap detection silently stopped, well below where frames start failing.
+
+- Requires orion-sdr 0.0.59, which fixes a streaming receiver that silently
+  discarded frames and adds residual-carrier tracking across a frame.
+
+### Fixed
+
+- **Frame accounting no longer invents errors.** The source rewinds its looping
+  buffer at the start of each burst, so `sequence_num` restarts and a receiver
+  still holding the previous burst's number read that restart as a gap — 316
+  invented errors across ten burst boundaries with `Noise amp` at zero. A failed
+  frame is also no longer counted twice: the receiver skips past it, so the next
+  good frame's sequence lands two ahead, which double-counted every error.
+
+- **`X` now works while the settings popover is open.** The key handler returned
+  early after the global keys, so `S` swapped away from the instrument panel but
+  `X` could not swap back. `H` had the same defect.
+
+- Dropped sample blocks restart frame accounting rather than being charged to
+  the link, so a render-thread hiccup no longer surfaces as frame errors.
+
 ## [0.0.21] - 2026-08-09
 
 ### Added

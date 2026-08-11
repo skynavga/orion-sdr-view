@@ -73,7 +73,12 @@ impl LoopTimer {
 
     /// Call once per frame with the measured block RMS and the frame duration.
     pub fn tick(&mut self, rms: f32, dt: f32) {
-        let active = rms >= self.signal_threshold;
+        self.tick_active(rms >= self.signal_threshold, dt);
+    }
+
+    /// As [`tick`](Self::tick), with the signal/silence decision already made —
+    /// for a source that reports its own phase rather than being measured.
+    pub fn tick_active(&mut self, active: bool, dt: f32) {
         self.signal_onset = false;
         self.gap_onset = false;
 

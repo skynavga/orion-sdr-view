@@ -26,8 +26,53 @@ use std::sync::{Arc, Mutex};
 use orion_sdr::util::SIGNAL_THRESHOLD;
 use orion_sdr::util::rms;
 
+use num_complex::Complex32 as C32;
+
 use crate::decode::instrument::CofdmInstrument;
+use crate::source::cofdm::CofdmShaping;
 use crate::source::{amdsb, cofdm, cw, ft8, psk31, tone};
+
+/// One block of samples on its way to the decode worker.
+///
+/// Carries both representations of the **same** block. A demodulator needs an
+/// analytic signal — the real projection carries a conjugate image that makes
+/// the Schmidl & Cox carrier estimate a constant rather than a measurement (see
+/// [`crate::source::cofdm::rx`]) — while the display wants the real projection
+/// it has always drawn. Sending them together is what keeps them the same
+/// samples; two independent streams would drift and nothing would catch it.
+///
+/// `iq` is `None` for the real-valued sources, which have no complex form and
+/// no demodulator that wants one.
+pub struct DecodeChunk {
+    /// Monotonic block counter, so the worker can tell that the sample stream
+    /// it is demodulating has a hole in it.
+    ///
+    /// Chunks are sent with `try_send` and **dropped when the channel is
+    /// full** — fine for the spectral analysers, which treat each block as an
+    /// independent window, but not for a streaming demodulator, whose framing
+    /// spans blocks. A dropped block would surface as frame errors on a
+    /// perfectly good link: the viewer's own hiccup, reported as the signal's
+    /// fault.
+    pub seq: u64,
+    pub real: Vec<f32>,
+    pub iq: Option<Vec<C32>>,
+    /// The source's own transmitting/silent state, when it knows it — see
+    /// [`SignalSource::signal_phase`](crate::source::SignalSource::signal_phase).
+    /// `None` falls back to the block-RMS threshold.
+    pub signal: Option<bool>,
+}
+
+impl DecodeChunk {
+    /// A real-only block, for sources with no complex representation.
+    pub fn real(seq: u64, real: Vec<f32>) -> Self {
+        Self {
+            seq,
+            real,
+            iq: None,
+            signal: None,
+        }
+    }
+}
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -59,8 +104,13 @@ pub struct DecodeConfig {
     /// the data-carrier count off the plan these produce rather than deriving
     /// it from `n_fft`, which would be wrong for any profile whose active
     /// carriers are a small fraction of the FFT (DVB-T 2K: 1512 of 2048).
-    pub cofdm_edge_guard: usize,
-    pub cofdm_include_dc: bool,
+    /// The *effective* transmit shaping.
+    ///
+    /// The receiver builds its numerology from this through the same
+    /// `cofdm_link_config` the modulator uses, so the two ends cannot drift: a
+    /// demodulator differing by one field does not fail loudly, it simply never
+    /// acquires, which is indistinguishable from a dead signal.
+    pub cofdm_shaping: CofdmShaping,
     /// Block RMS at or above which the source counts as transmitting.  Must
     /// match the main thread's `LoopTimer` threshold, or the two disagree about
     /// where a burst ends: the decode side keeps emitting into a gap the loop
@@ -82,8 +132,7 @@ impl DecodeConfig {
             carrier_hz: 0.0,
             fs,
             cofdm_bw_hz: 0.0,
-            cofdm_edge_guard: 0,
-            cofdm_include_dc: false,
+            cofdm_shaping: CofdmShaping::derived(crate::source::cofdm::COFDM_DEFAULT_BW_FRACTION),
             signal_threshold: SIGNAL_THRESHOLD,
             cw_message: String::new(),
             cw_wpm: 0.0,
@@ -303,14 +352,14 @@ pub const SPECTRUM_WINDOW_SAMPLES: usize = 4096;
 
 pub struct DecodeWorker {
     config: Arc<Mutex<DecodeConfig>>,
-    rx: Receiver<Vec<f32>>,
+    rx: Receiver<DecodeChunk>,
     tx: SyncSender<DecodeResult>,
 }
 
 impl DecodeWorker {
     pub fn new(
         config: Arc<Mutex<DecodeConfig>>,
-        rx: Receiver<Vec<f32>>,
+        rx: Receiver<DecodeChunk>,
         tx: SyncSender<DecodeResult>,
     ) -> Self {
         Self { config, rx, tx }
@@ -320,6 +369,7 @@ impl DecodeWorker {
         let mut last_mode = DecodeMode::Off;
         let mut last_carrier = 0.0_f32;
         let mut was_signal = false;
+        let mut last_seq: Option<u64> = None;
 
         // Per-mode state.
         let mut psk31 = psk31::Psk31State::new();
@@ -330,21 +380,23 @@ impl DecodeWorker {
         let mut cofdm = cofdm::CofdmState::new();
 
         loop {
-            let samples = match self.rx.recv_timeout(std::time::Duration::from_millis(100)) {
-                Ok(s) => s,
+            let chunk = match self.rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                Ok(c) => c,
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
             };
+            let samples = &chunk.real;
 
-            let (
-                mode,
-                carrier_hz,
-                fs,
-                cofdm_bw_hz,
-                cofdm_edge_guard,
-                cofdm_include_dc,
-                signal_threshold,
-            ) = {
+            // A hole in the sample stream breaks a streaming demodulator's
+            // framing, so start its accounting over rather than charging the
+            // link for samples the viewer dropped. See `DecodeChunk::seq`.
+            let dropped = last_seq.is_some_and(|prev| chunk.seq != prev.wrapping_add(1));
+            last_seq = Some(chunk.seq);
+            if dropped {
+                cofdm.reset();
+            }
+
+            let (mode, carrier_hz, fs, cofdm_bw_hz, cofdm_shaping, signal_threshold) = {
                 let cfg = self.config.lock().unwrap();
                 if cfg.mode == DecodeMode::Cw {
                     cw.message.clone_from(&cfg.cw_message);
@@ -359,8 +411,7 @@ impl DecodeWorker {
                     cfg.carrier_hz,
                     cfg.fs,
                     cfg.cofdm_bw_hz,
-                    cfg.cofdm_edge_guard,
-                    cfg.cofdm_include_dc,
+                    cfg.cofdm_shaping,
                     cfg.signal_threshold,
                 )
             };
@@ -392,39 +443,37 @@ impl DecodeWorker {
                 last_carrier = carrier_hz;
             }
 
-            let is_signal = rms(&samples) >= signal_threshold;
+            let is_signal = chunk
+                .signal
+                .unwrap_or_else(|| rms(samples) >= signal_threshold);
             let gap_edge = !is_signal && was_signal;
             was_signal = is_signal;
 
             match mode {
                 DecodeMode::Bpsk31 | DecodeMode::Qpsk31 => {
-                    psk31.process(
-                        &samples, is_signal, gap_edge, mode, carrier_hz, fs, &self.tx,
-                    );
+                    psk31.process(samples, is_signal, gap_edge, mode, carrier_hz, fs, &self.tx);
                 }
                 DecodeMode::Cw => {
-                    cw.process(&samples, is_signal, gap_edge, carrier_hz, fs, &self.tx);
+                    cw.process(samples, is_signal, gap_edge, carrier_hz, fs, &self.tx);
                 }
                 DecodeMode::AmDsb => {
-                    amdsb.process(&samples, is_signal, gap_edge, carrier_hz, fs, &self.tx);
+                    amdsb.process(samples, is_signal, gap_edge, carrier_hz, fs, &self.tx);
                 }
                 DecodeMode::TestTone => {
-                    testtone.process(&samples, is_signal, gap_edge, carrier_hz, fs, &self.tx);
+                    testtone.process(samples, is_signal, gap_edge, carrier_hz, fs, &self.tx);
                 }
                 DecodeMode::Ft8 | DecodeMode::Ft4 => {
-                    ft8.process(
-                        &samples, is_signal, gap_edge, mode, carrier_hz, fs, &self.tx,
-                    );
+                    ft8.process(samples, is_signal, gap_edge, mode, carrier_hz, fs, &self.tx);
                 }
                 DecodeMode::Cofdm => {
                     cofdm.process(
-                        &samples,
+                        samples,
                         is_signal,
                         gap_edge,
                         carrier_hz,
                         cofdm_bw_hz,
-                        cofdm_edge_guard,
-                        cofdm_include_dc,
+                        cofdm_shaping,
+                        chunk.iq.as_deref(),
                         fs,
                         &self.tx,
                     );

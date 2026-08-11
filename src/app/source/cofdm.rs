@@ -5,7 +5,8 @@ use crate::app::settings::{CofdmSettings, SettingsState};
 use crate::decode::DecodeMode;
 use crate::source::SignalSource;
 use crate::source::cofdm::{
-    self, COFDM_FS, COFDM_NOMINAL_CENTER, COFDM_PREFERRED_REF_DB, CofdmSource, cofdm_occupied_bw,
+    self, COFDM_FS, COFDM_NOMINAL_CENTER, COFDM_PREFERRED_REF_DB, CofdmShaping, CofdmSource,
+    cofdm_occupied_bw,
 };
 use crate::source::ft8::Ft8ViewState;
 
@@ -44,13 +45,16 @@ pub(in crate::app) fn occupied_bw_hz(settings: &SettingsState) -> f32 {
     cofdm_occupied_bw(COFDM_FS, guard)
 }
 
-/// The *effective* carrier-plan parameters — edge guard and DC occupancy — for
-/// the current settings.  The instrumentation reads its data-carrier count off
-/// the plan these produce rather than deriving it from `n_fft`.
-pub(in crate::app) fn carrier_plan_params(settings: &SettingsState) -> (usize, bool) {
-    let fraction = settings.cofdm_bw_fraction();
-    let shaping = settings.cofdm_shaping().effective(fraction);
-    (shaping.edge_guard, shaping.include_dc)
+/// The *effective* transmit shaping for the current settings.
+///
+/// The decoder builds both its carrier-plan facts and its receiver from this,
+/// through the same `cofdm_link_config` the modulator uses — so the two ends
+/// share one definition of the numerology rather than two that must be kept in
+/// agreement.
+pub(in crate::app) fn effective_shaping(settings: &SettingsState) -> CofdmShaping {
+    settings
+        .cofdm_shaping()
+        .effective(settings.cofdm_bw_fraction())
 }
 
 /// Submode line for the top HUD when COFDM is the active source.

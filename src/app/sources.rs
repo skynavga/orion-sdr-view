@@ -162,9 +162,7 @@ impl ViewApp {
             }
             if self.source_mode == SourceMode::Cofdm {
                 cfg.cofdm_bw_hz = cofdm::occupied_bw_hz(&self.settings);
-                let (guard, include_dc) = cofdm::carrier_plan_params(&self.settings);
-                cfg.cofdm_edge_guard = guard;
-                cfg.cofdm_include_dc = include_dc;
+                cfg.cofdm_shaping = cofdm::effective_shaping(&self.settings);
             }
         }
     }
