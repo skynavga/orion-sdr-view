@@ -27,6 +27,13 @@ pub struct CofdmConfig {
     pub mask: Option<String>,
     pub sig_secs: Option<f32>,
     pub gap_secs: Option<f32>,
+    pub cn_db: Option<f32>,
+    /// **Retired.**  Present only so a config written before the C/N change
+    /// fails loudly instead of being silently ignored: every field here is
+    /// `Option<T>` and nothing sets `deny_unknown_fields`, so serde would
+    /// otherwise drop this key and quietly fall back to the `cn_db` default —
+    /// a config that looks like it loaded while discarding what the user wrote.
+    /// See `ViewConfig::retired_key_errors`.
     pub noise_amp: Option<f32>,
 }
 
@@ -47,10 +54,10 @@ impl crate::config::ViewConfig {
             .and_then(|c| c.gap_secs)
             .unwrap_or(crate::source::cofdm::COFDM_DEFAULT_GAP_SECS)
     }
-    pub fn cofdm_noise_amp(&self) -> f32 {
+    pub fn cofdm_cn_db(&self) -> f32 {
         self.cofdm()
-            .and_then(|c| c.noise_amp)
-            .unwrap_or(crate::source::cofdm::COFDM_DEFAULT_NOISE_AMP)
+            .and_then(|c| c.cn_db)
+            .unwrap_or(crate::source::cofdm::COFDM_DEFAULT_CN_DB)
     }
     pub fn cofdm_shaping_enabled(&self) -> bool {
         self.cofdm()

@@ -7,6 +7,7 @@ use std::io::Write;
 use tempfile::NamedTempFile;
 
 use orion_sdr_view::config::{Defaults, TzMode, ViewConfig};
+use orion_sdr_view::source;
 
 fn defaults_all_match(cfg: &ViewConfig) {
     assert_eq!(cfg.db_min(), Defaults::DB_MIN, "db_min");
@@ -17,14 +18,14 @@ fn defaults_all_match(cfg: &ViewConfig) {
         "spec_time_range_secs"
     );
     assert_eq!(cfg.freq_hz(), Defaults::FREQ_HZ, "freq_hz");
-    assert_eq!(cfg.noise_amp(), Defaults::NOISE_AMP, "noise_amp");
+    assert_eq!(cfg.cn_db(), source::tone::TONE_DEFAULT_CN_DB, "cn_db");
     assert_eq!(cfg.amp_max(), Defaults::AMP_MAX, "amp_max");
     assert_eq!(cfg.ramp_secs(), Defaults::RAMP_SECS, "ramp_secs");
     assert_eq!(cfg.pause_secs(), Defaults::PAUSE_SECS, "pause_secs");
     assert_eq!(cfg.carrier_hz(), Defaults::CARRIER_HZ, "carrier_hz");
     assert_eq!(cfg.mod_index(), Defaults::MOD_INDEX, "mod_index");
     assert_eq!(cfg.am_gap_secs(), Defaults::AM_GAP_SECS, "am_gap_secs");
-    assert_eq!(cfg.am_noise_amp(), Defaults::AM_NOISE_AMP, "am_noise_amp");
+    assert_eq!(cfg.am_cn_db(), source::amdsb::AM_DEFAULT_CN_DB, "am_cn_db");
     assert_eq!(cfg.am_msg_repeat(), 1, "am_msg_repeat");
     assert_eq!(cfg.psk31_mode(), "BPSK31", "psk31_mode");
     assert_eq!(
@@ -33,9 +34,9 @@ fn defaults_all_match(cfg: &ViewConfig) {
         "psk31_carrier_hz"
     );
     assert_eq!(
-        cfg.psk31_noise_amp(),
-        Defaults::AM_NOISE_AMP,
-        "psk31_noise_amp"
+        cfg.psk31_cn_db(),
+        source::psk31::PSK31_DEFAULT_CN_DB,
+        "psk31_cn_db"
     );
     assert_eq!(
         cfg.psk31_canned_text(),
@@ -61,7 +62,7 @@ view:
   sources:
     test_tone:
       freq_hz:    5000.0
-      noise_amp:  0.10
+      cn_db:      30.0
       amp_max:    0.80
       ramp_secs:  2.0
       pause_secs: 5.0
@@ -69,7 +70,7 @@ view:
       carrier_hz: 15000.0
       mod_index:  0.5
       gap_secs:   3.0
-      noise_amp:  0.02
+      cn_db:      25.0
 "#;
     let mut f = NamedTempFile::new().unwrap();
     f.write_all(yaml.as_bytes()).unwrap();
@@ -78,14 +79,14 @@ view:
     assert_eq!(cfg.db_min(), -100.0);
     assert_eq!(cfg.db_max(), -10.0);
     assert_eq!(cfg.freq_hz(), 5000.0);
-    assert_eq!(cfg.noise_amp(), 0.10);
+    assert_eq!(cfg.cn_db(), 30.0);
     assert_eq!(cfg.amp_max(), 0.80);
     assert_eq!(cfg.ramp_secs(), 2.0);
     assert_eq!(cfg.pause_secs(), 5.0);
     assert_eq!(cfg.carrier_hz(), 15000.0);
     assert_eq!(cfg.mod_index(), 0.5);
     assert_eq!(cfg.am_gap_secs(), 3.0);
-    assert_eq!(cfg.am_noise_amp(), 0.02);
+    assert_eq!(cfg.am_cn_db(), 25.0);
 }
 
 // ── Spectrogram display fields: explicit override + partial defaults ─────────
@@ -227,7 +228,7 @@ view:
       mode: QPSK31
       carrier_hz: 1500.0
       gap_secs: 5.0
-      noise_amp: 0.10
+      cn_db: 40.0
       canned_text: "TEST MSG"
       custom_text: "CUSTOM MSG"
       msg_repeat: 7
@@ -239,7 +240,7 @@ view:
     assert_eq!(cfg.psk31_mode(), "QPSK31");
     assert_eq!(cfg.psk31_carrier_hz(), 1500.0);
     assert_eq!(cfg.psk31_gap_secs(), 5.0);
-    assert_eq!(cfg.psk31_noise_amp(), 0.10);
+    assert_eq!(cfg.psk31_cn_db(), 40.0);
     assert_eq!(cfg.psk31_canned_text(), "TEST MSG");
     assert_eq!(cfg.psk31_custom_text(), "CUSTOM MSG");
     assert_eq!(cfg.psk31_msg_repeat(), 7);
@@ -332,7 +333,7 @@ view:
       mode: FT4
       carrier_hz: 1200.0
       gap_secs: 30.0
-      noise_amp: 0.03
+      cn_db: 48.0
       call_to: W1AW
       call_de: K0KE
       grid: DN70
@@ -345,7 +346,7 @@ view:
     assert_eq!(cfg.ft8_mode(), "FT4");
     assert_eq!(cfg.ft8_carrier_hz(), 1200.0);
     assert_eq!(cfg.ft8_gap_secs(), 30.0);
-    assert_eq!(cfg.ft8_noise_amp(), 0.03);
+    assert_eq!(cfg.ft8_cn_db(), 48.0);
     assert_eq!(cfg.ft8_call_to(), "W1AW");
     assert_eq!(cfg.ft8_call_de(), "K0KE");
     assert_eq!(cfg.ft8_grid(), "DN70");
@@ -373,7 +374,7 @@ view:
         cfg.ft8_gap_secs(),
         orion_sdr_view::source::ft8::FT8_DEFAULT_GAP_SECS
     );
-    assert_eq!(cfg.ft8_noise_amp(), Defaults::AM_NOISE_AMP);
+    assert_eq!(cfg.ft8_cn_db(), source::ft8::FT8_DEFAULT_CN_DB);
     assert_eq!(
         cfg.ft8_call_to(),
         orion_sdr_view::source::ft8::FT8_DEFAULT_CALL_TO

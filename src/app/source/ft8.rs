@@ -12,7 +12,7 @@ pub(in crate::app) fn make(settings: &SettingsState) -> Ft8Source {
     Ft8Source::new(
         settings.ft8_carrier_hz(),
         settings.ft8_gap_secs(),
-        settings.ft8_noise_amp(),
+        settings.ft8_cn_db(),
         settings_mode(settings),
         settings_msg_type(settings),
         settings.ft8_call_to().to_owned(),
@@ -34,7 +34,7 @@ pub(in crate::app) fn sync(
     ft8.apply_params(
         settings.ft8_carrier_hz(),
         settings.ft8_gap_secs(),
-        settings.ft8_noise_amp(),
+        settings.ft8_cn_db(),
         settings_mode(settings),
         settings_msg_type(settings),
         settings.ft8_msg_repeat(),
@@ -94,5 +94,9 @@ impl super::SourceFactory for Factory {
     }
     fn set_carrier_hz(&self, settings: &mut SettingsState, hz: f32) {
         settings.set_ft8_carrier_hz(hz);
+    }
+
+    fn cn_db(&self, settings: &SettingsState) -> f32 {
+        settings.ft8_cn_db()
     }
 }

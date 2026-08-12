@@ -7,7 +7,7 @@ use std::path::Path;
 use orion_sdr::core::AudioToIqChain;
 use orion_sdr::modulate::AmDsbMod;
 
-use crate::source::{MAX_SIG_SECS, SignalSource};
+use crate::source::{CnNoise, CnReference, MAX_SIG_SECS, NoiseDomain, SignalSource};
 
 // ── BuiltinAudio ─────────────────────────────────────────────────────────────
 
@@ -27,6 +27,28 @@ impl BuiltinAudio {
         }
     }
 }
+
+// ── AM DSB constants ─────────────────────────────────────────────────────────
+
+/// Reference bandwidth (Hz) AM DSB's `C/N` is measured in: a nominal +/-3 kHz
+/// of audio either side of the carrier.
+///
+/// **Declared, not measured.**  The Di bar estimates the occupied bandwidth
+/// from the spectrum, and that estimate moves with the audio content — feeding
+/// it back into the impairment would make the noise floor breathe with speech.
+pub const AM_CN_REF_BW_HZ: f32 = 6_000.0;
+
+/// Default C/N (dB), chosen to reproduce the noise floor the pre-`C/N` default
+/// (`noise_amp` 0.05, uniform) put on screen.
+pub const AM_DEFAULT_CN_DB: f32 = 34.0;
+
+/// Average power of the AM DSB carrier at the `carrier_level = 1.0` this source
+/// modulates with: `A^2 / 2` for the real projection.
+///
+/// **The carrier is the reference, not the total power.**  `C` in `C/N` is
+/// literally the carrier for AM, and total power would drag the ratio around
+/// with the audio content — a quiet passage would read as a better link.
+const AM_CARRIER_POWER: f32 = 0.5;
 
 static CQ_MORSE_WAV: &[u8] = include_bytes!("../../../assets/audio/cq_morse.wav");
 static CQ_VOICE_WAV: &[u8] = include_bytes!("../../../assets/audio/cq_voice.wav");
@@ -143,10 +165,7 @@ pub struct AmDsbSource {
     // Exposed parameters (write → call rebuild_mod() to apply)
     pub carrier_hz: f32,
     pub mod_index: f32,
-    pub noise_amp: f32,
-
-    // PRNG for AWGN
-    rng: u64,
+    noise: CnNoise,
 }
 
 impl AmDsbSource {
@@ -157,7 +176,7 @@ impl AmDsbSource {
         carrier_hz: f32,
         mod_index: f32,
         gap_secs: f32,
-        noise_amp: f32,
+        cn_db: f32,
         msg_repeat: usize,
         mod_rate: f32,
     ) -> Self {
@@ -177,9 +196,20 @@ impl AmDsbSource {
             mod_rate,
             carrier_hz,
             mod_index,
-            noise_amp,
-            rng: 0x853c_49e6_748f_ea9b,
+            noise: CnNoise::new(cn_db, cn_reference(mod_rate)),
         }
+    }
+
+    /// Requested carrier-to-noise ratio, in dB.
+    #[allow(dead_code)] // used by integration tests, not the binary
+    pub fn cn_db(&self) -> f32 {
+        self.noise.cn_db()
+    }
+
+    /// Per-component standard deviation of the injected noise.
+    #[allow(dead_code)] // used by integration tests, not the binary
+    pub fn noise_sigma(&self) -> f32 {
+        self.noise.sigma()
     }
 
     /// Replace audio buffer (e.g. after loading a user WAV file).
@@ -190,13 +220,6 @@ impl AmDsbSource {
         self.play_count = 0;
         self.sig_samples = 0;
         self.gap_remaining = 0;
-    }
-
-    fn xorshift(&mut self) -> f32 {
-        self.rng ^= self.rng << 13;
-        self.rng ^= self.rng >> 7;
-        self.rng ^= self.rng << 17;
-        (self.rng >> 11) as f32 * (1.0 / (1u64 << 53) as f32) * 2.0 - 1.0
     }
 
     /// Rebuild the modulator after carrier_hz or mod_index changes.
@@ -217,7 +240,7 @@ impl AmDsbSource {
         carrier_hz: f32,
         mod_index: f32,
         gap_secs: f32,
-        noise_amp: f32,
+        cn_db: f32,
         msg_repeat: usize,
     ) {
         let carrier_changed = (self.carrier_hz - carrier_hz).abs() > 0.5;
@@ -232,7 +255,7 @@ impl AmDsbSource {
             self.gap_secs = gap_secs;
             self.update_gap();
         }
-        self.noise_amp = noise_amp;
+        self.noise.set_cn_db(cn_db);
         self.msg_repeat = msg_repeat.max(1);
     }
 
@@ -285,12 +308,7 @@ impl SignalSource for AmDsbSource {
                 // PTT released — no carrier, but AWGN is always present
                 let gap_now = self.gap_remaining.min(n - i);
                 for _ in 0..gap_now {
-                    let noise = if self.noise_amp > 0.0 {
-                        self.noise_amp * self.xorshift()
-                    } else {
-                        0.0
-                    };
-                    out.push(noise);
+                    out.push(self.noise.next());
                 }
                 self.gap_remaining -= gap_now;
                 i += gap_now;
@@ -330,11 +348,7 @@ impl SignalSource for AmDsbSource {
                 if !audio_chunk.is_empty() {
                     let iq = self.chain.process_ref(&audio_chunk);
                     for c in iq {
-                        let noise = if self.noise_amp > 0.0 {
-                            self.noise_amp * self.xorshift()
-                        } else {
-                            0.0
-                        };
+                        let noise = self.noise.next();
                         out.push(c.re + noise);
                     }
                 }
@@ -346,5 +360,16 @@ impl SignalSource for AmDsbSource {
 
     fn sample_rate(&self) -> f32 {
         self.mod_rate
+    }
+}
+
+/// The C/N geometry for AM DSB at `fs`.  Content-independent: the reference is
+/// the carrier, which this source always transmits at unit level while keyed.
+fn cn_reference(fs: f32) -> CnReference {
+    CnReference {
+        signal_power: AM_CARRIER_POWER,
+        occupied_bw_hz: AM_CN_REF_BW_HZ,
+        fs,
+        domain: NoiseDomain::Real,
     }
 }

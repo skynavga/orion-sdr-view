@@ -9,6 +9,13 @@ pub struct AmDsbConfig {
     pub carrier_hz: Option<f32>,
     pub mod_index: Option<f32>,
     pub gap_secs: Option<f32>,
+    pub cn_db: Option<f32>,
+    /// **Retired.**  Present only so a config written before the C/N change
+    /// fails loudly instead of being silently ignored: every field here is
+    /// `Option<T>` and nothing sets `deny_unknown_fields`, so serde would
+    /// otherwise drop this key and quietly fall back to the `cn_db` default —
+    /// a config that looks like it loaded while discarding what the user wrote.
+    /// See `ViewConfig::retired_key_errors`.
     pub noise_amp: Option<f32>,
     pub msg_repeat: Option<u32>,
 }
@@ -35,12 +42,12 @@ impl crate::config::ViewConfig {
             .and_then(|a| a.gap_secs)
             .unwrap_or(Defaults::AM_GAP_SECS)
     }
-    pub fn am_noise_amp(&self) -> f32 {
+    pub fn am_cn_db(&self) -> f32 {
         self.sources
             .as_ref()
             .and_then(|s| s.am_dsb.as_ref())
-            .and_then(|a| a.noise_amp)
-            .unwrap_or(Defaults::AM_NOISE_AMP)
+            .and_then(|a| a.cn_db)
+            .unwrap_or(crate::source::amdsb::AM_DEFAULT_CN_DB)
     }
     pub fn am_msg_repeat(&self) -> usize {
         self.sources

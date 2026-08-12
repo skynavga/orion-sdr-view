@@ -1,7 +1,6 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use crate::config::Defaults;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -9,6 +8,13 @@ pub struct Ft8Config {
     pub mode: Option<String>,
     pub carrier_hz: Option<f32>,
     pub gap_secs: Option<f32>,
+    pub cn_db: Option<f32>,
+    /// **Retired.**  Present only so a config written before the C/N change
+    /// fails loudly instead of being silently ignored: every field here is
+    /// `Option<T>` and nothing sets `deny_unknown_fields`, so serde would
+    /// otherwise drop this key and quietly fall back to the `cn_db` default —
+    /// a config that looks like it loaded while discarding what the user wrote.
+    /// See `ViewConfig::retired_key_errors`.
     pub noise_amp: Option<f32>,
     pub call_to: Option<String>,
     pub call_de: Option<String>,
@@ -38,12 +44,12 @@ impl crate::config::ViewConfig {
             .and_then(|f| f.gap_secs)
             .unwrap_or(crate::source::ft8::FT8_DEFAULT_GAP_SECS)
     }
-    pub fn ft8_noise_amp(&self) -> f32 {
+    pub fn ft8_cn_db(&self) -> f32 {
         self.sources
             .as_ref()
             .and_then(|s| s.ft8.as_ref())
-            .and_then(|f| f.noise_amp)
-            .unwrap_or(Defaults::AM_NOISE_AMP)
+            .and_then(|f| f.cn_db)
+            .unwrap_or(crate::source::ft8::FT8_DEFAULT_CN_DB)
     }
     pub fn ft8_call_to(&self) -> &str {
         self.sources

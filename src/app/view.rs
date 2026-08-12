@@ -8,10 +8,7 @@ use eframe::egui;
 
 use super::freqview::{FreqMarker, FreqView};
 use super::persistence::PersistenceRenderer;
-use super::settings::{
-    AmDsbSettings, CofdmSettings, CwSettings, Ft8Settings, Psk31Settings, SettingsState,
-    ToneSettings,
-};
+use super::settings::{AmDsbSettings, CwSettings, Psk31Settings, SettingsState, ToneSettings};
 use super::spectrogram::SpectrogramDisplay;
 use super::spectrum::{RingBuffer, SpectrumProcessor};
 use super::waterfall::WaterfallDisplay;
@@ -219,36 +216,28 @@ impl ViewApp {
         }
     }
 
-    /// Block-RMS level that counts as signal for the active source.
-    ///
-    /// `SIGNAL_THRESHOLD` assumes a unit-scale source.  COFDM is not one — its
-    /// modulator gain puts the signal an order of magnitude above that level,
-    /// and its own `Noise amp` floor can rise above it, which would leave the
-    /// gap indistinguishable from the burst.  See `COFDM_SIGNAL_THRESHOLD`.
-    /// The active source's injected-noise amplitude, for the HUD.
+    /// The active source's requested C/N, in dB, for the HUD.
     ///
     /// Each source owns its own row rather than sharing one, so this is a
-    /// per-source lookup; the units differ between them (COFDM's is an absolute
-    /// amplitude against a large modulator gain, the narrowband sources' is
-    /// against a unit-scale signal), which is why the HUD shows the raw setting
-    /// rather than pretending it is a comparable SNR.
-    pub(super) fn hud_noise_amp(&self) -> f32 {
-        match self.source_mode {
-            SourceMode::Cofdm => self.settings.cofdm_noise_amp(),
-            SourceMode::Ft8 => self.settings.ft8_noise_amp(),
-            SourceMode::AmDsb => self.settings.am_noise_amp(),
-            SourceMode::Psk31 => self.settings.psk31_noise_amp(),
-            SourceMode::Cw => self.settings.cw_noise_amp(),
-            SourceMode::TestTone => self.settings.noise_amp(),
-        }
+    /// per-source lookup — but the *unit* is now the same for all of them,
+    /// which is what lets it be one trait call instead of a `match`.  Before
+    /// the C/N change the HUD showed a raw amplitude whose meaning depended on
+    /// which source was active.
+    pub(super) fn hud_cn_db(&self) -> f32 {
+        super::common::source_mode_factory(self.source_mode).cn_db(&self.settings)
     }
 
+    /// Block-RMS level that counts as signal, for a source that does not report
+    /// its own phase.
+    ///
+    /// One value for every source: they are all unit-scale now.  COFDM used to
+    /// need its own (`COFDM_SIGNAL_THRESHOLD` = 0.6) because a fitted gain of
+    /// 121.0 put its burst an order of magnitude above the shared level while
+    /// its gap noise could climb past it — so the threshold had to sit between
+    /// two populations that both moved.  Deriving the display level removed the
+    /// reason for it.
     pub(super) fn signal_threshold(&self) -> f32 {
-        if self.source_mode == SourceMode::Cofdm {
-            crate::source::cofdm::COFDM_SIGNAL_THRESHOLD
-        } else {
-            SIGNAL_THRESHOLD
-        }
+        SIGNAL_THRESHOLD
     }
 
     /// Hard reset: revert all source-mode settings rows to defaults, then

@@ -18,7 +18,7 @@ const TAPER: usize = 4;
 const MASK: usize = 5;
 const SIGNAL: usize = 6;
 const GAP: usize = 7;
-const NOISE: usize = 8;
+const CN: usize = 8;
 
 /// Toggle option labels, in `CofdmBwFraction::ALL` order.
 const BW_OPTIONS: &[&str] = &["1/8", "1/4", "1/3", "1/2", "2/3", "3/4", "7/8"];
@@ -143,15 +143,13 @@ impl CofdmRows {
                     coarse: None,
                 }),
                 Row::Num(NumField {
-                    label: "Noise amp",
-                    value: crate::source::cofdm::COFDM_DEFAULT_NOISE_AMP,
-                    default: crate::source::cofdm::COFDM_DEFAULT_NOISE_AMP,
-                    step: 0.01,
-                    min: 0.0,
-                    // The source's signal-detection threshold is derived from
-                    // this bound, so the two must not drift apart.
-                    max: crate::source::cofdm::COFDM_MAX_NOISE_AMP,
-                    unit: "",
+                    label: "C/N",
+                    value: crate::source::cofdm::COFDM_DEFAULT_CN_DB,
+                    default: crate::source::cofdm::COFDM_DEFAULT_CN_DB,
+                    step: 1.0,
+                    min: MIN_CN_DB,
+                    max: MAX_CN_DB,
+                    unit: " dB",
                     coarse: None,
                 }),
             ],
@@ -166,7 +164,7 @@ impl CofdmRows {
         if self.shaping_enabled() {
             v.extend([EDGE_GUARD, INCLUDE_DC, TAPER, MASK]);
         }
-        v.extend([SIGNAL, GAP, NOISE]);
+        v.extend([SIGNAL, GAP, CN]);
         v
     }
 
@@ -223,7 +221,7 @@ impl super::common::SourceRows for CofdmRows {
     fn patch_from_config(&mut self, cfg: &ViewConfig) {
         self.rows[SIGNAL].patch_num(cfg.cofdm_sig_secs());
         self.rows[GAP].patch_num(cfg.cofdm_gap_secs());
-        self.rows[NOISE].patch_num(cfg.cofdm_noise_amp());
+        self.rows[CN].patch_num(cfg.cofdm_cn_db());
 
         let fraction = cfg.cofdm_bw_fraction();
         set_toggle(
@@ -264,6 +262,7 @@ impl super::common::SourceRows for CofdmRows {
 // ── SettingsState accessors ───────────────────────────────────────────────
 
 use crate::app::SourceMode;
+use crate::source::{MAX_CN_DB, MIN_CN_DB};
 
 /// Borrow this source's rows from `SettingsState`.
 fn rows(state: &super::SettingsState) -> &CofdmRows {
@@ -281,7 +280,7 @@ fn rows_mut(state: &mut super::SettingsState) -> &mut CofdmRows {
 pub(in crate::app) trait CofdmSettings {
     fn cofdm_sig_secs(&self) -> f32;
     fn cofdm_gap_secs(&self) -> f32;
-    fn cofdm_noise_amp(&self) -> f32;
+    fn cofdm_cn_db(&self) -> f32;
     fn cofdm_bw_fraction(&self) -> CofdmBwFraction;
     fn cofdm_shaping(&self) -> CofdmShaping;
     fn cycle_cofdm_bw(&mut self);
@@ -302,11 +301,11 @@ impl CofdmSettings for super::SettingsState {
             crate::source::cofdm::COFDM_DEFAULT_GAP_SECS
         }
     }
-    fn cofdm_noise_amp(&self) -> f32 {
-        if let Row::Num(f) = &rows(self).rows[NOISE] {
+    fn cofdm_cn_db(&self) -> f32 {
+        if let Row::Num(f) = &rows(self).rows[CN] {
             f.value
         } else {
-            crate::source::cofdm::COFDM_DEFAULT_NOISE_AMP
+            crate::source::cofdm::COFDM_DEFAULT_CN_DB
         }
     }
     fn cofdm_bw_fraction(&self) -> CofdmBwFraction {

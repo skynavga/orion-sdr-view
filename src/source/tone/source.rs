@@ -1,7 +1,28 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use crate::source::SignalSource;
+use crate::source::{CnNoise, CnReference, NoiseDomain, SignalSource};
+
+// ── Test-tone constants ───────────────────────────────────────────────────────
+
+/// Reference bandwidth (Hz) the test tone's `C/N` is measured in.
+///
+/// **A tone has no occupied bandwidth**, so a carrier-to-noise ratio is
+/// meaningless for it until a measurement bandwidth is stated — which is the
+/// one caveat that makes C/N work for analog and digital waveforms alike.  500
+/// Hz is the conventional narrow CW filter, and matching [`super::super::cw`]
+/// keeps the two single-carrier sources on the same footing.
+pub const TONE_CN_REF_BW_HZ: f32 = 500.0;
+
+/// Default C/N (dB) for the test tone.
+///
+/// Chosen to reproduce the noise floor the pre-`C/N` default (`noise_amp` 0.05
+/// of Gaussian noise) put on screen, so the schema change is not also a visual
+/// change.  See `CHANGELOG` for the equivalence.
+pub const TONE_DEFAULT_CN_DB: f32 = 36.0;
+
+/// Default peak tone amplitude, and the power reference for [`TONE_DEFAULT_CN_DB`].
+pub const TONE_DEFAULT_AMP_MAX: f32 = 0.65;
 
 // ── CycleState ────────────────────────────────────────────────────────────────
 
@@ -19,22 +40,23 @@ enum CycleState {
 
 // ── TestSignalGen ─────────────────────────────────────────────────────────────
 
-/// Simple test signal generator: sine tone + AWGN.
-///
-/// Uses xorshift64 for the PRNG and a 12-sample CLT sum for Gaussian noise,
-/// matching the convention used in orion_sdr::util test helpers.
+/// Simple test signal generator: sine tone + AWGN at a specified C/N.
 ///
 /// When `cycling` is true the tone amplitude follows a 4-phase sequence:
 /// ramp 0.0 → 0.65, pause, ramp 0.65 → 0.0, pause. Each ramp takes
 /// `ramp_secs` seconds; each pause (at both extremes) lasts `pause_secs`
 /// seconds.
+///
+/// **The C/N is referenced to `amp_max`, not to the live `tone_amp`.**  A
+/// reference that tracked the ramp would make the noise floor pump with the
+/// signal — visibly wrong, since real noise does not follow the carrier — and
+/// would divide by zero at the bottom of the cycle.
 pub struct TestSignalGen {
     phase: f32,
     pub freq_hz: f32,
     pub sample_rate: f32,
     pub tone_amp: f32,
-    pub noise_amp: f32,
-    rng: u64,
+    noise: CnNoise,
 
     // Amplitude cycling
     pub cycling: bool,
@@ -57,17 +79,37 @@ impl TestSignalGen {
             phase: 0.0,
             freq_hz,
             sample_rate,
-            tone_amp: 0.65, // start at maximum, visible immediately
-            noise_amp: 0.05,
-            rng: 0x853c_49e6_748f_ea9b,
+            tone_amp: TONE_DEFAULT_AMP_MAX, // start at maximum, visible immediately
+            noise: CnNoise::new(
+                TONE_DEFAULT_CN_DB,
+                tone_cn_reference(TONE_DEFAULT_AMP_MAX, sample_rate),
+            ),
             cycling: false,
             amp_min: 0.0,
-            amp_max: 0.65,
+            amp_max: TONE_DEFAULT_AMP_MAX,
             ramp_secs,
             pause_secs,
             cycle_state: CycleState::PauseHigh, // FSM starts mid-sequence at peak
             samples_remaining: pause_samples,
         }
+    }
+
+    /// Requested carrier-to-noise ratio, in dB.
+    #[allow(dead_code)] // used by integration tests, not the binary
+    pub fn cn_db(&self) -> f32 {
+        self.noise.cn_db()
+    }
+
+    /// Set the requested C/N, in dB.
+    pub fn set_cn_db(&mut self, cn_db: f32) {
+        self.noise.set_cn_db(cn_db);
+    }
+
+    /// Per-component standard deviation of the injected noise — the absolute
+    /// amplitude the requested C/N works out to against the current reference.
+    #[allow(dead_code)] // used by integration tests, not the binary
+    pub fn noise_sigma(&self) -> f32 {
+        self.noise.sigma()
     }
 
     pub fn next_sample(&mut self) -> f32 {
@@ -76,7 +118,7 @@ impl TestSignalGen {
         }
 
         let tone = self.tone_amp * self.phase.sin();
-        let noise = self.noise_amp * self.awgn();
+        let noise = self.noise.next();
         self.phase += 2.0 * std::f32::consts::PI * self.freq_hz / self.sample_rate;
         if self.phase > std::f32::consts::PI {
             self.phase -= 2.0 * std::f32::consts::PI;
@@ -110,16 +152,20 @@ impl TestSignalGen {
     pub fn apply_params(
         &mut self,
         freq_hz: f32,
-        noise_amp: f32,
+        cn_db: f32,
         amp_max: f32,
         ramp_secs: f32,
         pause_secs: f32,
     ) {
         self.freq_hz = freq_hz;
-        self.noise_amp = noise_amp;
         self.amp_max = amp_max;
         self.ramp_secs = ramp_secs;
         self.pause_secs = pause_secs;
+        // `amp_max` is the power reference, so it must re-seat the geometry
+        // before the C/N is re-derived against it.
+        self.noise
+            .set_reference(tone_cn_reference(amp_max, self.sample_rate));
+        self.noise.set_cn_db(cn_db);
     }
 
     /// Stop cycling: snap immediately to full amplitude.
@@ -183,22 +229,19 @@ impl TestSignalGen {
             }
         }
     }
+}
 
-    /// Approximate Gaussian sample via 12-uniform CLT sum (zero mean, unit variance).
-    fn awgn(&mut self) -> f32 {
-        let mut sum = 0.0f32;
-        for _ in 0..12 {
-            sum += self.xorshift_f32();
-        }
-        sum - 6.0
-    }
-
-    fn xorshift_f32(&mut self) -> f32 {
-        self.rng ^= self.rng << 13;
-        self.rng ^= self.rng >> 7;
-        self.rng ^= self.rng << 17;
-        // Map to [0, 1)
-        (self.rng >> 11) as f32 * (1.0 / (1u64 << 53) as f32)
+/// The C/N geometry for a tone of peak amplitude `amp_max` at `fs`.
+///
+/// Signal power is `amp_max^2 / 2` — the average power of the sinusoid at its
+/// *nominal* peak, which is a property of the settings rather than of whatever
+/// point the amplitude ramp happens to be at.
+fn tone_cn_reference(amp_max: f32, fs: f32) -> CnReference {
+    CnReference {
+        signal_power: amp_max * amp_max / 2.0,
+        occupied_bw_hz: TONE_CN_REF_BW_HZ,
+        fs,
+        domain: NoiseDomain::Real,
     }
 }
 

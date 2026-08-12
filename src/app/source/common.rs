@@ -31,14 +31,30 @@ pub(in crate::app) trait SourceFactory: Sync {
     /// (called by the source-locked center-frequency tracker).
     fn set_carrier_hz(&self, settings: &mut SettingsState, hz: f32);
 
+    /// Requested carrier-to-noise ratio (dB) for this source, read from
+    /// settings.  Shown in the top HUD.
+    ///
+    /// Uniform across sources only because the impairment is a *ratio*: while
+    /// it was an absolute amplitude the same number meant a different link on
+    /// every source, so this was a six-arm `match` in `view.rs` with a comment
+    /// apologising for it.
+    fn cn_db(&self, settings: &SettingsState) -> f32;
+
     // ── Wideband viewport preferences ───────────────────────────────────────
     //
-    // Narrowband sources return `None` for all three and the viewport is never
-    // auto-reframed on switch (historical behavior).  A wideband source returns
-    // `Some(..)` so `switch_source` frames its band, sizes the spectrum span,
-    // and widens the horizontal-spectrogram window automatically.  The source's
-    // sample rate itself is not a preference here — it flows from
-    // `SignalSource::sample_rate()` on the constructed source.
+    // Narrowband sources return `None` for the two *viewport* preferences, so
+    // the window is never auto-reframed on switch (historical behavior).  A
+    // wideband source returns `Some(..)` for both so `switch_source` frames its
+    // band, sizes the spectrum span, and widens the horizontal-spectrogram
+    // window automatically.  The source's sample rate itself is not a
+    // preference here — it flows from `SignalSource::sample_rate()` on the
+    // constructed source.
+    //
+    // The *reference level* is different: it defaults to the shared
+    // `Defaults::DB_MAX` rather than to `None`, so every source states one.
+    // That matters because COFDM's is 21 dB away from it — a source that
+    // declared no preference would simply inherit whatever COFDM last set and
+    // draw its spectrum against a scale meant for a different waveform.
 
     /// Nominal center frequency to place at the display center on switch.
     fn nominal_center_hz(&self, _settings: &SettingsState) -> Option<f32> {
@@ -51,8 +67,11 @@ pub(in crate::app) trait SourceFactory: Sync {
     }
 
     /// Preferred spectrum reference level (dBFS, scale top) on switch.
+    ///
+    /// Defaults to the shared level; override only for a source whose signal
+    /// does not sit near it.
     fn preferred_ref_db(&self, _settings: &SettingsState) -> Option<f32> {
-        None
+        Some(crate::config::Defaults::DB_MAX)
     }
 }
 

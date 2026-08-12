@@ -197,7 +197,7 @@ impl SettingsState {
         db_max: f32,
         spec_time_range_secs: f32,
         freq_hz: f32,
-        noise_amp: f32,
+        cn_db: f32,
         amp_max: f32,
         ramp_secs: f32,
         pause_secs: f32,
@@ -205,7 +205,7 @@ impl SettingsState {
         // Order matches the SourceMode enum: TestTone, Cw, AmDsb, Psk31, Ft8.
         let sources: Vec<Box<dyn SourceRows>> = vec![
             Box::new(ToneRows::new(
-                freq_hz, noise_amp, amp_max, ramp_secs, pause_secs,
+                freq_hz, cn_db, amp_max, ramp_secs, pause_secs,
             )),
             Box::new(CwRows::new()),
             Box::new(AmDsbRows::new()),
@@ -265,7 +265,7 @@ impl SettingsState {
             cfg.db_max(),
             cfg.spec_time_range_secs(),
             cfg.freq_hz(),
-            cfg.noise_amp(),
+            cfg.cn_db(),
             cfg.amp_max(),
             cfg.ramp_secs(),
             cfg.pause_secs(),

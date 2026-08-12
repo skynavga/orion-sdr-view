@@ -72,7 +72,7 @@ working directory or pass `--config <path>`:
 view:
   display:
     db_min:               -100.0
-    db_max:               -20.0
+    db_max:               -15.0
     time_zone:            utc     # "utc", "local", or "+HH:MM" / "-HH:MM"
     spec_time_range_secs: 10.0    # horizontal spectrogram time span
     pan:                  spectrum # arrow pan: "spectrum" (panadapter) or "signal"
@@ -82,7 +82,7 @@ view:
       amp_max:    0.65
       ramp_secs:  3.0
       pause_secs: 7.0   # dwell at both amplitude extremes (not a gap)
-      noise_amp:  0.05
+      cn_db:      36.0  # carrier-to-noise ratio in dB (see below)
     cw:
       wpm:         13.0
       jitter_pct:  5.0
@@ -96,13 +96,13 @@ view:
       msg_repeat:  3
       carrier_hz:  12000.0
       gap_secs:    10.0
-      noise_amp:   0.05
+      cn_db:       45.0
     am_dsb:
       msg_repeat: 1
       carrier_hz: 12000.0
       mod_index:  1.0
       gap_secs:   7.0
-      noise_amp:  0.05
+      cn_db:      34.0
     psk31:
       mode:        BPSK31             # or QPSK31
       canned_text: "CQ CQ CQ DE N0GNR"
@@ -110,7 +110,7 @@ view:
       msg_repeat:  3
       carrier_hz:  12000.0
       gap_secs:    15.0
-      noise_amp:   0.05
+      cn_db:       54.0
     ft8:
       mode:       FT8                    # or FT4
       call_to:    CQ
@@ -119,7 +119,7 @@ view:
       free_text:  "CQ DX"
       carrier_hz: 12000.0
       gap_secs:   15.0
-      noise_amp:  0.05
+      cn_db:      55.0
     cofdm:
       bandwidth:  1/4    # occupied BW as a fraction of span: 1/8 1/4 1/3 1/2 2/3 3/4 7/8
       shaping:    true   # out-of-band spectral shaping (default true)
@@ -129,10 +129,37 @@ view:
       mask:       60     # baseband-mask stop-band depth in dB: off 40 60 80
       sig_secs:   10.0   # signal-burst duration (wall-clock seconds)
       gap_secs:   2.0    # silence gap between bursts (wall-clock seconds)
-      noise_amp:  0.05
+      cn_db:      45.0   # carrier-to-noise ratio in dB
 ```
 
 All fields are optional; missing fields fall back to built-in defaults.
+
+### Noise: `cn_db`
+
+Every source expresses its impairment as a **carrier-to-noise ratio in dB** rather than as an
+absolute noise amplitude. The generator adds white Gaussian noise scaled so that, integrated over
+the signal's occupied bandwidth, it produces the requested ratio:
+
+```text
+N0      = P_signal / (B_occupied * 10^(cn_db / 10))
+P_noise = N0 * B_noise
+```
+
+`B_noise` is the bandwidth the generator's noise is white over — `fs/2` for the real-valued sources,
+the full `fs` for the complex-baseband COFDM one. `B_occupied` is declared per source rather than
+measured, because a measurement fed back into the impairment would make the noise floor wobble; for
+the single-carrier sources (test tone, CW) it is a stated *reference* bandwidth of 500 Hz, which is
+what makes a C/N meaningful for a signal that has no bandwidth of its own.
+
+The defaults differ by ~20 dB between sources because their spreading factors do: a 62.5 Hz PSK31
+signal against noise spread over 24 kHz is 25.8 dB, where COFDM's 240 kHz against 1.92 MHz is 9 dB.
+All six reproduce the noise floor the previous `noise_amp: 0.05` default put on screen.
+
+Higher is cleaner. There is no "off" — a ratio has no infinite value — but the top of the range
+(70 dB) leaves a floor far below anything the display resolves.
+
+`noise_amp` was **removed in 0.0.23**. A config still carrying it is refused with a message naming
+the replacement rather than silently ignored.
 
 ### COFDM spectral shaping
 

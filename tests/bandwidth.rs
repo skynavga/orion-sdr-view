@@ -9,7 +9,7 @@
 //! map directly to audio bandwidth, making expected ranges easy to assert.
 
 use orion_sdr_view::decode::{SIGNAL_THRESHOLD, SPECTRUM_WINDOW_SAMPLES, spectrum_bw_hz};
-use orion_sdr_view::source::{AmDsbSource, BuiltinAudio, SignalSource, load_builtin};
+use orion_sdr_view::source::{AmDsbSource, BuiltinAudio, MAX_CN_DB, SignalSource, load_builtin};
 
 const FS: f32 = 48_000.0;
 const CARRIER_HZ: f32 = 12_000.0;
@@ -66,7 +66,7 @@ fn band_noise(lo_hz: f32, hi_hz: f32, n: usize) -> Vec<f32> {
 fn measure_bw_via_source(audio: Vec<f32>, audio_rate: f32) -> f32 {
     let audio_secs = audio.len() as f32 / audio_rate;
     let total = ((audio_secs * FS) as usize).max(SPECTRUM_WINDOW_SAMPLES);
-    let mut src = AmDsbSource::new(audio, audio_rate, CARRIER_HZ, 1.0, 0.0, 0.0, 1, FS);
+    let mut src = AmDsbSource::new(audio, audio_rate, CARRIER_HZ, 1.0, 0.0, MAX_CN_DB, 1, FS);
     let signal = src.next_samples(total);
     signal
         .chunks_exact(SPECTRUM_WINDOW_SAMPLES)

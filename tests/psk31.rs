@@ -14,7 +14,7 @@ use orion_sdr_view::decode::{
     DecodeMode, DecodeResult, PSK31_BW_HZ, PSK31_MAX_ACCUM_SYMS, Psk31Stream, SIGNAL_THRESHOLD,
     SYNC_MIN_SYMS, SYNC_SEARCH_HZ, best_sync, nb_spectrum_snr_db,
 };
-use orion_sdr_view::source::{Psk31Mode, Psk31Source, SignalSource};
+use orion_sdr_view::source::{MAX_CN_DB, Psk31Mode, Psk31Source, SignalSource};
 
 mod common;
 use common::ticker::{BufferDecode, TickerSimConfig, run_ticker_sim};
@@ -136,7 +136,15 @@ fn run_streaming_decode(
         Psk31Mode::Qpsk31 => DecodeMode::Qpsk31,
     };
 
-    let mut src = Psk31Source::new(carrier_hz, loop_gap, 0.0, mode, msg.to_owned(), repeat, FS);
+    let mut src = Psk31Source::new(
+        carrier_hz,
+        loop_gap,
+        MAX_CN_DB,
+        mode,
+        msg.to_owned(),
+        repeat,
+        FS,
+    );
 
     let mut iq_buf: Vec<C32> = Vec::new();
     let mut stream: Option<Psk31Stream> = None;
@@ -237,7 +245,7 @@ fn psk31_decode_yields_text() {
     let mut src = Psk31Source::new(
         CARRIER_HZ,
         0.0,
-        0.0,
+        MAX_CN_DB,
         Psk31Mode::Bpsk31,
         MSG.to_owned(),
         3,
@@ -283,7 +291,7 @@ fn psk31_decode_yields_text() {
 ///   BLOCK         = 800 samples (~16.7 ms at 48 kHz, a nominal 60 fps frame)
 ///   gap_secs      = 10 s
 ///   msg_repeat    = 5
-///   noise_amp     = 0 (clean signal for clarity)
+///   cn_db         = MAX (clean signal for clarity)
 ///   Two full source loops so we can see repeat behaviour.
 #[test]
 fn psk31_simulate_dt_ticker() {
@@ -299,7 +307,7 @@ fn psk31_simulate_dt_ticker() {
     let mut src = Psk31Source::new(
         CARRIER_HZ,
         LOOP_GAP,
-        0.0,
+        MAX_CN_DB,
         Psk31Mode::Bpsk31,
         MSG.to_owned(),
         REPEAT,

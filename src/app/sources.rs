@@ -28,7 +28,7 @@ impl ViewApp {
         self.waterfall.db_max = self.settings.db_max();
         self.time_zone_offset_min = self.settings.time_zone_offset_min();
         self.signal_gen.freq_hz = self.settings.freq_hz();
-        self.signal_gen.noise_amp = self.settings.noise_amp();
+        self.signal_gen.set_cn_db(self.settings.cn_db());
         self.signal_gen.amp_max = self.settings.amp_max();
         self.signal_gen.ramp_secs = self.settings.ramp_secs();
         self.signal_gen.pause_secs = self.settings.pause_secs();

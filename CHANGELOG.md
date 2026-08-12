@@ -9,6 +9,112 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.23] - 2026-08-12
+
+### Changed
+
+- **BREAKING: `noise_amp` is replaced by `cn_db` in every source's config
+  block.** The impairment is now a carrier-to-noise ratio in dB rather than an
+  absolute amplitude, on all six sources. There is no automatic conversion; a
+  config still carrying `noise_amp` is **refused with a message naming the
+  replacement** rather than silently ignored — the schema has no version field,
+  no `deny_unknown_fields`, and every field is `Option<T>`, so serde would
+  otherwise drop the key and fall back to a default while appearing to load.
+
+  A ratio is the only figure comparable between sources — their amplitudes,
+  occupied bandwidths and display scalings all differ — and it is the only one
+  that survives a display gain that is derived rather than fixed. The defaults
+  (36 / 45 / 34 / 54 / 55 / 45 dB for tone / CW / AM / PSK31 / FT8 / COFDM) each
+  reproduce the noise floor the old `0.05` put on screen, so the schema change
+  is not also a visual change. They differ by ~20 dB because the spreading
+  factors do: 62.5 Hz of PSK31 against noise over 24 kHz is 25.8 dB, COFDM's
+  240 kHz against 1.92 MHz is 9 dB.
+
+  Note there is no longer an "off": a ratio has no infinite value. The top of
+  the range (70 dB) leaves a floor far below anything the display resolves.
+
+- **The injected noise is now Gaussian on every source.** Five of the six used a
+  raw uniform `xorshift`, so the same setting meant 4.8 dB more noise power on
+  them than on the test tone. Calling the knob `C/N` while the noise is uniform
+  makes the resulting FER and MER incomparable to anything, because the FEC
+  cliff is a tail phenomenon.
+
+  Re-measured as-built at 150 frames per point, EVM is now flat across the
+  bandwidth fractions to within **0.1 dB** (-22.2 to -22.1 dB at C/N 25 dB),
+  against 0.6 dB under the old fixed-amplitude impairment — a ratio equalises
+  exactly where a fixed amplitude only did approximately. FER against C/N:
+
+  | Fraction | 25 dB | 20 dB | 17 dB | 14 dB | 11 dB |
+  | --- | --- | --- | --- | --- | --- |
+  | 1/8 | 0.313 | 0.487 | 0.520 | 0.753 | 0.867 |
+  | 1/4 | 0.000 | 0.067 | 0.187 | 0.413 | 0.567 |
+  | 1/2 | 0.000 | 0.000 | 0.013 | 0.047 | 0.220 |
+  | 7/8 | 0.000 | 0.000 | 0.007 | 0.040 | 0.107 |
+
+  The 1/8 fraction is unusable at any C/N the row offers — 31% FER where 7/8 is
+  error-free at the same per-carrier SNR. That is frame duration, preamble
+  correlation energy and common-phase tracking variance, none of which an
+  impairment knob touches.
+
+- **`COFDM_GAIN` is gone; the display level is derived.** `render` now
+  normalises the rendered burst to a target RMS (`COFDM_DISPLAY_RMS_DBFS`,
+  -15 dBFS) instead of applying a fitted 121.0. One constant could not fit —
+  bare OFDM's rendered power is proportional to its occupied bandwidth, so the
+  measured signal-phase RMS spanned 1.344 to 3.646 across the bandwidth
+  fractions. Normalising collapses that to within 1 dB of the target at every
+  fraction.
+
+  Three constants disappear with it. `COFDM_SIGNAL_THRESHOLD` (0.6) existed
+  because a fitted gain put the burst an order of magnitude above the shared
+  `SIGNAL_THRESHOLD`; COFDM is unit-scale now, so the shared one applies.
+  `CofdmFacts::full_scale` is 1.0 like every other source, so there is no
+  per-source full-scale reference to plumb to the decode worker.
+  `COFDM_PREFERRED_REF_DB` moves from -15 to -36 dB, tracking the new level so
+  the on-screen picture is unchanged — it is now the derivation's *input*
+  rather than a description of what the gain happened to produce.
+
+- **`ViewApp::hud_noise_amp`'s six-arm `match` became
+  `SourceFactory::cn_db`**, and `ViewApp::signal_threshold`'s `match` is gone
+  outright. Uniform units are what made the first a single trait call; a
+  uniform scale is what removed the second. The HUD reads `c/n nndB`, lowercase and
+  spaced like its neighbours (`ctr`, `span`, `zoom`, `ref -15dB`).
+
+- **The default display reference level is -15 dBFS**, up from -20, and
+  `SourceFactory::preferred_ref_db` now *defaults* to it instead of to `None`.
+  Previously only COFDM stated a preference, so switching away from it left the
+  narrowband sources drawing against whatever scale COFDM had set — harmless
+  when the two were 5 dB apart, but COFDM's is now -36 dB, which would have left
+  every other source 21 dB down until the user noticed and corrected it by hand.
+  A source that wants something else overrides; COFDM does.
+
+- **The panel's measured `C/N` is recalibrated** (`wb_cn_db`, alongside the
+  unchanged `wb_spectrum_snr_db`). Two corrections: the in-band figure now
+  averages *powers* rather than dB values — the latter is a geometric mean and
+  sat ~5 dB low on an OFDM band measured finer than its subcarrier spacing —
+  and a complex-baseband source is corrected by exactly 3.01 dB, because taking
+  the real part splits the signal into two mirror lobes while symmetric complex
+  noise merely halves. Requested and measured now agree within ~2 dB over
+  10-30 dB at the default fraction, against ~10 dB before.
+
+  Two limits are now documented rather than implied: the reading under-reads as
+  C/N rises (slope ~0.87) because the transmit skirt contaminates the noise
+  floor, and at the 7/8 fraction there is almost no out-of-band spectrum left to
+  measure, so it should not be trusted there. Estimating the noise inside the
+  band, from the receiver's EVM, is the fix and is separate work.
+
+### Added
+
+- `tests/cofdm_link_budget.rs`: an `#[ignore]`d measurement harness that
+  produces the FER and EVM tables above. Kept out of CI — it pumps ~100M samples
+  through a full receiver — but reproducible, so the figures are not folklore.
+
+- `tests/impairment.rs`: the achieved C/N measured end-to-end from the source's
+  own output (within 0.5 dB of the request at every bandwidth fraction and
+  level), the display level met at every bandwidth, the preamble excluded from
+  the power reference, the noise verified Gaussian by kurtosis, the tone's noise
+  floor pinned against following its amplitude ramp, and a stale `noise_amp`
+  config refused rather than ignored.
+
 ## [0.0.22] - 2026-08-11
 
 ### Added

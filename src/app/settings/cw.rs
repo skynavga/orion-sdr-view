@@ -19,7 +19,7 @@ const CUSTOM_MSG: usize = 9;
 const REPEAT: usize = 10;
 const CARRIER: usize = 11;
 const GAP: usize = 12;
-const NOISE: usize = 13;
+const CN: usize = 13;
 
 pub(super) struct CwRows {
     pub rows: Vec<Row>,
@@ -153,13 +153,13 @@ impl CwRows {
                     coarse: None,
                 }),
                 Row::Num(NumField {
-                    label: "Noise amp",
-                    value: crate::source::cw::CW_DEFAULT_NOISE_AMP,
-                    default: crate::source::cw::CW_DEFAULT_NOISE_AMP,
-                    step: 0.01,
-                    min: 0.0,
-                    max: 0.50,
-                    unit: "",
+                    label: "C/N",
+                    value: crate::source::cw::CW_DEFAULT_CN_DB,
+                    default: crate::source::cw::CW_DEFAULT_CN_DB,
+                    step: 1.0,
+                    min: MIN_CN_DB,
+                    max: MAX_CN_DB,
+                    unit: " dB",
                     coarse: None,
                 }),
             ],
@@ -193,7 +193,7 @@ impl CwRows {
         } else {
             v.push(MSG);
         }
-        v.extend([REPEAT, CARRIER, GAP, NOISE]);
+        v.extend([REPEAT, CARRIER, GAP, CN]);
         v
     }
 
@@ -424,7 +424,7 @@ impl super::common::SourceRows for CwRows {
         self.rows[FALL].patch_num(cfg.cw_fall_ms());
         self.rows[CARRIER].patch_num(cfg.cw_carrier_hz());
         self.rows[GAP].patch_num(cfg.cw_gap_secs());
-        self.rows[NOISE].patch_num(cfg.cw_noise_amp());
+        self.rows[CN].patch_num(cfg.cw_cn_db());
         self.rows[REPEAT].patch_num(cfg.cw_msg_repeat() as f32);
 
         // Patch canned message text
@@ -496,6 +496,7 @@ impl super::common::SourceRows for CwRows {
 // ── SettingsState accessors ───────────────────────────────────────────────
 
 use crate::app::SourceMode;
+use crate::source::{MAX_CN_DB, MIN_CN_DB};
 
 /// Borrow this source's rows from `SettingsState`.
 fn rows(state: &super::SettingsState) -> &CwRows {
@@ -518,7 +519,7 @@ pub(in crate::app) trait CwSettings {
     fn cw_fall_ms(&self) -> f32;
     fn cw_carrier_hz(&self) -> f32;
     fn cw_gap_secs(&self) -> f32;
-    fn cw_noise_amp(&self) -> f32;
+    fn cw_cn_db(&self) -> f32;
     fn cw_msg_repeat(&self) -> usize;
     /// Returns the active message (Canned or Custom, depending on toggle).
     fn cw_message(&self) -> &str;
@@ -597,11 +598,11 @@ impl CwSettings for super::SettingsState {
             crate::source::cw::CW_DEFAULT_GAP_SECS
         }
     }
-    fn cw_noise_amp(&self) -> f32 {
-        if let Row::Num(f) = &rows(self).rows[NOISE] {
+    fn cw_cn_db(&self) -> f32 {
+        if let Row::Num(f) = &rows(self).rows[CN] {
             f.value
         } else {
-            crate::source::cw::CW_DEFAULT_NOISE_AMP
+            crate::source::cw::CW_DEFAULT_CN_DB
         }
     }
     fn cw_msg_repeat(&self) -> usize {

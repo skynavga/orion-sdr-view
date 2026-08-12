@@ -13,7 +13,7 @@ pub(in crate::app) fn make(settings: &SettingsState) -> CwSource {
     CwSource::new(
         settings.cw_carrier_hz(),
         settings.cw_gap_secs(),
-        settings.cw_noise_amp(),
+        settings.cw_cn_db(),
         settings.cw_wpm(),
         settings.cw_jitter_pct(),
         settings.cw_dash_weight(),
@@ -38,7 +38,7 @@ pub(in crate::app) fn sync(
     Some(cw.apply_params(
         settings.cw_carrier_hz(),
         settings.cw_gap_secs(),
-        settings.cw_noise_amp(),
+        settings.cw_cn_db(),
         settings.cw_wpm(),
         settings.cw_jitter_pct(),
         settings.cw_dash_weight(),
@@ -82,5 +82,9 @@ impl super::SourceFactory for Factory {
     }
     fn set_carrier_hz(&self, settings: &mut SettingsState, hz: f32) {
         settings.set_cw_carrier_hz(hz);
+    }
+
+    fn cn_db(&self, settings: &SettingsState) -> f32 {
+        settings.cw_cn_db()
     }
 }

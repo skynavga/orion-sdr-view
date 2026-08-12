@@ -13,7 +13,7 @@ pub(in crate::app) fn make(settings: &SettingsState) -> Psk31Source {
     Psk31Source::new(
         settings.psk31_carrier_hz(),
         settings.psk31_gap_secs(),
-        settings.psk31_noise_amp(),
+        settings.psk31_cn_db(),
         settings_mode(settings),
         settings.psk31_message().to_owned(),
         settings.psk31_msg_repeat(),
@@ -27,7 +27,7 @@ pub(in crate::app) fn sync(source: &mut dyn SignalSource, settings: &SettingsSta
         psk31.apply_params(
             settings.psk31_carrier_hz(),
             settings.psk31_gap_secs(),
-            settings.psk31_noise_amp(),
+            settings.psk31_cn_db(),
             settings_mode(settings),
             settings.psk31_msg_repeat(),
         );
@@ -71,5 +71,9 @@ impl super::SourceFactory for Factory {
     }
     fn set_carrier_hz(&self, settings: &mut SettingsState, hz: f32) {
         settings.set_psk31_carrier_hz(hz);
+    }
+
+    fn cn_db(&self, settings: &SettingsState) -> f32 {
+        settings.psk31_cn_db()
     }
 }

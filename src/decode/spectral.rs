@@ -13,7 +13,98 @@ use num_complex::Complex32 as C32;
 
 use super::{DecodeResult, SPECTRUM_WINDOW_SAMPLES};
 use crate::source::psk31::INFO_INTERVAL;
+#[allow(unused_imports)] // wb_spectrum_snr_db is re-exported for tests that compare estimators
 pub use orion_sdr::util::{nb_spectrum_snr_db, power_spectrum, spectrum_bw_hz, wb_spectrum_snr_db};
+
+/// Carrier-to-noise ratio (dB) of a wideband signal spanning `occupied_hz`
+/// about `carrier_hz`, calibrated to agree with a *requested* C/N.
+///
+/// A recalibration of [`wb_spectrum_snr_db`], not a different idea.  Both
+/// compare the occupied window against the out-of-band floor; the difference is
+/// which average each side uses, and it is worth several dB:
+///
+/// - **In band, the mean of the powers** rather than the mean of the dB values.
+///   The latter is a geometric mean, and an OFDM band measured at a resolution
+///   far finer than its subcarrier spacing has real dynamic range between the
+///   carriers — enough that the geometric mean sat ~5 dB under the arithmetic
+///   one at the default fraction.  "Mean power across the occupied window" was
+///   always the intent; averaging dB does not compute it.
+/// - **Out of band, still the median**, and deliberately so.  The transmit mask
+///   leaves a skirt near the band edges, so those bins are signal rather than
+///   noise: at 35 dB C/N the out-of-band *mean* sat 12.7 dB above the median.
+///   A median ignores the skirt as long as it stays a minority of the bins.
+///
+/// A [`NOISE_GUARD`]-wide exclusion zone keeps the worst of the skirt out of
+/// the noise estimate, clamped so a wide signal cannot leave nothing to measure.
+///
+/// **Two limits worth knowing, neither of them new.**  Measured against a
+/// requested C/N at the default 1/4 fraction, the readout lands within ~2 dB
+/// over 10-30 dB with a slope of ~0.87 — it under-reads as the true C/N rises,
+/// because the transmit skirt eventually contaminates even the guarded median.
+/// And at 7/8 the occupied band fills 87.5% of the display, so there are barely
+/// any out-of-band bins and they are *all* skirt: the reading compresses badly
+/// (slope ~0.36) and should not be trusted at wide occupancies.  Measuring the
+/// noise *inside* the band — from the receiver's EVM rather than from spectrum
+/// bins — is the fix, and it is a change to the instrumentation rather than to
+/// this estimator.
+///
+/// The caller adds any domain correction — see COFDM's
+/// `REAL_PROJECTION_CN_OFFSET_DB`.
+pub fn wb_cn_db(samples: &[f32], fs: f32, carrier_hz: f32, occupied_hz: f32) -> f32 {
+    /// Half-span of the noise-exclusion zone, as a multiple of the occupied
+    /// half-span.  1.25 buys ~0.03 of slope at the default fraction; more than
+    /// that buys little and starves wide signals sooner.
+    const NOISE_GUARD: f32 = 1.25;
+    /// Never let the exclusion zone leave fewer than this fraction of the bins
+    /// available to estimate the noise floor.
+    const MIN_NOISE_BINS: f32 = 0.10;
+
+    let (power_db, bin_hz) = power_spectrum(samples, fs);
+    let n_bins = power_db.len();
+    if n_bins < 3 || bin_hz <= 0.0 {
+        return 0.0;
+    }
+    let carrier_bin = (carrier_hz / bin_hz).round() as isize;
+    let half_span = ((occupied_hz / 2.0) / bin_hz).round() as isize;
+    let lo = (carrier_bin - half_span).max(0) as usize;
+    let hi = ((carrier_bin + half_span) as usize).min(n_bins - 1);
+    if lo > hi {
+        return 0.0;
+    }
+
+    let lin = |db: f32| 10f32.powf(db / 10.0);
+    let occupied_mean =
+        power_db[lo..=hi].iter().map(|&d| lin(d)).sum::<f32>() / ((hi - lo + 1) as f32);
+
+    // The exclusion zone, backed off until enough bins remain to measure.
+    let (mut glo, mut ghi) = (lo, hi);
+    let guard = (half_span as f32 * NOISE_GUARD) as isize;
+    let (wide_lo, wide_hi) = (
+        (carrier_bin - guard).max(0) as usize,
+        ((carrier_bin + guard) as usize).min(n_bins - 1),
+    );
+    let remaining = n_bins.saturating_sub(wide_hi - wide_lo + 1) as f32 / n_bins as f32;
+    if remaining >= MIN_NOISE_BINS {
+        glo = wide_lo;
+        ghi = wide_hi;
+    }
+
+    let mut outside: Vec<f32> = power_db
+        .iter()
+        .enumerate()
+        .filter(|&(i, _)| i > 0 && (i < glo || i > ghi))
+        .map(|(_, &v)| v)
+        .collect();
+    if outside.is_empty() {
+        return 0.0;
+    }
+    outside.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let noise = lin(outside[outside.len() / 2]);
+    if noise <= 0.0 {
+        return 0.0;
+    }
+    10.0 * (occupied_mean / noise).log10()
+}
 
 #[derive(Default)]
 pub struct SpectralState {

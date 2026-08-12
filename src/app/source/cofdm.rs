@@ -16,7 +16,7 @@ pub(in crate::app) fn make(settings: &SettingsState) -> CofdmSource {
     CofdmSource::new(
         settings.cofdm_sig_secs(),
         settings.cofdm_gap_secs(),
-        settings.cofdm_noise_amp(),
+        settings.cofdm_cn_db(),
         settings.cofdm_bw_fraction(),
         settings.cofdm_shaping(),
         COFDM_FS,
@@ -29,7 +29,7 @@ pub(in crate::app) fn sync(source: &mut dyn SignalSource, settings: &SettingsSta
         cofdm.apply_params(
             settings.cofdm_sig_secs(),
             settings.cofdm_gap_secs(),
-            settings.cofdm_noise_amp(),
+            settings.cofdm_cn_db(),
             settings.cofdm_bw_fraction(),
             settings.cofdm_shaping(),
         );
@@ -77,6 +77,10 @@ impl super::SourceFactory for Factory {
     fn set_carrier_hz(&self, _settings: &mut SettingsState, _hz: f32) {
         // No-op: COFDM occupies a fixed wideband sub-band, not a single
         // tunable carrier, so the source-lock (L key) does not retune it.
+    }
+
+    fn cn_db(&self, settings: &SettingsState) -> f32 {
+        settings.cofdm_cn_db()
     }
 
     // ── Wideband viewport preferences ───────────────────────────────────────

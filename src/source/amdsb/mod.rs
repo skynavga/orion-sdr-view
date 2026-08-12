@@ -8,4 +8,8 @@ mod source;
 #[allow(unused_imports)]
 pub use config::AmDsbConfig;
 pub use decode::AmDsbState;
-pub use source::{AmDsbSource, BuiltinAudio, hud_submode_str, load_builtin, load_wav_file};
+#[allow(unused_imports)]
+pub use source::{
+    AM_CN_REF_BW_HZ, AM_DEFAULT_CN_DB, AmDsbSource, BuiltinAudio, hud_submode_str, load_builtin,
+    load_wav_file,
+};
