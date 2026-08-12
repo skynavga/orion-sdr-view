@@ -1,8 +1,8 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use orion_sdr_view::source::SignalSource;
 use orion_sdr_view::source::tone::{TestSignalGen, TestToneSource};
+use orion_sdr_view::source::{MAX_CN_DB, SignalSource};
 
 fn make_gen() -> TestSignalGen {
     TestSignalGen::new(1000.0, 48000.0)
@@ -14,7 +14,7 @@ fn new_defaults() {
     assert_eq!(g.freq_hz, 1000.0);
     assert_eq!(g.sample_rate, 48000.0);
     assert_eq!(g.tone_amp, 0.65);
-    assert_eq!(g.noise_amp, 0.05);
+    assert_eq!(g.cn_db(), orion_sdr_view::source::tone::TONE_DEFAULT_CN_DB);
     assert!(!g.cycling);
 }
 
@@ -39,11 +39,17 @@ fn next_sample_has_energy() {
 
 #[test]
 fn awgn_distribution() {
-    // With noise_amp=1.0 and tone_amp=0.0, output is pure AWGN.
+    // With the tone silenced, the output is pure AWGN at whatever amplitude the
+    // requested C/N works out to.  Normalising by that amplitude tests the
+    // generator's *distribution* and the C/N → sigma derivation together: if
+    // either the CLT sum or `CnReference::sigma_for` drifts, the variance moves
+    // off 1.0.
     let mut g = make_gen();
     g.tone_amp = 0.0;
-    g.noise_amp = 1.0;
-    let samples: Vec<f32> = (0..10000).map(|_| g.next_sample()).collect();
+    g.set_cn_db(20.0);
+    let sigma = g.noise_sigma();
+    assert!(sigma > 0.0, "20 dB C/N should inject something: {sigma}");
+    let samples: Vec<f32> = (0..10000).map(|_| g.next_sample() / sigma).collect();
     let mean = samples.iter().sum::<f32>() / samples.len() as f32;
     let variance = samples.iter().map(|s| (s - mean).powi(2)).sum::<f32>() / samples.len() as f32;
     // CLT of 12 uniforms: mean≈0, variance≈1
@@ -112,7 +118,7 @@ fn restart_resets_state() {
     g.restart();
     assert_eq!(g.tone_amp, g.amp_max);
     // Phase should be zero after restart
-    g.noise_amp = 0.0;
+    g.set_cn_db(MAX_CN_DB);
     let s = g.next_sample();
     // next_sample computes sin(phase) THEN advances, so first sample is sin(0)=0
     assert!(
@@ -124,7 +130,7 @@ fn restart_resets_state() {
 #[test]
 fn full_cycle_returns_to_peak() {
     let mut g = make_gen();
-    g.noise_amp = 0.0; // eliminate noise for deterministic test
+    g.set_cn_db(MAX_CN_DB); // cleanest available link, for a deterministic test
     g.start_cycling();
     // One full cycle: ramp_down + pause_low + ramp_up + pause_high
     let cycle_samples = 2 * (g.ramp_secs * g.sample_rate) as usize
@@ -155,7 +161,7 @@ fn test_tone_source_trait() {
 #[test]
 fn test_tone_source_restart() {
     let mut g = TestSignalGen::new(1000.0, 48000.0);
-    g.noise_amp = 0.0;
+    g.set_cn_db(MAX_CN_DB);
     let mut src = TestToneSource::new(g);
     // Generate some samples to advance phase
     src.next_samples(1000);

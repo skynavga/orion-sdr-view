@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use orion_sdr::modulate::{Bpsk31Mod, Qpsk31Mod};
+use orion_sdr::util::PSK31_BW_HZ;
 
-use crate::source::{MAX_SIG_SECS, SignalSource};
+use crate::source::{CnNoise, CnReference, MAX_SIG_SECS, NoiseDomain, SignalSource, mean_power};
 
 // ── PSK31 HUD helpers ────────────────────────────────────────────────────────
 
@@ -25,6 +26,12 @@ pub const PSK31_DEFAULT_CUSTOM_TEXT: &str = "Custom message";
 pub const PSK31_DEFAULT_REPEAT: usize = 3;
 pub const PSK31_DEFAULT_GAP_SECS: f32 = 15.0;
 
+/// Default C/N (dB), chosen to reproduce the noise floor the pre-`C/N` default
+/// (`noise_amp` 0.05, uniform) put on screen.  It sits ~9 dB above COFDM's
+/// equivalent because a 62.5 Hz signal against noise spread over 24 kHz is a
+/// 25.8 dB spreading factor, against COFDM's 9 dB.
+pub const PSK31_DEFAULT_CN_DB: f32 = 54.0;
+
 // ── Psk31Mode ─────────────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, PartialEq)]
@@ -43,7 +50,7 @@ pub enum Psk31Mode {
 pub struct Psk31Source {
     pub carrier_hz: f32,
     pub gap_secs: f32,
-    pub noise_amp: f32,
+    noise: CnNoise,
     pub mode: Psk31Mode,
     /// Text to transmit (ASCII). Repeated `msg_repeat` times per loop.
     pub message: String,
@@ -54,14 +61,13 @@ pub struct Psk31Source {
     pos: usize,
     gap_remaining: usize,
     gap_samples: usize,
-    rng: u64,
 }
 
 impl Psk31Source {
     pub fn new(
         carrier_hz: f32,
         gap_secs: f32,
-        noise_amp: f32,
+        cn_db: f32,
         mode: Psk31Mode,
         message: String,
         msg_repeat: usize,
@@ -71,7 +77,7 @@ impl Psk31Source {
         let mut src = Self {
             carrier_hz,
             gap_secs,
-            noise_amp,
+            noise: CnNoise::new(cn_db, cn_reference(0.0, mod_rate)),
             mode,
             message,
             msg_repeat: msg_repeat.max(1),
@@ -80,10 +86,21 @@ impl Psk31Source {
             pos: 0,
             gap_remaining: 0,
             gap_samples,
-            rng: 0x853c_49e6_748f_ea9b,
         };
         src.render();
         src
+    }
+
+    /// Requested carrier-to-noise ratio, in dB.
+    #[allow(dead_code)] // used by integration tests, not the binary
+    pub fn cn_db(&self) -> f32 {
+        self.noise.cn_db()
+    }
+
+    /// Per-component standard deviation of the injected noise.
+    #[allow(dead_code)] // used by integration tests, not the binary
+    pub fn noise_sigma(&self) -> f32 {
+        self.noise.sigma()
     }
 
     /// (Re-)render the modulated frame. Called at construction and whenever
@@ -111,6 +128,11 @@ impl Psk31Source {
         };
         self.pos = 0;
         self.gap_remaining = 0;
+        // The rendered burst is the power reference; re-seat it before the next
+        // sample is drawn.  PSK31 is constant-envelope and the buffer holds no
+        // gap, so its mean is the transmitting power.
+        self.noise
+            .set_reference(cn_reference(mean_power(&self.samples), self.mod_rate));
     }
 
     /// Recompute the gap sample count after `gap_secs` changes.
@@ -125,7 +147,7 @@ impl Psk31Source {
         &mut self,
         carrier_hz: f32,
         gap_secs: f32,
-        noise_amp: f32,
+        cn_db: f32,
         mode: Psk31Mode,
         msg_repeat: usize,
     ) {
@@ -134,7 +156,6 @@ impl Psk31Source {
         let repeat_changed = self.msg_repeat != msg_repeat;
 
         self.carrier_hz = carrier_hz;
-        self.noise_amp = noise_amp;
         self.gap_secs = gap_secs;
         self.mode = mode;
         self.msg_repeat = msg_repeat.max(1);
@@ -142,14 +163,20 @@ impl Psk31Source {
         if carrier_changed || mode_changed || repeat_changed {
             self.render();
         }
+        // After `render`, so the C/N is derived against the reference the new
+        // buffer implies rather than the outgoing one's.
+        self.noise.set_cn_db(cn_db);
         self.update_gap();
     }
+}
 
-    fn xorshift(&mut self) -> f32 {
-        self.rng ^= self.rng << 13;
-        self.rng ^= self.rng >> 7;
-        self.rng ^= self.rng << 17;
-        (self.rng >> 11) as f32 * (1.0 / (1u64 << 53) as f32) * 2.0 - 1.0
+/// The C/N geometry for a PSK31 burst of measured power `signal_power`.
+fn cn_reference(signal_power: f32, fs: f32) -> CnReference {
+    CnReference {
+        signal_power,
+        occupied_bw_hz: PSK31_BW_HZ,
+        fs,
+        domain: NoiseDomain::Real,
     }
 }
 
@@ -173,11 +200,7 @@ impl SignalSource for Psk31Source {
             if self.gap_remaining > 0 {
                 let gap_now = self.gap_remaining.min(n - i);
                 for _ in 0..gap_now {
-                    let noise = if self.noise_amp > 0.0 {
-                        self.noise_amp * self.xorshift()
-                    } else {
-                        0.0
-                    };
+                    let noise = self.noise.next();
                     out.push(noise);
                 }
                 self.gap_remaining -= gap_now;
@@ -188,11 +211,7 @@ impl SignalSource for Psk31Source {
             } else if self.pos < effective_len {
                 let available = (effective_len - self.pos).min(n - i);
                 for k in 0..available {
-                    let noise = if self.noise_amp > 0.0 {
-                        self.noise_amp * self.xorshift()
-                    } else {
-                        0.0
-                    };
+                    let noise = self.noise.next();
                     out.push(self.samples[self.pos + k] + noise);
                 }
                 self.pos += available;

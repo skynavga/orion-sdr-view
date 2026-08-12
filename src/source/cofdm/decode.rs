@@ -20,14 +20,40 @@ use orion_sdr::util::rms;
 
 use super::rx::CofdmRx;
 use super::source::{
-    COFDM_CP_LEN, COFDM_GAIN, COFDM_N_FFT, COFDM_PAYLOAD_BYTES, CofdmShaping, cofdm_data_carriers,
+    COFDM_CP_LEN, COFDM_N_FFT, COFDM_PAYLOAD_BYTES, CofdmShaping, cofdm_data_carriers,
     cofdm_mcs_facts,
 };
 use crate::decode::DecodeResult;
 use crate::decode::instrument::{
     CofdmFacts, CofdmInstrument, CofdmRxFacts, ERROR_COUNT_WRAP, ErrorUnit,
 };
-use crate::decode::spectral::{SpectralState, wb_spectrum_snr_db};
+use crate::decode::spectral::{SpectralState, wb_cn_db};
+
+/// Correction (dB) from the C/N a real-projection spectrum measures to the C/N
+/// the receiver actually sees, for a source that generates **complex** noise.
+///
+/// `wb_cn_db` runs on the real stream the display consumes, and
+/// `power_spectrum` returns one-sided bins.  Taking the real part of a complex
+/// baseband splits the signal into two mirror lobes at `±f0`, so each carries a
+/// quarter of the original power over the same bandwidth — while complex white
+/// noise is *already* symmetric and simply halves.  Writing the two out:
+///
+/// ```text
+/// measured = [(P_s / 4) / B] / [(P_n / 2) / fs] = P_s * fs / (2 * B * P_n)
+/// actual   =  P_s / (N0 * B),  N0 = P_n / fs    = P_s * fs / (B * P_n)
+/// ```
+///
+/// — a factor of two, exactly, independent of bandwidth and level.  The five
+/// real-valued sources have no such offset; only a complex-baseband generator
+/// does, which is every multicarrier source queued behind this one.
+///
+/// The alternative was to run the estimator on `DecodeChunk::iq` and delete the
+/// constant.  That is the better answer once a second complex source exists —
+/// it needs a complex `power_spectrum`, which orion-sdr does not have — and
+/// what makes deferring it safe is
+/// `the_measured_cn_tracks_the_requested_cn`, which fails if this number is
+/// ever wrong.
+const REAL_PROJECTION_CN_OFFSET_DB: f32 = 3.0103;
 
 #[derive(Default)]
 pub struct CofdmState {
@@ -99,8 +125,11 @@ impl CofdmState {
             // narrowband estimator every other mode uses — one peak bin against
             // the noise floor — measures a single subcarrier and reports a
             // number tens of dB off.  Compare the mean power across the
-            // occupied window instead.
-            |real, fs, carrier_hz| wb_spectrum_snr_db(real, fs, carrier_hz, bw_hz),
+            // occupied window instead, and correct for the domain the estimator
+            // runs in — see `REAL_PROJECTION_CN_OFFSET_DB`.
+            |real, fs, carrier_hz| {
+                wb_cn_db(real, fs, carrier_hz, bw_hz) + REAL_PROJECTION_CN_OFFSET_DB
+            },
             // The occupied bandwidth of a COFDM band is a fixed property of the
             // carrier plan (it depends on the selected bandwidth fraction), not
             // a value to measure.  `spectrum_bw_hz` is a narrowband estimator
@@ -219,9 +248,11 @@ impl CofdmState {
             bandwidth_hz: bw_hz,
             level_amp: rms(samples),
             peak_amp: peak,
-            // The modulator's fixed gain is what 0 dBFS means for this source —
-            // see `CofdmFacts::full_scale`.
-            full_scale: COFDM_GAIN,
+            // Unit scale, like every other source: `CofdmSource::render` now
+            // normalises the burst to `COFDM_DISPLAY_RMS_DBFS` instead of
+            // applying a fitted gain, so there is no per-source full-scale
+            // reference left to plumb through here.
+            full_scale: 1.0,
             cn_db: self.spectral.smoothed_snr_db,
             fs,
             n_fft: COFDM_N_FFT,

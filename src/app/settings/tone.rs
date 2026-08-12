@@ -5,7 +5,7 @@ use super::field::{NumField, Row};
 
 // ── Row indices (local) ───────────────────────────────────────────────────
 const FREQ: usize = 0;
-const NOISE: usize = 1;
+const CN: usize = 1;
 const AMP_MAX: usize = 2;
 const RAMP: usize = 3;
 const PAUSE: usize = 4;
@@ -15,13 +15,7 @@ pub(super) struct ToneRows {
 }
 
 impl ToneRows {
-    pub fn new(
-        freq_hz: f32,
-        noise_amp: f32,
-        amp_max: f32,
-        ramp_secs: f32,
-        pause_secs: f32,
-    ) -> Self {
+    pub fn new(freq_hz: f32, cn_db: f32, amp_max: f32, ramp_secs: f32, pause_secs: f32) -> Self {
         Self {
             rows: vec![
                 Row::Num(NumField {
@@ -35,13 +29,13 @@ impl ToneRows {
                     coarse: None,
                 }),
                 Row::Num(NumField {
-                    label: "Noise amp",
-                    value: noise_amp,
-                    default: 0.05,
-                    step: 0.01,
-                    min: 0.0,
-                    max: 1.0,
-                    unit: "",
+                    label: "C/N",
+                    value: cn_db,
+                    default: crate::source::tone::TONE_DEFAULT_CN_DB,
+                    step: 1.0,
+                    min: MIN_CN_DB,
+                    max: MAX_CN_DB,
+                    unit: " dB",
                     coarse: None,
                 }),
                 Row::Num(NumField {
@@ -81,7 +75,7 @@ impl ToneRows {
     /// Visible rows in the order they appear in the settings overlay.
     pub fn visible_indices(&self) -> Vec<usize> {
         // Frequency, Tone amp max, Ramp, Pause, Noise amp (bottom)
-        vec![FREQ, AMP_MAX, RAMP, PAUSE, NOISE]
+        vec![FREQ, AMP_MAX, RAMP, PAUSE, CN]
     }
 }
 
@@ -109,6 +103,7 @@ impl super::common::SourceRows for ToneRows {
 // ── SettingsState accessors ───────────────────────────────────────────────
 
 use crate::app::SourceMode;
+use crate::source::{MAX_CN_DB, MIN_CN_DB};
 
 /// Borrow this source's rows from `SettingsState`.
 fn rows(state: &super::SettingsState) -> &ToneRows {
@@ -123,7 +118,7 @@ fn rows_mut(state: &mut super::SettingsState) -> &mut ToneRows {
 /// scope.
 pub(in crate::app) trait ToneSettings {
     fn freq_hz(&self) -> f32;
-    fn noise_amp(&self) -> f32;
+    fn cn_db(&self) -> f32;
     fn amp_max(&self) -> f32;
     fn ramp_secs(&self) -> f32;
     fn pause_secs(&self) -> f32;
@@ -138,8 +133,8 @@ impl ToneSettings for super::SettingsState {
             3000.0
         }
     }
-    fn noise_amp(&self) -> f32 {
-        if let Row::Num(f) = &rows(self).rows[NOISE] {
+    fn cn_db(&self) -> f32 {
+        if let Row::Num(f) = &rows(self).rows[CN] {
             f.value
         } else {
             0.05

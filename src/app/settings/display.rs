@@ -38,7 +38,7 @@ impl DisplayRows {
                 Row::Num(NumField {
                     label: "dB max",
                     value: db_max,
-                    default: -20.0,
+                    default: crate::config::Defaults::DB_MAX,
                     step: 1.0,
                     min: -159.0,
                     max: 0.0,
@@ -301,7 +301,7 @@ impl super::SettingsState {
         if let Row::Num(f) = &self.display.rows[DB_MAX] {
             f.value
         } else {
-            -20.0
+            crate::config::Defaults::DB_MAX
         }
     }
     pub fn set_db_min(&mut self, v: f32) {

@@ -10,7 +10,7 @@ const AUDIO: usize = 0;
 const CARRIER: usize = 1;
 const MOD_IDX: usize = 2;
 const GAP: usize = 3;
-const NOISE: usize = 4;
+const CN: usize = 4;
 const WAV_FILE: usize = 5;
 const REPEAT: usize = 6;
 
@@ -62,13 +62,13 @@ impl AmDsbRows {
                     coarse: None,
                 }),
                 Row::Num(NumField {
-                    label: "Noise amp",
-                    value: 0.05,
-                    default: 0.05,
-                    step: 0.01,
-                    min: 0.0,
-                    max: 0.50,
-                    unit: "",
+                    label: "C/N",
+                    value: crate::source::amdsb::AM_DEFAULT_CN_DB,
+                    default: crate::source::amdsb::AM_DEFAULT_CN_DB,
+                    step: 1.0,
+                    min: MIN_CN_DB,
+                    max: MAX_CN_DB,
+                    unit: " dB",
                     coarse: None,
                 }),
                 Row::Text(TextField {
@@ -94,7 +94,7 @@ impl AmDsbRows {
 
     /// Visible rows in the order they appear in the settings overlay.
     pub fn visible_indices(&self) -> Vec<usize> {
-        vec![AUDIO, WAV_FILE, REPEAT, CARRIER, MOD_IDX, GAP, NOISE]
+        vec![AUDIO, WAV_FILE, REPEAT, CARRIER, MOD_IDX, GAP, CN]
     }
 
     pub fn audio_is_custom(&self) -> bool {
@@ -318,7 +318,7 @@ impl super::common::SourceRows for AmDsbRows {
         self.rows[CARRIER].patch_num(cfg.carrier_hz());
         self.rows[MOD_IDX].patch_num(cfg.mod_index());
         self.rows[GAP].patch_num(cfg.am_gap_secs());
-        self.rows[NOISE].patch_num(cfg.am_noise_amp());
+        self.rows[CN].patch_num(cfg.am_cn_db());
         self.rows[REPEAT].patch_num(cfg.am_msg_repeat() as f32);
     }
 
@@ -374,6 +374,7 @@ impl super::common::SourceRows for AmDsbRows {
 // ── SettingsState accessors ───────────────────────────────────────────────
 
 use crate::app::SourceMode;
+use crate::source::{MAX_CN_DB, MIN_CN_DB};
 
 /// Borrow this source's rows from `SettingsState`.
 fn rows(state: &super::SettingsState) -> &AmDsbRows {
@@ -393,7 +394,7 @@ pub(in crate::app) trait AmDsbSettings {
     fn am_carrier_hz(&self) -> f32;
     fn am_mod_index(&self) -> f32;
     fn am_gap_secs(&self) -> f32;
-    fn am_noise_amp(&self) -> f32;
+    fn am_cn_db(&self) -> f32;
     fn am_msg_repeat(&self) -> usize;
     fn wav_path(&self) -> &str;
     /// True if the AM source is currently producing audio: either a built-in
@@ -454,8 +455,8 @@ impl AmDsbSettings for super::SettingsState {
             2.0
         }
     }
-    fn am_noise_amp(&self) -> f32 {
-        if let Row::Num(f) = &rows(self).rows[NOISE] {
+    fn am_cn_db(&self) -> f32 {
+        if let Row::Num(f) = &rows(self).rows[CN] {
             f.value
         } else {
             0.05

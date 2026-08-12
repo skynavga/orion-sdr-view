@@ -8,7 +8,7 @@ use orion_sdr::modulate::{ConstellationOrder, McsTable, OfdmConfig, OfdmFrameMod
 use orion_sdr::multicarrier::{CarrierPlan, TxLowpass};
 use orion_sdr::sync::OfdmPreamble;
 
-use crate::source::{MAX_SIG_SECS, SignalSource};
+use crate::source::{CnNoise, CnReference, MAX_SIG_SECS, NoiseDomain, SignalSource, mean_power_c};
 
 // ── COFDM constants ───────────────────────────────────────────────────────────
 //
@@ -114,66 +114,45 @@ pub const COFDM_PAYLOAD_BYTES: usize = 184;
 /// ~40 frames ≈ 0.3 s of native signal at `COFDM_FS`.
 pub(crate) const COFDM_BUFFER_FRAMES: usize = 40;
 
-/// Display scaling applied to the rendered burst.
+/// Target signal-phase RMS for the rendered burst, in dBFS.
 ///
-/// Bare OFDM spreads its energy across the active subcarriers, so per-sample
-/// RMS at unit gain sits *below* the decoder's `SIGNAL_THRESHOLD` (0.1) — the Di
-/// bar would never register signal.  This places the spectrum peaks at roughly
-/// -15 dBFS on the viewer's dB scale (matched by [`COFDM_PREFERRED_REF_DB`]) and
-/// clears the detection threshold on every payload block for all bandwidth
-/// fractions.  The f32 spectrum pipeline has no [-1, 1] clamp, so the resulting
-/// large time-domain peak is fine.
+/// **The display level is derived to hit this, not tuned to produce it.**  The
+/// old arrangement was the other way round: a hand-fitted `COFDM_GAIN` of 121.0
+/// scaled every configuration alike, and the reference level was then chosen to
+/// suit whatever that produced.  One constant cannot fit — bare OFDM spreads its
+/// energy across the active subcarriers, so the rendered power is proportional
+/// to the occupied bandwidth, and a single gain left the measured signal-phase
+/// RMS spanning 1.344 to 3.646 (a 2.7x spread) across the bandwidth fractions.
 ///
-/// **Applied in [`CofdmSource::render`], not through `OfdmConfig::gain`.**  It
-/// is a property of how this viewer wants the signal *drawn*, not of the
-/// waveform — and it was the only non-unity gain at any `OfdmConfig::new` call
-/// site in either crate, source, tests and docs alike.  Keeping it in the
-/// waveform config also made `Noise amp` an absolute amplitude measured against
-/// a display constant, which is why one noise setting still means different
-/// SNRs at different bandwidth fractions.  Moving it here is what lets the
-/// impairment eventually be expressed as a C/N applied *before* this scalar.
+/// Normalising instead makes the source **unit-scale like every other one**,
+/// which is what lets the shared [`orion_sdr::util::SIGNAL_THRESHOLD`] apply to
+/// it, lets `CofdmFacts::full_scale` be 1.0, and lets a new multicarrier source
+/// get correct scaling with no tuning session.  DFT-s-OFDM is the case that
+/// makes this structural rather than tidy: its whole point is lower PAPR, so a
+/// COFDM-shaped constant would be wrong for it rather than merely untuned.
 ///
-/// The receiver is indifferent: score, decode and both BER rungs are identical
-/// at gain 1 and 121, since a uniform scalar cannot change a spectrum's shape.
-pub const COFDM_GAIN: f32 = 121.0;
+/// -15 dBFS RMS leaves roughly 10-12 dB of OFDM crest factor inside full scale,
+/// so the peaks do not read as an overload.
+pub const COFDM_DISPLAY_RMS_DBFS: f32 = -15.0;
 
-/// Display reference level (dBFS, spectrum-scale top) preferred by COFDM, set
-/// to match the ~-15 dB signal peaks produced by `COFDM_GAIN`.
-pub const COFDM_PREFERRED_REF_DB: f32 = -15.0;
+/// Display reference level (dBFS, spectrum-scale top) preferred by COFDM.
+///
+/// Tracks [`COFDM_DISPLAY_RMS_DBFS`]: the burst now sits ~20.6 dB lower than
+/// the old fixed gain of 121.0 put it, so the scale top drops by the same
+/// amount and the on-screen picture is unchanged.
+pub const COFDM_PREFERRED_REF_DB: f32 = -36.0;
 
 /// Default signal-burst duration, in **wall-clock seconds**.
 pub const COFDM_DEFAULT_SIG_SECS: f32 = 10.0;
 /// Default silence gap between bursts, in **wall-clock seconds**.
 pub const COFDM_DEFAULT_GAP_SECS: f32 = 2.0;
-/// Default additive-noise amplitude.
-pub const COFDM_DEFAULT_NOISE_AMP: f32 = 0.05;
-/// Largest `Noise amp` the settings row allows.
-pub const COFDM_MAX_NOISE_AMP: f32 = 2.0;
-
-/// Block-RMS threshold separating COFDM's signal phase from its gap.
+/// Default C/N (dB), chosen to reproduce the noise floor the pre-`C/N` default
+/// (`noise_amp` 0.05) put on screen at the default 1/4 bandwidth fraction.
 ///
-/// **A fallback.**  `CofdmSource` reports its phase directly through
-/// [`SignalSource::signal_phase`], so nothing in the viewer consults this for
-/// COFDM any more; it remains the answer for a caller measuring a stream it was
-/// handed rather than one it generated.
-///
-/// The shared [`orion_sdr::util::SIGNAL_THRESHOLD`] (0.1) assumes a unit-scale
-/// source.  COFDM is not one: [`COFDM_GAIN`] puts its signal-phase RMS at
-/// 1.34–3.65 depending on the bandwidth fraction, while the gap carries only
-/// `Noise amp` noise — uniform on `[-1, 1)` scaled by the amplitude, so its RMS
-/// is `noise_amp / sqrt(3)`.  0.1 sits *below the gap noise* for any `Noise amp`
-/// above 0.173, and gap detection then silently stops: the loop timer never
-/// flips to `gap`, the Di bar never shows "waiting for signal", and the
-/// instrumentation panel is never cleared between bursts.
-///
-/// 0.6 splits the two populations for `Noise amp` up to about 0.9.  **Which is
-/// why measuring it was the wrong arrangement**: it made the impairment range a
-/// hostage to burst detection, capping `Noise amp` at 0.50 — far below the
-/// 1.5–2.0 where the FEC cliff actually is (measured: FER 0.00 at 1.00 and 0.25
-/// at 1.50 for the 1/4 fraction).  No absolute threshold could have covered
-/// both, since the loudest reachable gap must stay under the quietest reachable
-/// signal phase and `2.33 * sqrt(3) > 1.34`.
-pub const COFDM_SIGNAL_THRESHOLD: f32 = 0.6;
+/// The lowest default of the six sources: COFDM's 240 kHz occupancy against
+/// noise spread over 1.92 MHz is a 9 dB spreading factor, where the narrowband
+/// sources sit at 20-27 dB.
+pub const COFDM_DEFAULT_CN_DB: f32 = 45.0;
 
 // ── Bandwidth fraction ──────────────────────────────────────────────────────
 
@@ -524,7 +503,7 @@ pub fn cofdm_link_config(shaping: &CofdmShaping, fs: f32) -> (OfdmConfig, OfdmPr
         plan,
         fs,
         0.0, // baseband — `render` upconverts, see the module header
-        1.0, // unit scale — `render` applies COFDM_GAIN, see that constant
+        1.0, // unit scale — `render` normalises, see COFDM_DISPLAY_RMS_DBFS
         ConstellationOrder::Qpsk,
     )
     .with_payload_crc(CrcKind::Crc32)
@@ -585,7 +564,7 @@ pub fn hud_submode_str(fraction: CofdmBwFraction, shaping: &CofdmShaping) -> Str
 pub struct CofdmSource {
     pub sig_secs: f32,
     pub gap_secs: f32,
-    pub noise_amp: f32,
+    noise: CnNoise,
     pub fraction: CofdmBwFraction,
     pub shaping: CofdmShaping,
     fs: f32,
@@ -607,6 +586,10 @@ pub struct CofdmSource {
     /// Impaired complex baseband for the block most recently returned by
     /// `next_samples`, exposed through [`SignalSource::last_samples_iq`].
     last_iq: Vec<C32>,
+    /// Scalar `render` applied to reach [`COFDM_DISPLAY_RMS_DBFS`].  Derived,
+    /// not tuned; kept so callers can report what full scale means for this
+    /// burst without re-deriving it.
+    display_gain: f32,
     /// True during the signal phase, false during the silence gap.
     in_signal: bool,
     /// Wall-clock seconds elapsed in the current phase.
@@ -618,7 +601,7 @@ impl CofdmSource {
     pub fn new(
         sig_secs: f32,
         gap_secs: f32,
-        noise_amp: f32,
+        cn_db: f32,
         fraction: CofdmBwFraction,
         shaping: CofdmShaping,
         fs: f32,
@@ -626,7 +609,7 @@ impl CofdmSource {
         let mut src = Self {
             sig_secs,
             gap_secs,
-            noise_amp,
+            noise: CnNoise::new(cn_db, cn_reference(0.0, 0.0, fs)),
             fraction,
             shaping,
             fs,
@@ -634,12 +617,31 @@ impl CofdmSource {
             pos: 0,
             rot: Rotator::new(COFDM_NOMINAL_CENTER, fs),
             last_iq: Vec::new(),
+            display_gain: 1.0,
             in_signal: true,
             phase_secs: 0.0,
             rng: 0x853c_49e6_748f_ea9b,
         };
         src.render();
         src
+    }
+
+    /// Requested carrier-to-noise ratio, in dB.
+    #[allow(dead_code)] // used by integration tests, not the binary
+    pub fn cn_db(&self) -> f32 {
+        self.noise.cn_db()
+    }
+
+    /// Per-component standard deviation of the injected complex noise.
+    #[allow(dead_code)] // used by integration tests, not the binary
+    pub fn noise_sigma(&self) -> f32 {
+        self.noise.sigma()
+    }
+
+    /// The display scalar `render` derived for the current configuration.
+    #[allow(dead_code)] // used by integration tests, not the binary
+    pub fn display_gain(&self) -> f32 {
+        self.display_gain
     }
 
     /// True while in the signal phase (exposed for tests / decode gating).
@@ -686,15 +688,42 @@ impl CofdmSource {
             mask.apply(&mut iq);
         }
 
-        // Display scaling, applied **once across the whole concatenation** so
-        // preamble, training symbol and payload are scaled alike.  That
-        // uniformity is the invariant: a non-uniform gain is what made this
-        // source unacquirable before orion-sdr 0.0.57, when the preamble was
-        // emitted at unit amplitude while the payload was not.  See
-        // [`COFDM_GAIN`], and `the_display_gain_scales_every_segment_alike`.
+        // Display scaling, **derived** from what was actually rendered rather
+        // than fitted once and applied to everything.  The target is a real
+        // projection RMS of `COFDM_DISPLAY_RMS_DBFS`, so `RMS_real =
+        // sqrt(P_complex / 2)` is the quantity to normalise.
+        //
+        // Applied **once across the whole concatenation** so preamble, training
+        // symbol and payload are scaled alike.  That uniformity is the
+        // invariant: a non-uniform gain is what made this source unacquirable
+        // before orion-sdr 0.0.57, when the preamble was emitted at unit
+        // amplitude while the payload was not.  See
+        // `the_display_gain_scales_every_segment_alike`.
+        //
+        // Referenced to the **whole buffer**, unlike the C/N reference below —
+        // buffer RMS is what the eye and the `lvl` readout see, while the noise
+        // must be referenced to the payload alone.  Two measurements, because
+        // they answer two different questions.
+        let unit_rms = (mean_power_c(&iq) / 2.0).sqrt();
+        self.display_gain = if unit_rms > 0.0 {
+            display_target_rms() / unit_rms
+        } else {
+            1.0
+        };
         for c in &mut iq {
-            *c *= COFDM_GAIN;
+            *c *= self.display_gain;
         }
+
+        // The C/N reference: **payload power, at the scale the noise is injected
+        // at.**  The preamble is deliberately hotter than the payload, and the
+        // prefix is a bandwidth-dependent fraction of the frame — 6.3% of a 7/8
+        // frame against 1% of a 1/8 one — so a buffer-mean reference would
+        // inject a different C/N at every fraction, which is exactly the
+        // cross-fraction tilt a ratio exists to remove.
+        let signal_power = payload_power(&iq);
+        let occupied_bw = cofdm_occupied_bw(self.fs, shaping.edge_guard);
+        self.noise
+            .set_reference(cn_reference(signal_power, occupied_bw, self.fs));
 
         self.iq = iq;
         self.pos = 0;
@@ -709,24 +738,32 @@ impl CofdmSource {
 
     /// Apply fresh parameters.  Only the bandwidth fraction and the shaping set
     /// change the rendered buffer; `sig_secs` / `gap_secs` are wall-clock phase
-    /// durations applied live (no re-render), and `noise_amp` is read per sample.
+    /// durations applied live, and `cn_db` is arithmetic on the cached
+    /// reference — **neither re-renders**.
+    ///
+    /// That the C/N knob stays off the re-render path is deliberate: `render`
+    /// runs FEC encoding, 40 frames of FFTs and a mask filter, so a 1 dB step
+    /// held down on the arrow keys would otherwise rebuild the buffer per
+    /// keypress.
     pub fn apply_params(
         &mut self,
         sig_secs: f32,
         gap_secs: f32,
-        noise_amp: f32,
+        cn_db: f32,
         fraction: CofdmBwFraction,
         shaping: CofdmShaping,
     ) {
         let rerender = self.fraction != fraction || self.shaping != shaping;
         self.sig_secs = sig_secs;
         self.gap_secs = gap_secs;
-        self.noise_amp = noise_amp;
         self.fraction = fraction;
         self.shaping = shaping;
         if rerender {
             self.render();
         }
+        // After any re-render, so the C/N is derived against the geometry the
+        // new buffer implies rather than the outgoing one's.
+        self.noise.set_cn_db(cn_db);
     }
 
     fn next_u64(&mut self) -> u64 {
@@ -734,10 +771,6 @@ impl CofdmSource {
         self.rng ^= self.rng >> 7;
         self.rng ^= self.rng << 17;
         self.rng
-    }
-
-    fn xorshift(&mut self) -> f32 {
-        (self.next_u64() >> 11) as f32 * (1.0 / (1u64 << 53) as f32) * 2.0 - 1.0
     }
 }
 
@@ -789,11 +822,18 @@ impl SignalSource for CofdmSource {
     /// zero at every `Noise amp` setting while the spectrum on screen was
     /// visibly noisy.
     ///
-    /// Noise is complex with per-component amplitude `noise_amp`, so the real
-    /// projection carries variance `noise_amp^2 / 3` — unchanged from when the
-    /// noise was added directly to the real stream, which is what
-    /// [`COFDM_SIGNAL_THRESHOLD`] is calibrated against.  Signal and noise are
-    /// projected alike, so the decoder's SNR and the display's agree.
+    /// Noise is complex Gaussian with per-component standard deviation derived
+    /// from the requested C/N, so its total power is `2 * sigma^2` spread white
+    /// over the full `fs` — see [`NoiseDomain::Complex`].  Signal and noise are
+    /// projected alike, so the decoder's C/N and the display's agree.
+    ///
+    /// **Injection stays here, per sample.**  The buffer loops with a ~0.3 s
+    /// period, so noise baked into `render` would be one realisation replayed
+    /// forever: a static speckle in the persistence and waterfall panes, and
+    /// frame-error trials that are correlated rather than independent — which
+    /// silently defeats any FER measured over more frames than the buffer
+    /// holds.  Only the *reference* the amplitude is derived from is a
+    /// render-time quantity.
     fn next_samples(&mut self, n: usize) -> Vec<f32> {
         let mut out = Vec::with_capacity(n);
         self.last_iq.clear();
@@ -809,10 +849,8 @@ impl SignalSource for CofdmSource {
             } else {
                 C32::default()
             };
-            if self.noise_amp > 0.0 {
-                c.re += self.noise_amp * self.xorshift();
-                c.im += self.noise_amp * self.xorshift();
-            }
+            c.re += self.noise.next();
+            c.im += self.noise.next();
             let r = self.rot.next();
             out.push(c.re * r.re - c.im * r.im);
             self.last_iq.push(c);
@@ -830,5 +868,65 @@ impl SignalSource for CofdmSource {
 
     fn sample_rate(&self) -> f32 {
         self.fs
+    }
+}
+
+// ── Derived display level and C/N geometry ──────────────────────────────────
+
+/// Target real-projection RMS implied by [`COFDM_DISPLAY_RMS_DBFS`].
+fn display_target_rms() -> f32 {
+    10f32.powf(COFDM_DISPLAY_RMS_DBFS / 20.0)
+}
+
+/// Samples at the head of every frame that are **not** payload: the Schmidl &
+/// Cox preamble plus the training symbol.
+///
+/// The preamble is deliberately hotter than the payload, so it must be excluded
+/// from the power the C/N is referenced to.  Frames are equal-length — same
+/// payload size, same MCS, same carrier plan — so the offsets are arithmetic
+/// rather than something the modulator has to report back.
+const fn frame_prefix_len() -> usize {
+    COFDM_PREAMBLE_REPEATS * COFDM_PREAMBLE_REPEAT_LEN + COFDM_N_FFT + COFDM_CP_LEN
+}
+
+/// Mean power of the payload portion of a rendered buffer of
+/// [`COFDM_BUFFER_FRAMES`] equal-length frames.
+///
+/// Falls back to the whole-buffer mean if the geometry does not divide as
+/// expected — a wrong-by-6% reference is better than a panic, and the
+/// `the_cn_reference_excludes_the_preamble` test is what catches the fallback
+/// being taken.
+fn payload_power(iq: &[C32]) -> f32 {
+    let frame_len = iq.len() / COFDM_BUFFER_FRAMES;
+    let prefix = frame_prefix_len();
+    if frame_len <= prefix {
+        return mean_power_c(iq);
+    }
+    let mut sum = 0.0f32;
+    let mut count = 0usize;
+    for f in 0..COFDM_BUFFER_FRAMES {
+        let lo = f * frame_len + prefix;
+        let hi = (f + 1) * frame_len;
+        for c in &iq[lo..hi] {
+            sum += c.norm_sqr();
+        }
+        count += hi - lo;
+    }
+    if count == 0 { 0.0 } else { sum / count as f32 }
+}
+
+/// The C/N geometry for a COFDM burst.
+///
+/// [`NoiseDomain::Complex`]: the generator adds independent noise to both
+/// components of the baseband sample, so its power is white over the **full
+/// `fs`**, not over the display's `fs / 2` Nyquist span.  That factor of two is
+/// the easiest thing to get wrong here, and it is wrong by 3 dB rather than
+/// visibly.
+fn cn_reference(signal_power: f32, occupied_bw_hz: f32, fs: f32) -> CnReference {
+    CnReference {
+        signal_power,
+        occupied_bw_hz,
+        fs,
+        domain: NoiseDomain::Complex,
     }
 }

@@ -18,7 +18,7 @@ pub(in crate::app) fn sync(source: &mut dyn SignalSource, settings: &SettingsSta
     if let Some(tts) = source.as_any_mut().downcast_mut::<TestToneSource>() {
         tts.signal_gen.apply_params(
             settings.freq_hz(),
-            settings.noise_amp(),
+            settings.cn_db(),
             settings.amp_max(),
             settings.ramp_secs(),
             settings.pause_secs(),
@@ -39,5 +39,9 @@ impl super::SourceFactory for Factory {
     }
     fn set_carrier_hz(&self, settings: &mut SettingsState, hz: f32) {
         settings.set_freq_hz(hz);
+    }
+
+    fn cn_db(&self, settings: &SettingsState) -> f32 {
+        settings.cn_db()
     }
 }

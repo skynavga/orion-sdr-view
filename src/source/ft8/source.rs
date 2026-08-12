@@ -6,7 +6,8 @@ use orion_sdr::codec::{Ft4Codec, Ft8Codec};
 use orion_sdr::message::{CallsignHashTable, Ft8Message, GridField, pack77};
 use orion_sdr::modulate::{Ft4Mod, Ft8Mod};
 
-use crate::source::{MAX_SIG_SECS, SignalSource};
+use crate::source::ft8::decode::{FT4_BW_HZ, FT8_BW_HZ};
+use crate::source::{CnNoise, CnReference, MAX_SIG_SECS, NoiseDomain, SignalSource, mean_power};
 
 // ── FT8 constants ─────────────────────────────────────────────────────────────
 
@@ -16,6 +17,12 @@ pub const FT8_DEFAULT_CALL_TO: &str = "CQ";
 pub const FT8_DEFAULT_CALL_DE: &str = "N0GNR";
 pub const FT8_DEFAULT_GRID: &str = "FN31";
 pub const FT8_DEFAULT_FREE_TEXT: &str = "CQ DX";
+
+/// Default C/N (dB), chosen to reproduce the noise floor the pre-`C/N` default
+/// (`noise_amp` 0.05, uniform) put on screen.  The highest default of the six
+/// sources, because FT8's 50 Hz occupancy against noise spread over 24 kHz is
+/// the largest spreading factor in the set (26.8 dB).
+pub const FT8_DEFAULT_CN_DB: f32 = 55.0;
 
 /// Native FT8/FT4 sample rate used by the modulators.
 const FT8_NATIVE_FS: f32 = 12_000.0;
@@ -51,7 +58,7 @@ pub enum Ft8MsgType {
 pub struct Ft8Source {
     pub carrier_hz: f32,
     pub gap_secs: f32,
-    pub noise_amp: f32,
+    noise: CnNoise,
     pub ft8_mode: Ft8Mode,
     pub msg_type: Ft8MsgType,
     pub msg_repeat: usize,
@@ -71,7 +78,6 @@ pub struct Ft8Source {
     gap_remaining: usize,
     gap_samples: usize,
     play_count: usize, // how many times the frame has played in this cycle
-    rng: u64,
 }
 
 impl Ft8Source {
@@ -79,7 +85,7 @@ impl Ft8Source {
     pub fn new(
         carrier_hz: f32,
         gap_secs: f32,
-        noise_amp: f32,
+        cn_db: f32,
         ft8_mode: Ft8Mode,
         msg_type: Ft8MsgType,
         call_to: String,
@@ -93,7 +99,7 @@ impl Ft8Source {
         let mut src = Self {
             carrier_hz,
             gap_secs,
-            noise_amp,
+            noise: CnNoise::new(cn_db, cn_reference(0.0, ft8_mode, mod_rate)),
             ft8_mode,
             msg_type,
             msg_repeat: msg_repeat.max(1),
@@ -107,7 +113,6 @@ impl Ft8Source {
             gap_remaining: 0,
             gap_samples,
             play_count: 0,
-            rng: 0x853c_49e6_748f_ea9b,
         };
         src.render();
         src
@@ -206,6 +211,15 @@ impl Ft8Source {
         self.pos = 0;
         self.gap_remaining = 0;
         self.play_count = 0;
+        // The rendered frame is the power reference, and the mode selects the
+        // occupied bandwidth, so both are re-seated together.  FT8/FT4 are
+        // constant-envelope and the frame holds no gap, so its mean is the
+        // transmitting power.
+        self.noise.set_reference(cn_reference(
+            mean_power(&self.samples),
+            self.ft8_mode,
+            self.mod_rate,
+        ));
     }
 
     /// Recompute the gap sample count after `gap_secs` changes.
@@ -221,7 +235,7 @@ impl Ft8Source {
         &mut self,
         carrier_hz: f32,
         gap_secs: f32,
-        noise_amp: f32,
+        cn_db: f32,
         ft8_mode: Ft8Mode,
         msg_type: Ft8MsgType,
         msg_repeat: usize,
@@ -232,7 +246,6 @@ impl Ft8Source {
         let repeat_changed = self.msg_repeat != msg_repeat;
 
         self.carrier_hz = carrier_hz;
-        self.noise_amp = noise_amp;
         self.gap_secs = gap_secs;
         self.ft8_mode = ft8_mode;
         self.msg_type = msg_type;
@@ -241,6 +254,9 @@ impl Ft8Source {
         if carrier_changed || mode_changed || msg_type_changed || repeat_changed {
             self.render();
         }
+        // After `render`, so the C/N is derived against the reference the new
+        // frame and mode imply rather than the outgoing ones'.
+        self.noise.set_cn_db(cn_db);
         self.update_gap();
     }
 
@@ -255,11 +271,34 @@ impl Ft8Source {
         }
     }
 
-    fn xorshift(&mut self) -> f32 {
-        self.rng ^= self.rng << 13;
-        self.rng ^= self.rng >> 7;
-        self.rng ^= self.rng << 17;
-        (self.rng >> 11) as f32 * (1.0 / (1u64 << 53) as f32) * 2.0 - 1.0
+    /// Requested carrier-to-noise ratio, in dB.
+    #[allow(dead_code)] // used by integration tests, not the binary
+    pub fn cn_db(&self) -> f32 {
+        self.noise.cn_db()
+    }
+
+    /// Per-component standard deviation of the injected noise.
+    #[allow(dead_code)] // used by integration tests, not the binary
+    pub fn noise_sigma(&self) -> f32 {
+        self.noise.sigma()
+    }
+}
+
+/// The C/N geometry for an FT8/FT4 frame of measured power `signal_power`.
+///
+/// The mode picks the occupied bandwidth — FT4's 83 Hz against FT8's 50 Hz —
+/// so switching mode at a fixed C/N changes the injected noise power by 2.2 dB.
+/// That is correct: the wider signal collects proportionally more noise for the
+/// same ratio.
+fn cn_reference(signal_power: f32, mode: Ft8Mode, fs: f32) -> CnReference {
+    CnReference {
+        signal_power,
+        occupied_bw_hz: match mode {
+            Ft8Mode::Ft8 => FT8_BW_HZ,
+            Ft8Mode::Ft4 => FT4_BW_HZ,
+        },
+        fs,
+        domain: NoiseDomain::Real,
     }
 }
 
@@ -285,11 +324,7 @@ impl SignalSource for Ft8Source {
             if self.gap_remaining > 0 {
                 let gap_now = self.gap_remaining.min(n - i);
                 for _ in 0..gap_now {
-                    let noise = if self.noise_amp > 0.0 {
-                        self.noise_amp * self.xorshift()
-                    } else {
-                        0.0
-                    };
+                    let noise = self.noise.next();
                     out.push(noise);
                 }
                 self.gap_remaining -= gap_now;
@@ -310,11 +345,7 @@ impl SignalSource for Ft8Source {
                 }
                 let available = (frame_len - self.pos).min(n - i).min(remaining_budget);
                 for k in 0..available {
-                    let noise = if self.noise_amp > 0.0 {
-                        self.noise_amp * self.xorshift()
-                    } else {
-                        0.0
-                    };
+                    let noise = self.noise.next();
                     out.push(self.samples[self.pos + k] + noise);
                 }
                 self.pos += available;

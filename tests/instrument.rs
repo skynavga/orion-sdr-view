@@ -13,9 +13,9 @@ use orion_sdr_view::decode::instrument::*;
 use orion_sdr_view::decode::{DecodeResult, SPECTRUM_WINDOW_SAMPLES};
 use orion_sdr_view::source::cofdm::CofdmState;
 use orion_sdr_view::source::{
-    COFDM_CP_LEN, COFDM_FS, COFDM_GAIN, COFDM_N_FFT, COFDM_NOMINAL_CENTER, COFDM_SIGNAL_THRESHOLD,
-    CofdmBwFraction, CofdmShaping, CofdmSource, SignalSource, cofdm_data_carriers,
-    cofdm_edge_guard_for, cofdm_mcs_facts, cofdm_occupied_bw,
+    COFDM_CP_LEN, COFDM_DEFAULT_CN_DB, COFDM_DISPLAY_RMS_DBFS, COFDM_FS, COFDM_N_FFT,
+    COFDM_NOMINAL_CENTER, CofdmBwFraction, CofdmShaping, CofdmSource, MAX_CN_DB, SignalSource,
+    cofdm_data_carriers, cofdm_edge_guard_for, cofdm_mcs_facts, cofdm_occupied_bw,
 };
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -33,7 +33,7 @@ fn facts_for(fraction: CofdmBwFraction, cn_db: f32) -> CofdmFacts {
         // Raw amplitudes against the source's own full-scale reference.
         level_amp: 1.8,
         peak_amp: 14.7,
-        full_scale: COFDM_GAIN,
+        full_scale: 1.0,
         cn_db,
         fs: COFDM_FS,
         n_fft: COFDM_N_FFT,
@@ -668,10 +668,10 @@ fn the_simulation_still_degrades_when_pushed_below_the_envelope() {
 fn run_provider(
     state: &mut CofdmState,
     blocks: usize,
-    noise: f32,
+    cn_db: f32,
     gap_edge_at_end: bool,
 ) -> Vec<Option<Box<CofdmInstrument>>> {
-    run_provider_with(state, blocks, noise, gap_edge_at_end, false)
+    run_provider_with(state, blocks, cn_db, gap_edge_at_end, false)
 }
 
 /// As [`run_provider`], choosing whether the provider is handed the complex
@@ -680,7 +680,7 @@ fn run_provider(
 fn run_provider_with(
     state: &mut CofdmState,
     blocks: usize,
-    noise: f32,
+    cn_db: f32,
     gap_edge_at_end: bool,
     with_receiver: bool,
 ) -> Vec<Option<Box<CofdmInstrument>>> {
@@ -688,7 +688,7 @@ fn run_provider_with(
     let shaping = CofdmShaping::default_for(fraction).effective(fraction);
     let guard = shaping.edge_guard;
     let bw = cofdm_occupied_bw(COFDM_FS, guard);
-    let mut src = CofdmSource::new(60.0, 1.0, noise, fraction, shaping, COFDM_FS);
+    let mut src = CofdmSource::new(60.0, 1.0, cn_db, fraction, shaping, COFDM_FS);
     let (tx, rx) = std::sync::mpsc::sync_channel(4096);
 
     for _ in 0..blocks {
@@ -734,7 +734,7 @@ fn a_gap_edge_clears_the_panel_and_the_error_count() {
     // transmission's errors to the next, and the panel it annotates has already
     // been cleared.
     let mut state = CofdmState::new();
-    let emitted = run_provider(&mut state, 40, 0.5, true);
+    let emitted = run_provider(&mut state, 40, 25.0, true);
     assert!(
         emitted.len() >= 2,
         "provider emitted nothing to test: {}",
@@ -747,7 +747,7 @@ fn a_gap_edge_clears_the_panel_and_the_error_count() {
     );
     // The next burst starts from zero.  Needs enough blocks to clear the
     // provider's emit interval again after the gap reset the accumulator.
-    let next = run_provider(&mut state, 40, 0.5, false);
+    let next = run_provider(&mut state, 40, 25.0, false);
     let first = next.iter().flatten().next().expect("a fresh instrument");
     assert_eq!(
         first.error_count.value,
@@ -764,7 +764,7 @@ fn the_error_count_stays_inside_its_fixed_width_field() {
     let widths = reference_column_widths(chars);
     let mut state = CofdmState::new();
     for _ in 0..6 {
-        for inst in run_provider(&mut state, 30, 0.5, false).iter().flatten() {
+        for inst in run_provider(&mut state, 30, 25.0, false).iter().flatten() {
             let n = inst.error_count.value.unwrap();
             assert!(n < ERROR_COUNT_WRAP, "error count {n} escaped its field");
             for wrapped in [false, true] {
@@ -775,18 +775,31 @@ fn the_error_count_stays_inside_its_fixed_width_field() {
 }
 
 #[test]
-fn dbfs_is_measured_against_the_sources_own_full_scale() {
-    // The COFDM modulator applies a large fixed gain (bare OFDM at unit gain
-    // sits below the decoder's signal threshold) and the viewer's f32 spectrum
-    // pipeline has no [-1, 1] clamp, so raw samples peak above 30.  Measuring
-    // against 1.0 reported *positive* dBFS and a permanent overload.
+fn dbfs_is_measured_against_unit_full_scale() {
+    // COFDM used to apply a *fitted* gain of 121.0, which put raw samples above
+    // 30; measuring those against 1.0 reported positive dBFS and a permanent
+    // overload, so the facts had to carry the gain as the full-scale reference.
+    //
+    // Deriving the display level removed the reason for that.  The burst is
+    // normalised to `COFDM_DISPLAY_RMS_DBFS`, so the source is unit-scale like
+    // every other one, full scale is simply 1.0, and the level lands where the
+    // normalisation put it with crest factor to spare.
     let mut f = facts();
-    f.level_amp = 1.79; // measured block RMS at the 1/4 fraction
-    f.peak_amp = 14.7; // measured block peak
+    assert_eq!(
+        f.full_scale, 1.0,
+        "no per-source full-scale reference is left"
+    );
+    let target_rms = 10f32.powf(COFDM_DISPLAY_RMS_DBFS / 20.0);
+    f.level_amp = target_rms;
+    f.peak_amp = target_rms * 4.0; // ~12 dB of OFDM crest factor
     let inst = CofdmInstrument::from_facts(&f);
     let lvl = inst.level_dbfs.value.unwrap();
     let pk = inst.peak_dbfs.value.unwrap();
-    assert!(lvl < 0.0, "RMS read as {lvl:.1} dBFS — above full scale");
+    assert!(
+        (lvl - COFDM_DISPLAY_RMS_DBFS).abs() < 0.1,
+        "RMS read as {lvl:.1} dBFS, not the {COFDM_DISPLAY_RMS_DBFS:.1} the \
+         normalisation targets"
+    );
     assert!(pk < 0.0, "peak read as {pk:.1} dBFS — above full scale");
     assert!(pk > lvl, "peak must sit above RMS");
     assert_eq!(inst.overload.value, Some(false));
@@ -839,7 +852,7 @@ fn the_error_count_tracks_the_frame_error_rate() {
     // one frame, under-counting by that factor: a displayed `FER 6.7E-5` took
     // about an hour to tick `err` once, so the two readings looked unrelated.
     let mut state = CofdmState::new();
-    let emitted = run_provider(&mut state, 120, 0.5, false);
+    let emitted = run_provider(&mut state, 120, 25.0, false);
     let instruments: Vec<_> = emitted.iter().flatten().collect();
     assert!(
         instruments.len() >= 2,
@@ -932,7 +945,7 @@ fn the_lock_run_outlives_the_lower_priority_readouts() {
 #[test]
 fn a_running_receiver_clears_the_sim_badge() {
     let mut state = CofdmState::new();
-    let out = run_provider_with(&mut state, 40, 0.05, false, true);
+    let out = run_provider_with(&mut state, 40, COFDM_DEFAULT_CN_DB, false, true);
     let inst = out
         .iter()
         .flatten()
@@ -949,7 +962,7 @@ fn a_running_receiver_clears_the_sim_badge() {
 #[test]
 fn without_a_receiver_the_panel_stays_simulated() {
     let mut state = CofdmState::new();
-    let out = run_provider(&mut state, 40, 0.05, false);
+    let out = run_provider(&mut state, 40, COFDM_DEFAULT_CN_DB, false);
     let inst = out.iter().flatten().last().expect("an instrument");
     assert!(
         inst.any_simulated(),
@@ -961,7 +974,7 @@ fn without_a_receiver_the_panel_stays_simulated() {
 #[test]
 fn the_receiver_supplies_measured_values() {
     let mut state = CofdmState::new();
-    let out = run_provider_with(&mut state, 40, 0.05, false, true);
+    let out = run_provider_with(&mut state, 40, COFDM_DEFAULT_CN_DB, false, true);
     let inst = out.iter().flatten().last().expect("an instrument");
 
     assert_eq!(inst.cber.prov, Provenance::Measured, "CBER");
@@ -992,7 +1005,7 @@ fn the_receiver_supplies_measured_values() {
 #[test]
 fn the_receiver_reports_what_it_cannot_measure_as_unavailable() {
     let mut state = CofdmState::new();
-    let out = run_provider_with(&mut state, 40, 0.05, false, true);
+    let out = run_provider_with(&mut state, 40, COFDM_DEFAULT_CN_DB, false, true);
     let inst = out.iter().flatten().last().expect("an instrument");
 
     for (name, prov, value) in [
@@ -1014,7 +1027,7 @@ fn the_receiver_reports_what_it_cannot_measure_as_unavailable() {
 #[test]
 fn a_clean_burst_counts_no_frame_errors() {
     let mut state = CofdmState::new();
-    let out = run_provider_with(&mut state, 40, 0.05, false, true);
+    let out = run_provider_with(&mut state, 40, COFDM_DEFAULT_CN_DB, false, true);
     let inst = out.iter().flatten().last().expect("an instrument");
 
     assert_eq!(inst.error_count.prov, Provenance::Measured);
@@ -1035,9 +1048,9 @@ fn a_new_burst_does_not_inherit_the_last_ones_sequence() {
     let fraction = CofdmBwFraction::OneQuarter;
     let shaping = CofdmShaping::default_for(fraction).effective(fraction);
     let bw = cofdm_occupied_bw(COFDM_FS, shaping.edge_guard);
-    // Short phases so the run crosses several gaps quickly. No noise at all:
-    // any error counted here is invented.
-    let mut src = CofdmSource::new(0.20, 0.10, 0.0, fraction, shaping, COFDM_FS);
+    // Short phases so the run crosses several gaps quickly.  The cleanest link
+    // the row offers: any error counted here is invented.
+    let mut src = CofdmSource::new(0.20, 0.10, MAX_CN_DB, fraction, shaping, COFDM_FS);
     let mut state = CofdmState::new();
     let (tx, rx) = std::sync::mpsc::sync_channel(4096);
 
@@ -1048,7 +1061,7 @@ fn a_new_burst_does_not_inherit_the_last_ones_sequence() {
         let s = src.next_samples(4096);
         let iq = src.last_samples_iq().unwrap().to_vec();
         let block_rms = (s.iter().map(|v| v * v).sum::<f32>() / s.len() as f32).sqrt();
-        let is_signal = block_rms >= COFDM_SIGNAL_THRESHOLD;
+        let is_signal = block_rms >= orion_sdr_view::decode::SIGNAL_THRESHOLD;
         let gap_edge = !is_signal && was_signal;
         was_signal = is_signal;
         state.process(

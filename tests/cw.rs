@@ -5,12 +5,12 @@
 
 use orion_sdr::util::rms;
 use orion_sdr_view::decode::{SIGNAL_THRESHOLD, cw_char_timing, morse_char_units};
-use orion_sdr_view::source::SignalSource;
 use orion_sdr_view::source::cw::{
-    CW_DEFAULT_CARRIER_HZ, CW_DEFAULT_CHAR_SPACE, CW_DEFAULT_DASH_WEIGHT, CW_DEFAULT_FALL_MS,
-    CW_DEFAULT_GAP_SECS, CW_DEFAULT_JITTER_PCT, CW_DEFAULT_NOISE_AMP, CW_DEFAULT_REPEAT,
+    CW_DEFAULT_CARRIER_HZ, CW_DEFAULT_CHAR_SPACE, CW_DEFAULT_CN_DB, CW_DEFAULT_DASH_WEIGHT,
+    CW_DEFAULT_FALL_MS, CW_DEFAULT_GAP_SECS, CW_DEFAULT_JITTER_PCT, CW_DEFAULT_REPEAT,
     CW_DEFAULT_RISE_MS, CW_DEFAULT_WORD_SPACE, CW_DEFAULT_WPM, CwSource,
 };
+use orion_sdr_view::source::{MAX_CN_DB, SignalSource};
 
 const FS: f32 = 48_000.0;
 
@@ -18,7 +18,7 @@ fn make_default_source(message: &str) -> CwSource {
     CwSource::new(
         CW_DEFAULT_CARRIER_HZ,
         CW_DEFAULT_GAP_SECS,
-        CW_DEFAULT_NOISE_AMP,
+        CW_DEFAULT_CN_DB,
         CW_DEFAULT_WPM,
         CW_DEFAULT_JITTER_PCT,
         CW_DEFAULT_DASH_WEIGHT,
@@ -36,7 +36,7 @@ fn make_clean_source(message: &str) -> CwSource {
     CwSource::new(
         CW_DEFAULT_CARRIER_HZ,
         CW_DEFAULT_GAP_SECS,
-        0.0, // no noise
+        MAX_CN_DB, // cleanest link
         CW_DEFAULT_WPM,
         0.0, // no jitter
         CW_DEFAULT_DASH_WEIGHT,
@@ -64,12 +64,13 @@ fn cw_source_produces_samples() {
 
 #[test]
 fn cw_source_gap_has_only_noise() {
-    // Use a very short message with no noise to verify the gap is silent.
+    // A very short message on the cleanest link the row offers, so the gap
+    // carries only the residual noise floor rather than keyed carrier.
     let mut src = CwSource::new(
         CW_DEFAULT_CARRIER_HZ,
-        1.0,  // 1 second gap
-        0.0,  // no noise
-        30.0, // fast WPM for short signal
+        1.0,       // 1 second gap
+        MAX_CN_DB, // cleanest link
+        30.0,      // fast WPM for short signal
         0.0,
         CW_DEFAULT_DASH_WEIGHT,
         CW_DEFAULT_CHAR_SPACE,
@@ -87,20 +88,40 @@ fn cw_source_gap_has_only_noise() {
     let _ = src.next_samples(10000);
 
     // Now read some gap samples.
+    // Not *exactly* silent: the impairment is a ratio, so there is no infinite
+    // C/N and the cleanest link still leaves a floor.  What the gap must carry
+    // is no keyed carrier — two orders of magnitude under it.
     let gap_samples = src.next_samples(4800);
     let max_abs = gap_samples.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
-    assert!(max_abs < 1e-6, "expected silence in gap, max_abs={max_abs}");
+    assert!(
+        max_abs < 0.01,
+        "expected only a noise floor in the gap, max_abs={max_abs}"
+    );
 }
 
 // ── Restart ──────────────────────────────────────────────────────────────────
 
 #[test]
 fn cw_source_restart() {
+    // `restart` rewinds the *waveform*, not the noise: the impairment is a
+    // fresh realisation on every pass, as it would be on a real link.  So the
+    // two runs must agree to within the noise floor rather than exactly.
     let mut src = make_clean_source("SOS");
     let first = src.next_samples(4800);
     src.restart();
     let second = src.next_samples(4800);
-    assert_eq!(first, second, "restart should replay from beginning");
+    assert_eq!(first.len(), second.len());
+    let worst = first
+        .iter()
+        .zip(&second)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0f32, f32::max);
+    let peak = first.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+    assert!(
+        worst < peak * 0.05,
+        "restart should replay the same keying: worst sample difference \
+         {worst:.5} against a {peak:.3} peak"
+    );
 }
 
 // ── Render idempotent ────────────────────────────────────────────────────────
@@ -128,7 +149,7 @@ fn cw_source_wpm_affects_duration() {
     let mut slow = CwSource::new(
         CW_DEFAULT_CARRIER_HZ,
         CW_DEFAULT_GAP_SECS,
-        0.0,
+        MAX_CN_DB,
         5.0, // slow
         0.0,
         CW_DEFAULT_DASH_WEIGHT,
@@ -143,7 +164,7 @@ fn cw_source_wpm_affects_duration() {
     let mut fast = CwSource::new(
         CW_DEFAULT_CARRIER_HZ,
         CW_DEFAULT_GAP_SECS,
-        0.0,
+        MAX_CN_DB,
         25.0, // fast
         0.0,
         CW_DEFAULT_DASH_WEIGHT,
@@ -160,8 +181,13 @@ fn cw_source_wpm_affects_duration() {
     let slow_burst: Vec<f32> = slow.next_samples(5_000_000);
     let fast_burst: Vec<f32> = fast.next_samples(5_000_000);
 
-    let slow_active = slow_burst.iter().filter(|s| s.abs() > 0.001).count();
-    let fast_active = fast_burst.iter().filter(|s| s.abs() > 0.001).count();
+    // The activity threshold has to clear the noise floor, not just zero: the
+    // impairment is a ratio now, so even the cleanest link leaves a residual
+    // that a 0.001 gate would count as key-down for the whole run.  The keyed
+    // carrier peaks at 1.0, so 0.1 separates the two populations by a wide
+    // margin.
+    let slow_active = slow_burst.iter().filter(|s| s.abs() > 0.1).count();
+    let fast_active = fast_burst.iter().filter(|s| s.abs() > 0.1).count();
 
     assert!(
         slow_active > fast_active * 3,
@@ -360,7 +386,7 @@ fn cw_signal_transitions_per_block() {
         let mut src = CwSource::new(
             CW_DEFAULT_CARRIER_HZ,
             CW_DEFAULT_GAP_SECS,
-            0.0, // no noise — isolates the keying structure
+            MAX_CN_DB, // cleanest link — isolates the keying structure
             wpm,
             0.0, // no jitter
             CW_DEFAULT_DASH_WEIGHT,
@@ -543,7 +569,7 @@ fn cw_round_trip_clean() {
     let mut src = CwSource::new(
         CW_DEFAULT_CARRIER_HZ,
         CW_DEFAULT_GAP_SECS,
-        0.0,
+        MAX_CN_DB,
         wpm,
         0.0,
         CW_DEFAULT_DASH_WEIGHT,
@@ -589,7 +615,7 @@ fn cw_round_trip_varied_wpm() {
         let mut src = CwSource::new(
             CW_DEFAULT_CARRIER_HZ,
             CW_DEFAULT_GAP_SECS,
-            0.0,
+            MAX_CN_DB,
             wpm,
             0.0,
             CW_DEFAULT_DASH_WEIGHT,
@@ -638,7 +664,7 @@ fn cw_round_trip_with_noise() {
     let mut src = CwSource::new(
         CW_DEFAULT_CARRIER_HZ,
         CW_DEFAULT_GAP_SECS,
-        CW_DEFAULT_NOISE_AMP, // 0.05
+        CW_DEFAULT_CN_DB,
         wpm,
         0.0,
         CW_DEFAULT_DASH_WEIGHT,
@@ -685,7 +711,7 @@ fn cw_round_trip_repeated_message() {
     let mut src = CwSource::new(
         CW_DEFAULT_CARRIER_HZ,
         CW_DEFAULT_GAP_SECS,
-        0.0,
+        MAX_CN_DB,
         wpm,
         0.0,
         CW_DEFAULT_DASH_WEIGHT,
@@ -734,7 +760,7 @@ fn cw_round_trip_varied_block_size() {
         let mut src = CwSource::new(
             CW_DEFAULT_CARRIER_HZ,
             CW_DEFAULT_GAP_SECS,
-            0.0,
+            MAX_CN_DB,
             wpm,
             0.0,
             CW_DEFAULT_DASH_WEIGHT,
@@ -794,7 +820,7 @@ fn cw_round_trip_slow_5wpm() {
     let mut src = CwSource::new(
         CW_DEFAULT_CARRIER_HZ,
         gap_secs,
-        0.0, // no noise
+        MAX_CN_DB, // cleanest link
         wpm,
         0.0, // no jitter — isolate timing issues
         CW_DEFAULT_DASH_WEIGHT,

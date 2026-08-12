@@ -22,17 +22,22 @@ use orion_sdr::dsp::Rotator;
 use orion_sdr::fec::{FrameMetadata, FramePacket};
 use orion_sdr::modulate::{McsTable, OfdmFrameMod};
 use orion_sdr_view::source::{
-    COFDM_FS, COFDM_GAIN, COFDM_NOMINAL_CENTER, CofdmBwFraction, CofdmMask, CofdmRx, CofdmShaping,
-    CofdmSource, CofdmTaper, SignalSource, cofdm_edge_guard_for, cofdm_link_config,
+    COFDM_DEFAULT_CN_DB, COFDM_FS, COFDM_NOMINAL_CENTER, CofdmBwFraction, CofdmMask, CofdmRx,
+    CofdmShaping, CofdmSource, CofdmTaper, MAX_CN_DB, SignalSource, cofdm_edge_guard_for,
+    cofdm_link_config,
 };
 
 /// The viewer's real per-render-frame block size, so the tests exercise the
 /// same feed granularity the decode thread sees rather than one big buffer.
 const BLOCK: usize = 4096;
 
-fn source_with(shaping: CofdmShaping, fraction: CofdmBwFraction, noise: f32) -> CofdmSource {
-    CofdmSource::new(60.0, 1.0, noise, fraction, shaping, COFDM_FS)
+fn source_with(shaping: CofdmShaping, fraction: CofdmBwFraction, cn_db: f32) -> CofdmSource {
+    CofdmSource::new(60.0, 1.0, cn_db, fraction, shaping, COFDM_FS)
 }
+
+/// A C/N high enough that the injected noise is negligible for a test that
+/// wants a clean waveform.  Replaces the pre-`C/N` `noise_amp = 0.0`.
+const CLEAN_CN_DB: f32 = MAX_CN_DB;
 
 /// Pulls `n` samples in `BLOCK`-sized bites, exactly as the app does: take the
 /// real block for the display, then hand the decoder its complex counterpart.
@@ -65,7 +70,7 @@ fn waveform_is_demodulable() {
     // between the wanted edge and the image), 1/4 is the default.
     for fraction in [CofdmBwFraction::OneQuarter, CofdmBwFraction::SevenEighths] {
         let shaping = CofdmShaping::derived(fraction);
-        let mut src = source_with(shaping, fraction, 0.0);
+        let mut src = source_with(shaping, fraction, CLEAN_CN_DB);
         let mut rx = CofdmRx::new(&shaping, COFDM_FS);
         pump(&mut src, &mut rx, samples_for(fraction, 6));
 
@@ -94,7 +99,7 @@ fn waveform_is_demodulable_with_shaping_on() {
         taper: CofdmTaper::Quarter,
         mask: CofdmMask::Db60,
     };
-    let mut src = source_with(shaping, fraction, 0.0);
+    let mut src = source_with(shaping, fraction, CLEAN_CN_DB);
     let mut rx = CofdmRx::new(&shaping, COFDM_FS);
     pump(&mut src, &mut rx, samples_for(fraction, 6));
 
@@ -117,7 +122,7 @@ fn waveform_is_demodulable_with_shaping_on() {
 fn carrier_offset_is_observable() {
     let fraction = CofdmBwFraction::OneQuarter;
     let shaping = CofdmShaping::derived(fraction);
-    let mut src = source_with(shaping, fraction, 0.0);
+    let mut src = source_with(shaping, fraction, CLEAN_CN_DB);
 
     let mut seen = Vec::new();
     for &offset_hz in &[0.0f32, 50.0, 200.0] {
@@ -178,7 +183,7 @@ fn carrier_offset_is_observable() {
 fn real_output_is_the_projection_of_the_decoded_samples() {
     let fraction = CofdmBwFraction::OneQuarter;
     let shaping = CofdmShaping::derived(fraction);
-    let mut src = source_with(shaping, fraction, 0.25);
+    let mut src = source_with(shaping, fraction, 30.0);
     let mut rot = Rotator::new(COFDM_NOMINAL_CENTER, COFDM_FS);
 
     for _ in 0..4 {
@@ -206,7 +211,7 @@ fn real_output_is_the_projection_of_the_decoded_samples() {
 fn diagnostics_are_populated() {
     let fraction = CofdmBwFraction::OneQuarter;
     let shaping = CofdmShaping::derived(fraction);
-    let mut src = source_with(shaping, fraction, 0.0);
+    let mut src = source_with(shaping, fraction, CLEAN_CN_DB);
     let mut rx = CofdmRx::new(&shaping, COFDM_FS);
     pump(&mut src, &mut rx, samples_for(fraction, 6));
 
@@ -227,12 +232,12 @@ fn diagnostics_are_populated() {
 #[test]
 fn iber_never_exceeds_cber() {
     // The inner decoder cannot make things worse: its output error rate sits at
-    // or below its input's.  Asserted across the noise range the settings row
-    // actually offers.
+    // or below its input's.  Asserted across the C/N range the settings row
+    // actually offers, down to where frames start breaking.
     let fraction = CofdmBwFraction::OneQuarter;
     let shaping = CofdmShaping::derived(fraction);
-    for &noise in &[0.0f32, 0.05, 0.25, 0.5] {
-        let mut src = source_with(shaping, fraction, noise);
+    for &cn_db in &[CLEAN_CN_DB, 45.0, 31.0, 25.0] {
+        let mut src = source_with(shaping, fraction, cn_db);
         let mut rx = CofdmRx::new(&shaping, COFDM_FS);
         pump(&mut src, &mut rx, samples_for(fraction, 6));
 
@@ -240,7 +245,7 @@ fn iber_never_exceeds_cber() {
         if let (Some(cber), Some(iber)) = (facts.channel_ber, facts.inner_ber) {
             assert!(
                 iber <= cber + 1e-9,
-                "noise {noise}: IBER {iber} exceeds CBER {cber}"
+                "C/N {cn_db}: IBER {iber} exceeds CBER {cber}"
             );
         }
     }
@@ -250,7 +255,7 @@ fn iber_never_exceeds_cber() {
 fn reset_clears_frame_accounting() {
     let fraction = CofdmBwFraction::OneQuarter;
     let shaping = CofdmShaping::derived(fraction);
-    let mut src = source_with(shaping, fraction, 0.0);
+    let mut src = source_with(shaping, fraction, CLEAN_CN_DB);
     let mut rx = CofdmRx::new(&shaping, COFDM_FS);
     pump(&mut src, &mut rx, samples_for(fraction, 4));
     assert!(rx.stats().decoded > 0);
@@ -281,10 +286,9 @@ fn frame_error_rate_is_none_before_any_frame() {
 fn no_frames_are_silently_dropped() {
     let fraction = CofdmBwFraction::OneQuarter;
     let shaping = CofdmShaping::derived(fraction);
-    // The settings row's default.  Measured EVM here is about -42 dB, i.e. an
-    // excellent link -- any loss at this noise level is a receiver defect, not
-    // a channel effect.
-    let mut src = source_with(shaping, fraction, 0.05);
+    // The settings row's default C/N.  An excellent link -- any loss here is a
+    // receiver defect, not a channel effect.
+    let mut src = source_with(shaping, fraction, COFDM_DEFAULT_CN_DB);
     let mut rx = CofdmRx::new(&shaping, COFDM_FS);
     pump(&mut src, &mut rx, samples_for(fraction, 8));
 
@@ -320,7 +324,7 @@ fn no_frames_are_silently_dropped() {
 fn looping_the_buffer_does_not_invent_frame_losses() {
     let fraction = CofdmBwFraction::SevenEighths;
     let shaping = CofdmShaping::derived(fraction);
-    let mut src = source_with(shaping, fraction, 0.0);
+    let mut src = source_with(shaping, fraction, CLEAN_CN_DB);
     let mut rx = CofdmRx::new(&shaping, COFDM_FS);
     // Comfortably more than one pass through the 40-frame buffer.
     pump(&mut src, &mut rx, 500_000);
@@ -356,25 +360,27 @@ fn a_failed_frame_is_not_also_counted_as_a_lost_one() {
     const SAMPLES: usize = 3_000_000;
 
     let mut totals = Vec::new();
-    for &noise in &[0.0f32, 0.60, 1.00] {
-        let mut src = source_with(shaping, fraction, noise);
+    // The last value has to be past the FEC cliff or the final assertion is
+    // vacuous; the first has to be clean or the baseline frame count is not one.
+    for &cn_db in &[CLEAN_CN_DB, 24.0, 19.0] {
+        let mut src = source_with(shaping, fraction, cn_db);
         let mut rx = CofdmRx::new(&shaping, COFDM_FS);
         pump(&mut src, &mut rx, SAMPLES);
         let stats = rx.stats();
         assert_eq!(
             stats.lost, 0,
-            "noise {noise}: {} gap-inferred losses that the {} reported \
+            "C/N {cn_db}: {} gap-inferred losses that the {} reported \
              failures already account for",
             stats.lost, stats.failed
         );
-        totals.push((noise, stats.expected(), stats.failed));
+        totals.push((cn_db, stats.expected(), stats.failed));
     }
 
     let baseline = totals[0].1;
-    for &(noise, total, failed) in &totals {
+    for &(cn_db, total, failed) in &totals {
         assert!(
             total.abs_diff(baseline) <= 1,
-            "noise {noise}: accounted for {total} frames against {baseline} on a \
+            "C/N {cn_db}: accounted for {total} frames against {baseline} on a \
              clean link ({failed} failures) — the same burst cannot contain more \
              frames just because more of them broke"
         );
@@ -382,7 +388,7 @@ fn a_failed_frame_is_not_also_counted_as_a_lost_one() {
     // And the sweep has to actually reach the errors, or it proves nothing.
     assert!(
         totals.iter().any(|&(_, _, failed)| failed > 0),
-        "no frame ever failed; raise the noise or this test is vacuous"
+        "no frame ever failed; lower the C/N or this test is vacuous"
     );
 }
 
@@ -396,10 +402,14 @@ fn a_failed_frame_is_not_also_counted_as_a_lost_one() {
 /// collapsed from 1.000 to 0.095. The signal became undecodable while looking
 /// perfectly healthy on screen.
 ///
-/// The gain now lives in `render` rather than in `OfdmConfig`, which changes
+/// The gain is now *derived* in `render` — normalising the burst to
+/// `COFDM_DISPLAY_RMS_DBFS` rather than applying a fitted constant — which
+/// makes the uniformity easier to break, not harder: the scalar is computed
+/// from the buffer it is then applied to.  It still lives in `render` rather
+/// than in `OfdmConfig`, which changes
 /// the mechanism delivering it, so the property is asserted directly: each
 /// segment of the source's own output, against the same link built at unit
-/// scale, must differ by exactly [`COFDM_GAIN`].
+/// scale, must differ by exactly the source's derived display gain.
 #[test]
 fn the_display_gain_scales_every_segment_alike() {
     let fraction = CofdmBwFraction::OneQuarter;
@@ -417,8 +427,10 @@ fn the_display_gain_scales_every_segment_alike() {
         0,
     );
 
-    // The source's own first frame, noise-free so only the gain differs.
-    let mut src = source_with(shaping, fraction, 0.0);
+    // The source's own first frame, effectively noise-free so only the derived
+    // display gain differs.
+    let mut src = source_with(shaping, fraction, CLEAN_CN_DB);
+    let gain = src.display_gain();
     let _ = src.next_samples(reference.len());
     let emitted = src.last_samples_iq().expect("complex baseband").to_vec();
     assert_eq!(emitted.len(), reference.len());
@@ -436,8 +448,8 @@ fn the_display_gain_scales_every_segment_alike() {
     ] {
         let scale = rms(&emitted[span.clone()]) / rms(&reference[span]);
         assert!(
-            (scale / COFDM_GAIN - 1.0).abs() < tol,
-            "{name} scaled by {scale:.3}, not {COFDM_GAIN} — a gain that reaches \
+            (scale / gain - 1.0).abs() < tol,
+            "{name} scaled by {scale:.3}, not {gain} — a gain that reaches \
              some segments and not others is what made this source unacquirable"
         );
     }

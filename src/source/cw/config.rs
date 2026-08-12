@@ -14,6 +14,13 @@ pub struct CwConfig {
     pub fall_ms: Option<f32>,
     pub carrier_hz: Option<f32>,
     pub gap_secs: Option<f32>,
+    pub cn_db: Option<f32>,
+    /// **Retired.**  Present only so a config written before the C/N change
+    /// fails loudly instead of being silently ignored: every field here is
+    /// `Option<T>` and nothing sets `deny_unknown_fields`, so serde would
+    /// otherwise drop this key and quietly fall back to the `cn_db` default —
+    /// a config that looks like it loaded while discarding what the user wrote.
+    /// See `ViewConfig::retired_key_errors`.
     pub noise_amp: Option<f32>,
     pub canned_text: Option<String>,
     pub custom_text: Option<String>,
@@ -69,10 +76,10 @@ impl crate::config::ViewConfig {
             .and_then(|c| c.gap_secs)
             .unwrap_or(crate::source::cw::CW_DEFAULT_GAP_SECS)
     }
-    pub fn cw_noise_amp(&self) -> f32 {
+    pub fn cw_cn_db(&self) -> f32 {
         self.cw_cfg()
-            .and_then(|c| c.noise_amp)
-            .unwrap_or(crate::source::cw::CW_DEFAULT_NOISE_AMP)
+            .and_then(|c| c.cn_db)
+            .unwrap_or(crate::source::cw::CW_DEFAULT_CN_DB)
     }
     pub fn cw_canned_text(&self) -> &str {
         self.cw_cfg()

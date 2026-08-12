@@ -7,8 +7,8 @@ use num_complex::Complex32 as C32;
 use orion_sdr::codec::Ft8StreamDecoder;
 use orion_sdr::util::rms;
 use orion_sdr_view::decode::{DecodeResult, FT8_BW_HZ};
-use orion_sdr_view::source::ft8::FT8_MOD_BASE_HZ;
-use orion_sdr_view::source::{Ft8Mode, Ft8MsgType, Ft8Source, SignalSource};
+use orion_sdr_view::source::ft8::{FT8_DEFAULT_CN_DB, FT8_MOD_BASE_HZ};
+use orion_sdr_view::source::{Ft8Mode, Ft8MsgType, Ft8Source, MAX_CN_DB, SignalSource};
 
 mod common;
 use common::ticker::{BufferDecode, TickerSimConfig, run_ticker_sim};
@@ -30,7 +30,7 @@ fn make_ft8_source(repeat: usize, gap_secs: f32) -> Ft8Source {
     Ft8Source::new(
         CARRIER_HZ,
         gap_secs,
-        0.0,
+        MAX_CN_DB,
         Ft8Mode::Ft8,
         Ft8MsgType::Standard,
         "CQ".to_owned(),
@@ -46,7 +46,7 @@ fn make_ft4_source(repeat: usize, gap_secs: f32) -> Ft8Source {
     Ft8Source::new(
         CARRIER_HZ,
         gap_secs,
-        0.0,
+        MAX_CN_DB,
         Ft8Mode::Ft4,
         Ft8MsgType::Standard,
         "CQ".to_owned(),
@@ -122,11 +122,14 @@ fn ft8_source_loop_gap_timing() {
     // Signal frame.
     let frame = src.next_samples(FT8_FRAME_LEN_48K);
     assert!(rms(&frame) > 0.1, "signal frame should be non-silent");
-    // Gap should be silent.
+    // The gap carries the noise floor, not digital zero: the impairment is a
+    // ratio, so there is no infinite C/N.  What it must not carry is signal.
     let gap = src.next_samples(gap_samples);
-    for (i, &s) in gap.iter().enumerate() {
-        assert_eq!(s, 0.0, "gap sample {i} should be 0.0");
-    }
+    let worst = gap.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+    assert!(
+        worst < 0.05,
+        "gap should carry only a noise floor, worst sample {worst:.5}"
+    );
     // Next frame (second loop) should be signal again.
     let frame2 = src.next_samples(FT8_FRAME_LEN_48K);
     assert!(rms(&frame2) > 0.1, "second loop frame should be non-silent");
@@ -138,7 +141,7 @@ fn ft8_source_noise_in_gap() {
     let mut src = Ft8Source::new(
         CARRIER_HZ,
         1.0,
-        0.05,
+        FT8_DEFAULT_CN_DB,
         Ft8Mode::Ft8,
         Ft8MsgType::Standard,
         "CQ".to_owned(),
@@ -157,11 +160,25 @@ fn ft8_source_noise_in_gap() {
 /// `restart()` resets the source so it plays the frame from the beginning.
 #[test]
 fn ft8_source_restart() {
+    // `restart` rewinds the *waveform*, not the noise: the impairment is a
+    // fresh realisation on every pass, as on a real link.  The two runs must
+    // therefore agree to within the noise floor rather than exactly.
     let mut src = make_ft8_source(1, 0.0);
     let a = src.next_samples(1024);
     src.restart();
     let b = src.next_samples(1024);
-    assert_eq!(a, b, "samples after restart should match initial samples");
+    assert_eq!(a.len(), b.len());
+    let worst = a
+        .iter()
+        .zip(&b)
+        .map(|(x, y)| (x - y).abs())
+        .fold(0.0f32, f32::max);
+    let peak = a.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+    assert!(
+        worst < peak * 0.05,
+        "restart should replay the same frame: worst difference {worst:.5} \
+         against a {peak:.3} peak"
+    );
 }
 
 // ── Decode integration test ───────────────────────────────────────────────────
@@ -179,7 +196,7 @@ fn ft8_decode_standard_message() {
     let mut src = Ft8Source::new(
         CARRIER_HZ,
         0.0,
-        0.0,
+        MAX_CN_DB,
         Ft8Mode::Ft8,
         Ft8MsgType::Standard,
         CALL_TO.to_owned(),
@@ -228,7 +245,7 @@ fn ft4_decode_standard_message() {
     let mut src = Ft8Source::new(
         CARRIER_HZ,
         0.0,
-        0.0,
+        MAX_CN_DB,
         Ft8Mode::Ft4,
         Ft8MsgType::Standard,
         CALL_TO.to_owned(),
@@ -275,7 +292,7 @@ fn ft8_decode_shifted_12khz_carrier() {
     let mut src = Ft8Source::new(
         SHIFTED_CARRIER,
         0.0,
-        0.0,
+        MAX_CN_DB,
         Ft8Mode::Ft8,
         Ft8MsgType::Standard,
         "CQ".to_owned(),
@@ -328,7 +345,7 @@ fn ft4_decode_shifted_12khz_carrier() {
     let mut src = Ft8Source::new(
         SHIFTED_CARRIER,
         0.0,
-        0.0,
+        MAX_CN_DB,
         Ft8Mode::Ft4,
         Ft8MsgType::Standard,
         "CQ".to_owned(),

@@ -8,10 +8,10 @@
 
 use orion_sdr_view::decode::{SPECTRUM_WINDOW_SAMPLES, nb_spectrum_snr_db, wb_spectrum_snr_db};
 use orion_sdr_view::source::{
-    COFDM_FS, COFDM_MAX_EDGE_GUARD, COFDM_MAX_NOISE_AMP, COFDM_MIN_EDGE_GUARD,
-    COFDM_NOMINAL_CENTER, COFDM_SHAPING_SLACK, COFDM_SIGNAL_THRESHOLD, CofdmBwFraction, CofdmMask,
-    CofdmShaping, CofdmSource, CofdmTaper, SignalSource, cofdm_edge_guard_for, cofdm_occupied_bw,
-    cofdm_occupied_half,
+    COFDM_DEFAULT_CN_DB, COFDM_FS, COFDM_MAX_EDGE_GUARD, COFDM_MIN_EDGE_GUARD,
+    COFDM_NOMINAL_CENTER, COFDM_SHAPING_SLACK, CofdmBwFraction, CofdmMask, CofdmShaping,
+    CofdmSource, CofdmTaper, MAX_CN_DB, MIN_CN_DB, SignalSource, cofdm_edge_guard_for,
+    cofdm_occupied_bw, cofdm_occupied_half,
 };
 
 /// Default construction used by most tests: 2 s signal, 1 s gap, no noise so
@@ -26,7 +26,7 @@ fn make_with(shaping: CofdmShaping) -> CofdmSource {
     CofdmSource::new(
         2.0,
         1.0,
-        0.0,
+        MAX_CN_DB,
         CofdmBwFraction::OneQuarter,
         shaping,
         COFDM_FS,
@@ -160,10 +160,13 @@ fn signal_then_gap_output_matches_phase() {
     // Cross into the gap phase.
     src.advance_time(1.5);
     assert!(!src.in_signal());
-    assert_eq!(
-        rms(&src.next_samples(4096)),
-        0.0,
-        "gap phase should be silent"
+    // Not *exactly* zero: the impairment is a ratio, so there is no infinite
+    // C/N and even the cleanest reachable link leaves a floor.  What the gap
+    // must not carry is signal — three orders of magnitude below the burst.
+    let gap = rms(&src.next_samples(4096));
+    assert!(
+        gap < 1e-3,
+        "gap phase should carry only the noise floor, got RMS {gap:.6}"
     );
 }
 
@@ -513,9 +516,9 @@ fn every_fraction_renders_with_shaping_on() {
 
 /// SNR of a COFDM burst by both estimators, at a given fraction and noise
 /// amplitude.  Returns `(narrowband, wideband)` in dB.
-fn snr_pair(fraction: CofdmBwFraction, noise_amp: f32) -> (f32, f32) {
+fn snr_pair(fraction: CofdmBwFraction, cn_db: f32) -> (f32, f32) {
     let shaping = CofdmShaping::default_for(fraction);
-    let mut src = CofdmSource::new(2.0, 1.0, noise_amp, fraction, shaping, COFDM_FS);
+    let mut src = CofdmSource::new(2.0, 1.0, cn_db, fraction, shaping, COFDM_FS);
     let s = src.next_samples(SPECTRUM_WINDOW_SAMPLES);
     let bw = cofdm_occupied_bw(COFDM_FS, shaping.effective(fraction).edge_guard);
     (
@@ -532,7 +535,7 @@ fn narrowband_snr_reads_a_wide_cofdm_band_as_below_the_noise_floor() {
     // the wideband estimator reads it well above the floor.  This is a
     // qualitative failure, not a calibration difference — which is what makes
     // it worth pinning against a silent revert.
-    let (nb, wb) = snr_pair(CofdmBwFraction::SevenEighths, 0.05);
+    let (nb, wb) = snr_pair(CofdmBwFraction::SevenEighths, COFDM_DEFAULT_CN_DB);
     assert!(nb.is_finite() && wb.is_finite(), "nb {nb} wb {wb}");
     assert!(
         nb < 0.0,
@@ -552,8 +555,8 @@ fn narrowband_snr_error_grows_with_occupied_bandwidth() {
     // widens.  This is the shape of the bug: `SpectralState`'s default is
     // sound for AM DSB / CW / Test Tone and degrades in proportion to how
     // wideband the signal is.
-    let (nb_narrow, wb_narrow) = snr_pair(CofdmBwFraction::OneEighth, 0.05);
-    let (nb_wide, wb_wide) = snr_pair(CofdmBwFraction::SevenEighths, 0.05);
+    let (nb_narrow, wb_narrow) = snr_pair(CofdmBwFraction::OneEighth, COFDM_DEFAULT_CN_DB);
+    let (nb_wide, wb_wide) = snr_pair(CofdmBwFraction::SevenEighths, COFDM_DEFAULT_CN_DB);
     let narrow_err = wb_narrow - nb_narrow;
     let wide_err = wb_wide - nb_wide;
     assert!(
@@ -564,11 +567,11 @@ fn narrowband_snr_error_grows_with_occupied_bandwidth() {
 }
 
 #[test]
-fn wideband_snr_tracks_noise_amplitude() {
+fn wideband_snr_tracks_the_requested_cn() {
     // The wideband estimator must be monotone in noise — this is what makes the
-    // Di bar's C/N respond to the `Noise amp` setting.
-    let (_, quiet) = snr_pair(CofdmBwFraction::OneQuarter, 0.01);
-    let (_, noisy) = snr_pair(CofdmBwFraction::OneQuarter, 0.5);
+    // Di bar's C/N respond to the `C/N` setting.
+    let (_, quiet) = snr_pair(CofdmBwFraction::OneQuarter, 45.0);
+    let (_, noisy) = snr_pair(CofdmBwFraction::OneQuarter, 20.0);
     assert!(
         quiet > noisy,
         "more noise must lower wideband C/N: quiet {quiet:.1} dB, noisy {noisy:.1} dB"
@@ -578,11 +581,16 @@ fn wideband_snr_tracks_noise_amplitude() {
 // ── Gap detection vs the source's own noise floor ──────────────────────────
 //
 // The signal/gap split is decided by comparing block RMS against a threshold.
-// COFDM's gap carries `Noise amp` noise — uniform on [-1, 1) scaled by the
-// amplitude, so RMS = noise_amp/sqrt(3) — while its signal phase is scaled by
-// the modulator gain.  The shared `SIGNAL_THRESHOLD` (0.1) assumes a unit-scale
-// source and falls *below* the gap noise once `Noise amp` passes 0.173, at
-// which point the viewer stops seeing gaps entirely.
+// COFDM used to need its *own* threshold (0.6) because a fitted display gain of
+// 121.0 put its burst an order of magnitude above the shared `SIGNAL_THRESHOLD`
+// while its gap noise could climb past that level — so no fixed number could
+// sit under the loudest reachable gap and over the quietest reachable burst at
+// the same time.
+//
+// Deriving the display level removed the reason for it: every source is
+// unit-scale now, so the shared threshold applies to all of them.  What has not
+// changed is that a loud enough impairment still drowns the gap — which is why
+// the source reports its phase directly rather than having it inferred.
 
 /// Mean block RMS over `blocks` reads of `n` samples.
 fn mean_rms(src: &mut CofdmSource, blocks: usize, n: usize) -> f32 {
@@ -590,45 +598,69 @@ fn mean_rms(src: &mut CofdmSource, blocks: usize, n: usize) -> f32 {
 }
 
 #[test]
-fn the_shared_threshold_would_miss_gaps_across_most_of_the_noise_range() {
-    // Pins the defect the COFDM threshold exists to fix: at the row's default
-    // this is fine, but over most of its range the gap is louder than 0.1.
+fn the_derived_level_puts_every_fraction_over_the_shared_threshold() {
+    // The property the fitted gain could not deliver: one threshold works at
+    // every occupied bandwidth, because the burst is normalised rather than
+    // scaled by a constant applied to a bandwidth-dependent power.
+    for &fr in CofdmBwFraction::ALL {
+        let mut src = CofdmSource::new(
+            60.0,
+            60.0,
+            COFDM_DEFAULT_CN_DB,
+            fr,
+            CofdmShaping::default_for(fr),
+            COFDM_FS,
+        );
+        let sig = mean_rms(&mut src, 20, 2048);
+        assert!(
+            sig > orion_sdr_view::decode::SIGNAL_THRESHOLD,
+            "{}: signal RMS {sig:.4} below the shared threshold",
+            fr.label()
+        );
+    }
+}
+
+#[test]
+fn a_loud_enough_impairment_still_drowns_the_gap() {
+    // Pins *why* the source reports its own phase: block RMS alone cannot see
+    // the burst boundary once the noise floor climbs past the threshold, and
+    // that is reachable well inside the row's range.
     let fr = CofdmBwFraction::OneQuarter;
-    let mut loud = CofdmSource::new(1.0, 5.0, 0.30, fr, CofdmShaping::default_for(fr), COFDM_FS);
+    let mut loud = CofdmSource::new(1.0, 5.0, 5.0, fr, CofdmShaping::default_for(fr), COFDM_FS);
     loud.advance_time(1.5);
     assert!(!loud.in_signal());
     let gap_rms = mean_rms(&mut loud, 50, 2048);
     assert!(
         gap_rms > orion_sdr_view::decode::SIGNAL_THRESHOLD,
         "gap RMS {gap_rms:.4} no longer exceeds the shared threshold — \
-         has the noise range or scaling changed?"
+         has the C/N range or the display level changed?"
     );
 }
 
 #[test]
 fn the_source_reports_its_own_signal_phase_across_the_whole_settings_space() {
     // Burst detection follows what the source *says*, not what its block RMS
-    // looks like — so it holds at every `Noise amp` the row allows, including
-    // the top, where the gap is louder than any fixed threshold could sit under
+    // looks like — so it holds at every `C/N` the row allows, including the
+    // bottom, where the gap is louder than any fixed threshold could sit under
     // while still staying below the quietest signal phase.
     for &fr in CofdmBwFraction::ALL {
-        for noise in [0.0_f32, 0.05, 0.50, 1.0, COFDM_MAX_NOISE_AMP] {
+        for cn_db in [MAX_CN_DB, 45.0, 30.0, 15.0, MIN_CN_DB] {
             let sh = CofdmShaping::default_for(fr);
 
-            let src = CofdmSource::new(60.0, 60.0, noise, fr, sh, COFDM_FS);
+            let src = CofdmSource::new(60.0, 60.0, cn_db, fr, sh, COFDM_FS);
             assert_eq!(
                 src.signal_phase(),
                 Some(true),
-                "{} / noise {noise}: should report transmitting",
+                "{} / C/N {cn_db}: should report transmitting",
                 fr.label()
             );
 
-            let mut gap = CofdmSource::new(1.0, 60.0, noise, fr, sh, COFDM_FS);
+            let mut gap = CofdmSource::new(1.0, 60.0, cn_db, fr, sh, COFDM_FS);
             gap.advance_time(1.5);
             assert_eq!(
                 gap.signal_phase(),
                 Some(false),
-                "{} / noise {noise}: should report silent",
+                "{} / C/N {cn_db}: should report silent",
                 fr.label()
             );
         }
@@ -639,46 +671,52 @@ fn the_source_reports_its_own_signal_phase_across_the_whole_settings_space() {
 ///
 /// **It is what an over-the-air source will use**, since nothing declares the
 /// burst boundary on a real signal — `signal_phase` returns `None` and both
-/// call sites drop back to this. It is simply no longer what COFDM relies on:
-/// measuring a phase the synthetic source can state made the impairment range
-/// hostage to burst detection, which is what capped `Noise amp` at 0.50, far
-/// below the FEC cliff. This pins the range over which the fallback holds.
+/// call sites drop back to this.  It is simply no longer what COFDM relies on.
+///
+/// The stated range is a C/N floor rather than a noise ceiling now, and there
+/// is only one threshold to check against: deriving the display level made
+/// COFDM unit-scale, so `COFDM_SIGNAL_THRESHOLD` is gone and the shared
+/// `SIGNAL_THRESHOLD` covers it like every other source.
 #[test]
 fn the_rms_fallback_separates_signal_from_gap_over_its_stated_range() {
-    const FALLBACK_MAX_NOISE: f32 = 0.9;
+    /// Lowest C/N at which the fallback still resolves the burst boundary.
+    /// Below this the gap noise climbs over the threshold — see
+    /// `a_loud_enough_impairment_still_drowns_the_gap`.
+    const FALLBACK_MIN_CN_DB: f32 = 20.0;
+    let threshold = orion_sdr_view::decode::SIGNAL_THRESHOLD;
     let mut worst_gap = 0.0_f32;
     let mut worst_signal = f32::MAX;
     for &fr in CofdmBwFraction::ALL {
-        for noise in [0.0_f32, 0.05, 0.20, 0.50, FALLBACK_MAX_NOISE] {
+        for cn_db in [MAX_CN_DB, 55.0, 45.0, 30.0, FALLBACK_MIN_CN_DB] {
             let sh = CofdmShaping::default_for(fr);
 
-            let mut src = CofdmSource::new(60.0, 60.0, noise, fr, sh, COFDM_FS);
+            let mut src = CofdmSource::new(60.0, 60.0, cn_db, fr, sh, COFDM_FS);
             let sig = mean_rms(&mut src, 20, 2048);
             assert!(
-                sig > COFDM_SIGNAL_THRESHOLD,
-                "{} / noise {noise}: signal RMS {sig:.4} below the threshold",
+                sig > threshold,
+                "{} / C/N {cn_db}: signal RMS {sig:.4} below the threshold",
                 fr.label()
             );
             worst_signal = worst_signal.min(sig);
 
-            let mut src = CofdmSource::new(1.0, 60.0, noise, fr, sh, COFDM_FS);
+            let mut src = CofdmSource::new(1.0, 60.0, cn_db, fr, sh, COFDM_FS);
             src.advance_time(1.5);
             assert!(!src.in_signal(), "expected the gap phase");
             let gap = mean_rms(&mut src, 20, 2048);
             assert!(
-                gap < COFDM_SIGNAL_THRESHOLD,
-                "{} / noise {noise}: gap RMS {gap:.4} at or above the threshold",
+                gap < threshold,
+                "{} / C/N {cn_db}: gap RMS {gap:.4} at or above the threshold",
                 fr.label()
             );
             worst_gap = worst_gap.max(gap);
         }
     }
     assert!(
-        COFDM_SIGNAL_THRESHOLD > worst_gap,
+        threshold > worst_gap,
         "threshold sits under the loudest gap ({worst_gap:.4})"
     );
     assert!(
-        worst_signal > COFDM_SIGNAL_THRESHOLD,
+        worst_signal > threshold,
         "threshold sits over the quietest signal ({worst_signal:.4})"
     );
 }

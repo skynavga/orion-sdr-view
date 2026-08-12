@@ -8,6 +8,7 @@ use num_complex::Complex32 as C32;
 use orion_sdr_view::decode::{
     SIGNAL_THRESHOLD, SPECTRUM_WINDOW_SAMPLES, nb_spectrum_snr_db, spectrum_bw_hz,
 };
+use orion_sdr_view::source::amdsb::AM_DEFAULT_CN_DB;
 use orion_sdr_view::source::{AmDsbSource, BuiltinAudio, SignalSource, load_builtin};
 
 const FS: f32 = 48_000.0;
@@ -33,8 +34,14 @@ fn simulate_am_dsb_viewer() {
         let audio_secs = audio.len() as f32 / audio_rate;
 
         let mut src = AmDsbSource::new(
-            audio, audio_rate, CARRIER_HZ, 1.0, /*gap_secs=*/ 2.0, /*noise_amp=*/ 0.05,
-            /*msg_repeat=*/ 1, FS,
+            audio,
+            audio_rate,
+            CARRIER_HZ,
+            1.0,
+            /*gap_secs=*/ 2.0,
+            /*cn_db=*/ AM_DEFAULT_CN_DB,
+            /*msg_repeat=*/ 1,
+            FS,
         );
 
         let mut iq_buf: Vec<C32> = Vec::new();

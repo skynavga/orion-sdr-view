@@ -25,7 +25,7 @@ pub(in crate::app) fn make(settings: &SettingsState) -> AmDsbSource {
         settings.am_carrier_hz(),
         settings.am_mod_index(),
         settings.am_gap_secs(),
-        settings.am_noise_amp(),
+        settings.am_cn_db(),
         settings.am_msg_repeat(),
         SAMPLE_RATE,
     )
@@ -38,7 +38,7 @@ pub(in crate::app) fn sync(source: &mut dyn SignalSource, settings: &SettingsSta
             settings.am_carrier_hz(),
             settings.am_mod_index(),
             settings.am_gap_secs(),
-            settings.am_noise_amp(),
+            settings.am_cn_db(),
             settings.am_msg_repeat(),
         );
     }
@@ -133,5 +133,9 @@ impl super::SourceFactory for Factory {
     }
     fn set_carrier_hz(&self, settings: &mut SettingsState, hz: f32) {
         settings.set_am_carrier_hz(hz);
+    }
+
+    fn cn_db(&self, settings: &SettingsState) -> f32 {
+        settings.am_cn_db()
     }
 }

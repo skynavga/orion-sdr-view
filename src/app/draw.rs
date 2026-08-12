@@ -103,7 +103,7 @@ impl ViewApp {
             // Injected noise amplitude. Every source has the setting, and it
             // is the one knob that changes what the decoders see rather than
             // how the signal is drawn — worth reading without opening settings.
-            let noise_str = format!("  noise {:.2}", self.hud_noise_amp());
+            let noise_str = format!("  c/n {:.0}dB", self.hud_cn_db());
 
             let status = format!(
                 "{}{}{}  ctr {}  span {}{}  zoom {}  ref {:.0}dB{}",

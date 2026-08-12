@@ -9,7 +9,7 @@ use eframe::egui;
 const MODE: usize = 0;
 const CARRIER: usize = 1;
 const GAP: usize = 2;
-const NOISE: usize = 3;
+const CN: usize = 3;
 const MSG_TYPE: usize = 4;
 const CALL_TO: usize = 5;
 const CALL_DE: usize = 6;
@@ -54,13 +54,13 @@ impl Ft8Rows {
                     coarse: None,
                 }),
                 Row::Num(NumField {
-                    label: "Noise amp",
-                    value: 0.0,
-                    default: 0.0,
-                    step: 0.01,
-                    min: 0.0,
-                    max: 0.50,
-                    unit: "",
+                    label: "C/N",
+                    value: crate::source::ft8::FT8_DEFAULT_CN_DB,
+                    default: crate::source::ft8::FT8_DEFAULT_CN_DB,
+                    step: 1.0,
+                    min: MIN_CN_DB,
+                    max: MAX_CN_DB,
+                    unit: " dB",
                     coarse: None,
                 }),
                 Row::Toggle(ToggleField {
@@ -113,7 +113,7 @@ impl Ft8Rows {
         } else {
             v.extend([CALL_TO, CALL_DE, GRID]);
         }
-        v.extend([CARRIER, GAP, NOISE]);
+        v.extend([CARRIER, GAP, CN]);
         v
     }
 
@@ -313,7 +313,7 @@ impl super::common::SourceRows for Ft8Rows {
     fn patch_from_config(&mut self, cfg: &ViewConfig) {
         self.rows[CARRIER].patch_num(cfg.ft8_carrier_hz());
         self.rows[GAP].patch_num(cfg.ft8_gap_secs());
-        self.rows[NOISE].patch_num(cfg.ft8_noise_amp());
+        self.rows[CN].patch_num(cfg.ft8_cn_db());
 
         let mode_idx = match cfg.ft8_mode() {
             "FT4" => 1,
@@ -403,6 +403,7 @@ impl super::common::SourceRows for Ft8Rows {
 // ── SettingsState accessors ───────────────────────────────────────────────
 
 use crate::app::SourceMode;
+use crate::source::{MAX_CN_DB, MIN_CN_DB};
 
 /// Borrow this source's rows from `SettingsState`.
 fn rows(state: &super::SettingsState) -> &Ft8Rows {
@@ -419,7 +420,7 @@ pub(in crate::app) trait Ft8Settings {
     fn ft8_mode_str(&self) -> &str;
     fn ft8_carrier_hz(&self) -> f32;
     fn ft8_gap_secs(&self) -> f32;
-    fn ft8_noise_amp(&self) -> f32;
+    fn ft8_cn_db(&self) -> f32;
     fn ft8_msg_repeat(&self) -> usize;
     fn ft8_call_to(&self) -> &str;
     fn ft8_call_de(&self) -> &str;
@@ -459,8 +460,8 @@ impl Ft8Settings for super::SettingsState {
             crate::source::ft8::FT8_DEFAULT_GAP_SECS
         }
     }
-    fn ft8_noise_amp(&self) -> f32 {
-        if let Row::Num(f) = &rows(self).rows[NOISE] {
+    fn ft8_cn_db(&self) -> f32 {
+        if let Row::Num(f) = &rows(self).rows[CN] {
             f.value
         } else {
             0.0

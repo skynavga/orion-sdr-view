@@ -9,7 +9,7 @@ use eframe::egui;
 const MODE: usize = 0;
 const CARRIER: usize = 1;
 const GAP: usize = 2;
-const NOISE: usize = 3;
+const CN: usize = 3;
 const MSG_MODE: usize = 4;
 const MSG: usize = 5;
 const CUSTOM_MSG: usize = 6;
@@ -55,13 +55,13 @@ impl Psk31Rows {
                     coarse: None,
                 }),
                 Row::Num(NumField {
-                    label: "Noise amp",
-                    value: 0.05,
-                    default: 0.05,
-                    step: 0.01,
-                    min: 0.0,
-                    max: 0.50,
-                    unit: "",
+                    label: "C/N",
+                    value: crate::source::psk31::PSK31_DEFAULT_CN_DB,
+                    default: crate::source::psk31::PSK31_DEFAULT_CN_DB,
+                    step: 1.0,
+                    min: MIN_CN_DB,
+                    max: MAX_CN_DB,
+                    unit: " dB",
                     coarse: None,
                 }),
                 Row::Toggle(ToggleField {
@@ -114,7 +114,7 @@ impl Psk31Rows {
         } else {
             v.push(MSG);
         }
-        v.extend([REPEAT, CARRIER, GAP, NOISE]);
+        v.extend([REPEAT, CARRIER, GAP, CN]);
         v
     }
 
@@ -341,7 +341,7 @@ impl super::common::SourceRows for Psk31Rows {
     fn patch_from_config(&mut self, cfg: &ViewConfig) {
         self.rows[CARRIER].patch_num(cfg.psk31_carrier_hz());
         self.rows[GAP].patch_num(cfg.psk31_gap_secs());
-        self.rows[NOISE].patch_num(cfg.psk31_noise_amp());
+        self.rows[CN].patch_num(cfg.psk31_cn_db());
         self.rows[REPEAT].patch_num(cfg.psk31_msg_repeat() as f32);
 
         // Patch mode toggle
@@ -424,6 +424,7 @@ impl super::common::SourceRows for Psk31Rows {
 // ── SettingsState accessors ───────────────────────────────────────────────
 
 use crate::app::SourceMode;
+use crate::source::{MAX_CN_DB, MIN_CN_DB};
 
 /// Borrow this source's rows from `SettingsState`.
 fn rows(state: &super::SettingsState) -> &Psk31Rows {
@@ -440,7 +441,7 @@ pub(in crate::app) trait Psk31Settings {
     fn psk31_mode_str(&self) -> &str;
     fn psk31_carrier_hz(&self) -> f32;
     fn psk31_gap_secs(&self) -> f32;
-    fn psk31_noise_amp(&self) -> f32;
+    fn psk31_cn_db(&self) -> f32;
     /// Returns the active message (Canned or Custom, depending on toggle).
     fn psk31_message(&self) -> &str;
     fn psk31_msg_mode_str(&self) -> &str;
@@ -478,8 +479,8 @@ impl Psk31Settings for super::SettingsState {
             crate::source::psk31::PSK31_DEFAULT_GAP_SECS
         }
     }
-    fn psk31_noise_amp(&self) -> f32 {
-        if let Row::Num(f) = &rows(self).rows[NOISE] {
+    fn psk31_cn_db(&self) -> f32 {
+        if let Row::Num(f) = &rows(self).rows[CN] {
             f.value
         } else {
             0.05
