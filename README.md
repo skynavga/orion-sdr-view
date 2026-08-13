@@ -76,6 +76,7 @@ view:
     time_zone:            utc     # "utc", "local", or "+HH:MM" / "-HH:MM"
     spec_time_range_secs: 10.0    # horizontal spectrogram time span
     pan:                  spectrum # arrow pan: "spectrum" (panadapter) or "signal"
+    zoom:                 1.0     # startup viewport zoom (1.0 = full 0..Nyquist)
   sources:
     test_tone:
       freq_hz:    12000.0
@@ -121,6 +122,8 @@ view:
       gap_secs:   15.0
       cn_db:      55.0
     cofdm:
+      center_hz:  480000 # band centre; omit for Nyquist/2 (`fs_hz / 4`)
+      fs_hz:      1920000 # native sample rate; sets Nyquist and subcarrier spacing
       bandwidth:  1/4    # occupied BW as a fraction of span: 1/8 1/4 1/3 1/2 2/3 3/4 7/8
       shaping:    true   # out-of-band spectral shaping (default true)
       edge_guard: 111    # null carriers per band edge; omit to derive from `bandwidth`
@@ -160,6 +163,48 @@ Higher is cleaner. There is no "off" — a ratio has no infinite value — but t
 
 `noise_amp` was **removed in 0.0.23**. A config still carrying it is refused with a message naming
 the replacement rather than silently ignored.
+
+### Viewport: `zoom`
+
+`display.zoom` is the **startup** viewport zoom, as a ratio of the full `0..Nyquist` span — `1.0`
+shows everything, `4.0` shows a quarter of it. A ratio rather than a span in Hz, so one value means
+the same thing on a 48 kHz source and on a 1.92 MHz one.
+
+Precedence, in order:
+
+1. The configured `zoom` applies at startup.
+2. Switching **to** a source that states a preferred span reframes to it. COFDM does, to frame its
+   band; the five narrowband sources state none and leave the viewport alone.
+3. The `↑`/`↓` keys — and the `Zoom` row in the settings popover, which is the same control — apply
+   until the next switch.
+
+So `zoom` is a startup default, not a persistent override. `R` on the Display tab restores it.
+
+The reachable range is per source: the zoom stops at a 1 kHz window, which is 24x at 48 kHz and 960x
+for COFDM. The `Zoom` row's upper bound follows the active source for that reason, so it can never
+display a ratio the viewport has silently refused.
+
+### COFDM band placement: `center_hz` and `fs_hz`
+
+COFDM occupies a sub-band rather than sitting on a carrier, but it still sits *somewhere*.
+`center_hz` says where; it defaults to Nyquist/2 (mid-display). `L` (lock source to viewport centre)
+retunes it, the same as on the five narrowband sources — zoom in first, since panning has no room at
+full span.
+
+`fs_hz` sets the native sample rate, and with it Nyquist, the subcarrier spacing (`fs / 256`) and
+every derived bandwidth. It has **no settings row**: changing the rate clears the waterfall,
+persistence and spectrogram — bin-indexed history at the old scaling cannot be drawn at the new one
+— so a live knob would wipe the display on every keypress.
+
+**The centre and the edge guard are one constraint.** The occupied band must stay inside
+`0..Nyquist`, so how wide it can be depends on where it sits: at the default centre the widest band
+is 127 carriers per side, and at half that centre only 31 fit. Move the band out and the wider
+`bandwidth` fractions are clamped down to what fits. The fraction stays a label; the Di bar's `BW`
+readout is authoritative for what is actually transmitted.
+
+Configuring `fs_hz` is safe precisely because the impairment is a ratio. While it was an absolute
+amplitude, halving the rate would have silently changed the link by 3 dB with nothing on screen to
+say so.
 
 ### COFDM spectral shaping
 

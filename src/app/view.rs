@@ -201,6 +201,12 @@ impl ViewApp {
             time_zone_offset_min: 0,
         };
         app.time_zone_offset_min = cfg.time_zone_offset_min();
+        // Precedence rule, step 1 of 3: the configured zoom applies at startup.
+        // (2) a source's `preferred_span_hz` applies on switch *to* it, and
+        // (3) the keyboard applies until the next switch.  So this is a startup
+        // default rather than a persistent override — see `DisplayConfig::zoom`.
+        app.settings.set_zoom_max(app.freq_view.max_zoom_ratio());
+        app.freq_view.set_zoom_ratio(app.settings.zoom_ratio());
         app.sync_decode_config();
         super::source::debug_assert_factory_order(&app.settings);
         app
@@ -282,12 +288,21 @@ impl ViewApp {
     /// Re-derive the sample-rate-dependent display pipeline from the currently
     /// constructed source's `sample_rate()`.  Called after any source
     /// (re)construction.  For the narrowband sources (all 48 kHz) this is a
-    /// no-op reproducing today's behavior; a wideband source (higher fs) shifts
-    /// the Nyquist limit, the "Spec span" row bound, and clears bin-indexed
+    /// no-op reproducing today's behavior; a source at a different rate shifts
+    /// the Nyquist limit, re-bounds the `Zoom` row, and clears bin-indexed
     /// history so the new frequency scaling isn't mixed with the old.
+    ///
+    /// **Clearing the history is why the rate is a config key and not a row.**
+    /// An arrow-nudged `fs` would wipe the waterfall, persistence and
+    /// spectrogram on every keypress.
+    ///
+    /// The rate now varies *within* a source too, not just between them: COFDM
+    /// reads `sources.cofdm.fs_hz`.  Nothing here changes for that — the value
+    /// has always come from the constructed source rather than from a table.
     fn apply_source_sample_rate(&mut self) {
         let fs = self.source.sample_rate();
         self.freq_view.set_nyquist(fs / 2.0);
+        self.settings.set_zoom_max(self.freq_view.max_zoom_ratio());
         self.waterfall.clear();
         self.persistence.clear();
         self.spectrogram.clear();
@@ -323,22 +338,35 @@ impl ViewApp {
             self.make_source()
         };
         self.settings.set_source_mode(mode as usize);
-        // Re-derive the per-source sample rate (Nyquist, decode fs, spec-span
+        // Re-derive the per-source sample rate (Nyquist, decode fs, `Zoom` row
         // bound, cleared history) before reframing, so reframe clamps to the
         // new Nyquist.
         self.apply_source_sample_rate();
         let factory = super::common::source_mode_factory(mode);
+        // Before `reset_playback`, because this writes a *display* row and the
+        // `sync_settings` inside that call is what propagates it to `db_max` and
+        // the waterfall.  Display rows are not what `reset_playback` resets.
+        if let Some(ref_db) = factory.preferred_ref_db(&self.settings) {
+            self.settings.set_db_max(ref_db);
+        }
+        self.sync_decode_config();
+        self.reset_playback();
+        // Framed *after* the row reset, because the band centre is read from
+        // this source's rows and `reset_playback` restores them to their
+        // configured defaults.  Reading it first would frame the band wherever
+        // the row happened to be left on the way in — which was harmless only
+        // while the centre was a constant.  `reframe` touches the viewport
+        // alone, so it needs no further sync.
         if let (Some(center), Some(span)) = (
             factory.nominal_center_hz(&self.settings),
             factory.preferred_span_hz(&self.settings),
         ) {
             self.freq_view.reframe(center, span);
         }
-        if let Some(ref_db) = factory.preferred_ref_db(&self.settings) {
-            self.settings.set_db_max(ref_db);
-        }
-        self.sync_decode_config();
-        self.reset_playback();
+        // Whatever the reframe (or the absence of one) settled on is what the
+        // `Zoom` row must now show.  Precedence step 2: a source's stated span
+        // wins on switch *to* it.
+        self.settings.set_zoom_ratio(self.freq_view.zoom_ratio());
         // Text mode is only valid for CW/PSK31/FT8; clamp if we switched away.
         let has_text = matches!(mode, SourceMode::Cw | SourceMode::Psk31 | SourceMode::Ft8);
         if !has_text && self.decode_bar == DecodeBarMode::Text {
@@ -385,6 +413,12 @@ impl ViewApp {
                 self.apply_ft8_free_text();
             }
             self.sync_settings();
+            // The `Zoom` row is a live control, so push it into the viewport.
+            // Unconditional is safe: the panel consumes the arrow keys while it
+            // is open, so the keyboard zoom cannot have moved in the same frame
+            // — the two directions of this sync are mutually exclusive by
+            // construction rather than by a dirty flag.
+            self.freq_view.set_zoom_ratio(self.settings.zoom_ratio());
             // Let global keys (Q, I, M, N) and the other overlay toggles (H, X)
             // work even while settings is open, but not when a text field is
             // actively consuming input.
@@ -441,39 +475,10 @@ impl ViewApp {
                     self.lock_source_to_center();
                 }
                 if cycle_mode {
-                    match self.source_mode {
-                        SourceMode::Psk31 => {
-                            self.settings.cycle_psk31_mode();
-                            self.restart_source();
-                        }
-                        SourceMode::Ft8 => {
-                            self.cycle_ft8_mode();
-                        }
-                        SourceMode::Cofdm => {
-                            self.cycle_cofdm_bandwidth();
-                        }
-                        _ => {}
-                    }
+                    self.cycle_source_mode();
                 }
                 if cycle_audio {
-                    match self.source_mode {
-                        SourceMode::Cw => {
-                            self.settings.cycle_cw_msg_mode();
-                            self.apply_cw_message();
-                        }
-                        SourceMode::AmDsb => {
-                            self.settings.cycle_am_audio();
-                            self.reload_builtin_audio();
-                        }
-                        SourceMode::Psk31 => {
-                            self.settings.cycle_psk31_msg_mode();
-                            self.apply_psk31_message();
-                        }
-                        SourceMode::Ft8 => {
-                            self.cycle_ft8_msg_type();
-                        }
-                        _ => {}
-                    }
+                    self.cycle_source_audio();
                 }
             }
             return;
@@ -728,6 +733,9 @@ impl ViewApp {
         if freq_reset {
             self.freq_view.reset();
         }
+        // Precedence step 3: the keyboard owns the viewport until the next
+        // switch, and the `Zoom` row follows it so the panel is never stale.
+        self.settings.set_zoom_ratio(self.freq_view.zoom_ratio());
 
         if toggle_lock {
             self.source_locked ^= true;
@@ -811,39 +819,68 @@ impl ViewApp {
             self.lock_source_to_center();
         }
         if cycle_mode {
-            match self.source_mode {
-                SourceMode::Psk31 => {
-                    self.settings.cycle_psk31_mode();
-                    self.restart_source();
-                }
-                SourceMode::Ft8 => {
-                    self.cycle_ft8_mode();
-                }
-                _ => {}
-            }
+            self.cycle_source_mode();
         }
         if cycle_audio {
-            match self.source_mode {
-                SourceMode::Cw => {
-                    self.settings.cycle_cw_msg_mode();
-                    self.apply_cw_message();
-                }
-                SourceMode::AmDsb => {
-                    self.settings.cycle_am_audio();
-                    self.reload_builtin_audio();
-                }
-                SourceMode::Psk31 => {
-                    self.settings.cycle_psk31_msg_mode();
-                    self.apply_psk31_message();
-                }
-                SourceMode::Ft8 => {
-                    self.cycle_ft8_msg_type();
-                }
-                _ => {}
-            }
+            self.cycle_source_audio();
         }
         if quit {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+    }
+
+    /// `M` — cycle the active source's *mode*, where it has one: a modulation
+    /// or protocol variant, not a parameter.  PSK31 (BPSK31/QPSK31) and FT8
+    /// (FT8/FT4) have one; the other four do not, and the key is inert there.
+    ///
+    /// **COFDM's occupied bandwidth is deliberately not on this key.**  It was
+    /// briefly, and it is the wrong axis: a 7-way occupancy parameter with its
+    /// own settings row and its own HUD field, rather than a variant of the
+    /// waveform.  The name matters more than usual here because DVB-T already
+    /// uses "mode" for something specific — the 2K/8K FFT size — with bandwidth
+    /// as a separate axis, and a narrowband DVB-T profile is the next queued
+    /// source.  Binding `M` to bandwidth now would leave its real mode knob
+    /// nowhere to go.
+    ///
+    /// **One implementation, called from both key paths.**  `handle_keys` has
+    /// two: the settings overlay consumes most input and returns early, so it
+    /// repeats the global keys itself.  These were duplicated matches, and they
+    /// drifted — a COFDM arm reached the settings-open copy alone, so `M`
+    /// cycled the bandwidth while the popover was up and did nothing with it
+    /// closed.  The match is exhaustive rather than ending in `_ => {}` so a new
+    /// source has to state its answer instead of inheriting silence.
+    fn cycle_source_mode(&mut self) {
+        match self.source_mode {
+            SourceMode::Psk31 => {
+                self.settings.cycle_psk31_mode();
+                self.restart_source();
+            }
+            SourceMode::Ft8 => self.cycle_ft8_mode(),
+            SourceMode::TestTone | SourceMode::Cw | SourceMode::AmDsb | SourceMode::Cofdm => {}
+        }
+    }
+
+    /// `N` — cycle the active source's audio or message selection.
+    ///
+    /// Shared between both key paths for the same reason as
+    /// [`cycle_source_mode`](Self::cycle_source_mode).
+    fn cycle_source_audio(&mut self) {
+        match self.source_mode {
+            SourceMode::Cw => {
+                self.settings.cycle_cw_msg_mode();
+                self.apply_cw_message();
+            }
+            SourceMode::AmDsb => {
+                self.settings.cycle_am_audio();
+                self.reload_builtin_audio();
+            }
+            SourceMode::Psk31 => {
+                self.settings.cycle_psk31_msg_mode();
+                self.apply_psk31_message();
+            }
+            SourceMode::Ft8 => self.cycle_ft8_msg_type(),
+            // Test Tone and COFDM carry no audio or message.
+            SourceMode::TestTone | SourceMode::Cofdm => {}
         }
     }
 }

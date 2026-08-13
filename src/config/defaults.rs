@@ -20,4 +20,11 @@ impl Defaults {
     /// Default time range (seconds) spanned by the full width of the
     /// horizontal spectrogram pane.
     pub const SPEC_TIME_RANGE_SECS: f32 = 10.0;
+    /// Startup viewport zoom ratio (1.0 = full span, 0..Nyquist).
+    ///
+    /// Expressed as a ratio rather than a span in Hz so one value is portable
+    /// across sources: "open at 4x" means the same thing at 48 kHz and at
+    /// 1.92 MHz, where a span in Hz would need re-clamping per source and would
+    /// mean something different on each.
+    pub const ZOOM: f32 = 1.0;
 }

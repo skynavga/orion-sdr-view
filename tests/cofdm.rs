@@ -8,11 +8,17 @@
 
 use orion_sdr_view::decode::{SPECTRUM_WINDOW_SAMPLES, nb_spectrum_snr_db, wb_spectrum_snr_db};
 use orion_sdr_view::source::{
-    COFDM_DEFAULT_CN_DB, COFDM_FS, COFDM_MAX_EDGE_GUARD, COFDM_MIN_EDGE_GUARD,
-    COFDM_NOMINAL_CENTER, COFDM_SHAPING_SLACK, CofdmBwFraction, CofdmMask, CofdmShaping,
-    CofdmSource, CofdmTaper, MAX_CN_DB, MIN_CN_DB, SignalSource, cofdm_edge_guard_for,
-    cofdm_occupied_bw, cofdm_occupied_half,
+    COFDM_DEFAULT_CN_DB, COFDM_DEFAULT_FS, COFDM_MAX_EDGE_GUARD, COFDM_MAX_FS, COFDM_MIN_FS,
+    COFDM_N_FFT, COFDM_SHAPING_SLACK, CofdmBwFraction, CofdmMask, CofdmShaping, CofdmSource,
+    CofdmTaper, MAX_CN_DB, MIN_CN_DB, SignalSource, cofdm_center_bounds, cofdm_clamp_fs,
+    cofdm_default_center_hz, cofdm_edge_guard_for, cofdm_min_edge_guard, cofdm_occupied_bw,
+    cofdm_occupied_half, cofdm_spacing_hz,
 };
+
+/// The band centre these tests use unless they are specifically moving it.
+fn center() -> f32 {
+    cofdm_default_center_hz(COFDM_DEFAULT_FS)
+}
 
 /// Default construction used by most tests: 2 s signal, 1 s gap, no noise so
 /// signal/silence are unambiguous, 1/4 bandwidth, shaping off (so these tests
@@ -29,7 +35,8 @@ fn make_with(shaping: CofdmShaping) -> CofdmSource {
         MAX_CN_DB,
         CofdmBwFraction::OneQuarter,
         shaping,
-        COFDM_FS,
+        center(),
+        COFDM_DEFAULT_FS,
     )
 }
 
@@ -44,8 +51,8 @@ fn rms(s: &[f32]) -> f32 {
 fn reports_native_sample_rate() {
     let mut src = make();
     // COFDM runs at its own high fs, not the viewer's 48 kHz.
-    assert_eq!(src.sample_rate(), COFDM_FS);
-    assert_eq!(COFDM_FS, 1_920_000.0);
+    assert_eq!(src.sample_rate(), COFDM_DEFAULT_FS);
+    assert_eq!(COFDM_DEFAULT_FS, 1_920_000.0);
     // downcast round-trips.
     assert!(src.as_any_mut().downcast_mut::<CofdmSource>().is_some());
 }
@@ -72,15 +79,15 @@ fn signal_phase_has_energy() {
 fn occupied_bandwidth_scales_with_fraction() {
     // The analytic occupied BW must grow monotonically with the fraction and
     // stay inside the Nyquist band for every option.
-    let nyquist = COFDM_FS / 2.0;
+    let nyquist = COFDM_DEFAULT_FS / 2.0;
     let mut prev = 0.0;
     for &fr in CofdmBwFraction::ALL {
-        let bw = cofdm_occupied_bw(COFDM_FS, cofdm_edge_guard_for(fr));
+        let bw = cofdm_occupied_bw(COFDM_DEFAULT_FS, cofdm_edge_guard_for(fr));
         assert!(bw > prev, "bw not increasing at {}", fr.label());
         assert!(bw < nyquist, "bw {} exceeds Nyquist at {}", bw, fr.label());
         // Band centered on the nominal center stays within [0, Nyquist].
-        assert!(COFDM_NOMINAL_CENTER - bw / 2.0 >= 0.0);
-        assert!(COFDM_NOMINAL_CENTER + bw / 2.0 <= nyquist);
+        assert!(center() - bw / 2.0 >= 0.0);
+        assert!(center() + bw / 2.0 <= nyquist);
         prev = bw;
     }
 }
@@ -230,7 +237,7 @@ fn bh_power_spectrum(samples: &[f32], n: usize) -> Vec<f32> {
 
 /// Mean power (dB) of `spec` over a frequency band.
 fn band_db(spec: &[f32], n: usize, band: (f32, f32)) -> f32 {
-    let bin = |f: f32| ((f / COFDM_FS) * n as f32).round() as usize;
+    let bin = |f: f32| ((f / COFDM_DEFAULT_FS) * n as f32).round() as usize;
     let (lo, hi) = (bin(band.0), bin(band.1).min(spec.len() - 1));
     let mean = spec[lo..=hi].iter().sum::<f32>() / (hi - lo + 1) as f32;
     10.0 * (mean + 1e-30).log10()
@@ -262,10 +269,10 @@ fn derived_edge_guard_reproduces_the_fraction_band() {
     // The bandwidth toggle IS the edge-guard lever: the guard it implies must
     // put the occupied band back where the fraction asked for it, to within the
     // subcarrier spacing the carrier count is quantized to.
-    let spacing = COFDM_FS / 256.0;
+    let spacing = COFDM_DEFAULT_FS / 256.0;
     for &fr in CofdmBwFraction::ALL {
-        let bw = cofdm_occupied_bw(COFDM_FS, cofdm_edge_guard_for(fr));
-        let want = fr.value() * COFDM_FS / 2.0;
+        let bw = cofdm_occupied_bw(COFDM_DEFAULT_FS, cofdm_edge_guard_for(fr));
+        let want = fr.value() * COFDM_DEFAULT_FS / 2.0;
         assert!(
             (bw - want).abs() <= spacing,
             "{}: guard band {bw} Hz vs fraction {want} Hz",
@@ -279,9 +286,10 @@ fn edge_guard_override_narrows_the_occupied_band() {
     // Nudging the guard past what the fraction implies takes carriers off both
     // edges — the Di bar's BW readout has to follow the guard, not the label.
     let g = cofdm_edge_guard_for(CofdmBwFraction::OneQuarter);
-    let spacing = COFDM_FS / 256.0;
+    let spacing = COFDM_DEFAULT_FS / 256.0;
     assert_eq!(cofdm_occupied_half(g + 8), cofdm_occupied_half(g) - 8);
-    let narrowed = cofdm_occupied_bw(COFDM_FS, g) - cofdm_occupied_bw(COFDM_FS, g + 8);
+    let narrowed =
+        cofdm_occupied_bw(COFDM_DEFAULT_FS, g) - cofdm_occupied_bw(COFDM_DEFAULT_FS, g + 8);
     assert!(
         (narrowed - 16.0 * spacing).abs() < 1.0,
         "narrowed {narrowed} Hz"
@@ -300,8 +308,14 @@ fn disabled_shaping_resolves_to_the_fraction_defaults() {
         taper: CofdmTaper::ThreeEighths,
         mask: CofdmMask::Db80,
     };
-    assert_eq!(stale.effective(fr), CofdmShaping::derived(fr));
-    assert_eq!(stale.effective(fr).edge_guard, cofdm_edge_guard_for(fr));
+    assert_eq!(
+        stale.effective(fr, center(), COFDM_DEFAULT_FS),
+        CofdmShaping::derived(fr)
+    );
+    assert_eq!(
+        stale.effective(fr, center(), COFDM_DEFAULT_FS).edge_guard,
+        cofdm_edge_guard_for(fr)
+    );
     assert!(
         stale.mask_filter(16).is_none(),
         "disabled shaping has no mask"
@@ -438,7 +452,7 @@ fn every_shaping_knob_reaches_the_rendered_buffer() {
     let reference = make_with(base).next_samples(4096);
     for (i, v) in variants.into_iter().enumerate() {
         let mut src = make_with(base);
-        src.apply_params(2.0, 1.0, 0.0, CofdmBwFraction::OneQuarter, v);
+        src.apply_params(2.0, 1.0, 0.0, CofdmBwFraction::OneQuarter, v, center());
         assert_ne!(
             src.next_samples(4096),
             reference,
@@ -451,25 +465,189 @@ fn every_shaping_knob_reaches_the_rendered_buffer() {
 fn edge_guard_range_brackets_every_fraction() {
     // The `Edge guard` row's range has to admit every guard the `Bandwidth`
     // toggle can seed into it, or re-seeding would clamp and the two rows would
-    // disagree about the band.
+    // disagree about the band.  At the *default* centre, which is where the
+    // fractions were sized to fit; off centre the wider ones deliberately do
+    // not — see `an_off_centre_band_gives_up_the_widest_fractions`.
+    let min = cofdm_min_edge_guard(center(), COFDM_DEFAULT_FS);
     for &fr in CofdmBwFraction::ALL {
         let g = cofdm_edge_guard_for(fr);
         assert!(
-            (COFDM_MIN_EDGE_GUARD..=COFDM_MAX_EDGE_GUARD).contains(&g),
-            "{}: guard {g} outside {COFDM_MIN_EDGE_GUARD}..={COFDM_MAX_EDGE_GUARD}",
+            (min..=COFDM_MAX_EDGE_GUARD).contains(&g),
+            "{}: guard {g} outside {min}..={COFDM_MAX_EDGE_GUARD}",
             fr.label()
         );
     }
 }
 
+// ── Band placement: centre, guard, and sample rate ─────────────────────────
+//
+// The edge guard and the band centre are *one* constraint.  While the centre
+// was pinned at `fs/4` the narrowest legal guard was a constant (64, from
+// `COFDM_MAX_CARRIER - (n_fft/4 - 1)`); once the centre can move, that constant
+// becomes a function of where the band sits.  These tests pin the
+// generalisation against the constant it replaced, and then check the property
+// the constant existed to guarantee — that the band never runs past either end
+// of `0..Nyquist` and folds back on itself.
+
 #[test]
-fn narrowest_guard_keeps_the_band_inside_the_display() {
-    // Below `COFDM_MIN_EDGE_GUARD` the occupied band, once upconverted to the
-    // nominal center, would run past 0 / Nyquist and fold back on itself.
-    let bw = cofdm_occupied_bw(COFDM_FS, COFDM_MIN_EDGE_GUARD);
+fn the_generalised_guard_bound_reproduces_the_old_constant() {
+    // The check that says this is a generalisation and not a rewrite: at the
+    // default centre the function must return exactly what the constant did.
+    const OLD_CONSTANT: usize = (COFDM_N_FFT / 2 - 1) - (COFDM_N_FFT / 4 - 1);
+    assert_eq!(OLD_CONSTANT, 64, "the numerology itself moved");
+    assert_eq!(
+        cofdm_min_edge_guard(center(), COFDM_DEFAULT_FS),
+        OLD_CONSTANT
+    );
+    // And it is scale-free: the same centre *relative to Nyquist* gives the
+    // same answer at any rate, since both the headroom and the subcarrier
+    // spacing are proportional to `fs`.
+    for fs in [COFDM_MIN_FS, 480_000.0, COFDM_DEFAULT_FS, COFDM_MAX_FS] {
+        assert_eq!(
+            cofdm_min_edge_guard(cofdm_default_center_hz(fs), fs),
+            OLD_CONSTANT,
+            "fs {fs}"
+        );
+    }
+}
+
+#[test]
+fn the_band_never_folds_at_any_reachable_centre() {
+    // Sweep the centre across its legal range at every bandwidth fraction and
+    // assert the occupied band stays inside `0..Nyquist` — with the one bin of
+    // margin the bound reserves at both ends.
+    let fs = COFDM_DEFAULT_FS;
+    let (lo, hi) = cofdm_center_bounds(fs);
+    let spacing = cofdm_spacing_hz(fs);
+    for step in 0..=40 {
+        let c = lo + (hi - lo) * step as f32 / 40.0;
+        for &fr in CofdmBwFraction::ALL {
+            for enabled in [false, true] {
+                let sh = CofdmShaping {
+                    enabled,
+                    ..CofdmShaping::default_for(fr)
+                };
+                let bw = cofdm_occupied_bw(fs, sh.effective(fr, c, fs).edge_guard);
+                assert!(
+                    c - bw / 2.0 >= spacing - 1.0,
+                    "{} at {c:.0} Hz: band runs past 0 (bw {bw:.0})",
+                    fr.label()
+                );
+                assert!(
+                    c + bw / 2.0 <= fs / 2.0 - spacing + 1.0,
+                    "{} at {c:.0} Hz: band runs past Nyquist (bw {bw:.0})",
+                    fr.label()
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn an_off_centre_band_gives_up_the_widest_fractions() {
+    // The stated consequence of the coupling, pinned so it is a documented
+    // behaviour rather than a surprise: at half the default centre only 31
+    // carriers per side fit, so the fraction becomes a label and the *effective*
+    // guard is what the Di bar's BW readout follows.
+    let fs = COFDM_DEFAULT_FS;
+    let c = center() / 2.0; // 240 kHz
+    assert_eq!(cofdm_min_edge_guard(c, fs), 96);
+    let widest = cofdm_occupied_bw(fs, cofdm_min_edge_guard(c, fs));
     assert!(
-        COFDM_NOMINAL_CENTER - bw / 2.0 > 0.0 && COFDM_NOMINAL_CENTER + bw / 2.0 < COFDM_FS / 2.0,
-        "widest band {bw} Hz does not fit around {COFDM_NOMINAL_CENTER} Hz"
+        (widest - 465_000.0).abs() < 1.0,
+        "widest band off centre is {widest} Hz"
+    );
+
+    // 1/8, 1/4 and 1/3 still fit; 1/2 and up are clamped down to it.
+    let fits = |fr: CofdmBwFraction| {
+        CofdmShaping::default_for(fr)
+            .effective(fr, c, fs)
+            .edge_guard
+            == cofdm_edge_guard_for(fr)
+    };
+    assert!(fits(CofdmBwFraction::OneEighth));
+    assert!(fits(CofdmBwFraction::OneQuarter));
+    assert!(fits(CofdmBwFraction::OneThird));
+    assert!(!fits(CofdmBwFraction::OneHalf));
+    assert!(!fits(CofdmBwFraction::SevenEighths));
+}
+
+#[test]
+fn a_centre_outside_the_legal_range_is_clamped_not_folded() {
+    // The row clamps, but the source must not depend on it having done so — a
+    // config value and the `L` key both arrive here from outside.
+    let fs = COFDM_DEFAULT_FS;
+    let (lo, hi) = cofdm_center_bounds(fs);
+    for request in [-1.0e6, 0.0, f32::NAN, fs, 1.0e9] {
+        let src = CofdmSource::new(
+            2.0,
+            1.0,
+            MAX_CN_DB,
+            CofdmBwFraction::OneQuarter,
+            CofdmShaping::default_for(CofdmBwFraction::OneQuarter),
+            request,
+            fs,
+        );
+        let c = src.center_hz();
+        assert!(
+            c.is_finite() && (lo..=hi).contains(&c),
+            "centre {request} resolved to {c}, outside {lo}..={hi}"
+        );
+    }
+}
+
+#[test]
+fn a_configured_sample_rate_reaches_the_source_and_its_geometry() {
+    // The three consumers of a configured rate, one assertion each: what the
+    // source reports (which is what re-derives Nyquist), the subcarrier
+    // spacing, and the occupied bandwidth.
+    let fs = COFDM_DEFAULT_FS / 4.0; // 480 kHz — a plausible narrowband profile
+    let fr = CofdmBwFraction::OneQuarter;
+    let sh = CofdmShaping::default_for(fr);
+    let src = CofdmSource::new(2.0, 1.0, MAX_CN_DB, fr, sh, cofdm_default_center_hz(fs), fs);
+
+    assert_eq!(src.sample_rate(), fs);
+    assert_eq!(cofdm_spacing_hz(fs), fs / COFDM_N_FFT as f32);
+    // The *fraction* is rate-independent, so a quarter of Nyquist at any rate.
+    let bw = cofdm_occupied_bw(fs, src.effective_shaping().edge_guard);
+    assert!(
+        (bw - fs / 2.0 / 4.0).abs() <= cofdm_spacing_hz(fs),
+        "1/4 of {fs} Hz Nyquist measured {bw} Hz"
+    );
+}
+
+#[test]
+fn an_unusable_sample_rate_falls_back_rather_than_propagating() {
+    // Every derived frequency is `fs`-proportional, so a zero or NaN rate would
+    // poison the rotator, the spacing and the centre bounds alike.
+    assert_eq!(cofdm_clamp_fs(0.0), COFDM_DEFAULT_FS);
+    assert_eq!(cofdm_clamp_fs(-1.0), COFDM_DEFAULT_FS);
+    assert_eq!(cofdm_clamp_fs(f32::NAN), COFDM_DEFAULT_FS);
+    assert_eq!(cofdm_clamp_fs(1.0), COFDM_MIN_FS);
+    assert_eq!(cofdm_clamp_fs(1.0e12), COFDM_MAX_FS);
+    assert_eq!(cofdm_clamp_fs(COFDM_DEFAULT_FS), COFDM_DEFAULT_FS);
+}
+
+#[test]
+fn retuning_moves_the_band_without_moving_the_level() {
+    // What the `L` key does: the buffer is baseband, so a retune is a rotator
+    // change.  The burst must land somewhere else in the spectrum while its
+    // amplitude — which the derived display level fixes — stays put.
+    let fs = COFDM_DEFAULT_FS;
+    let fr = CofdmBwFraction::OneQuarter;
+    let sh = CofdmShaping::default_for(fr);
+    let mut a = CofdmSource::new(60.0, 1.0, MAX_CN_DB, fr, sh, center(), fs);
+    let mut b = CofdmSource::new(60.0, 1.0, MAX_CN_DB, fr, sh, center(), fs);
+    let low = center() - 100_000.0;
+    b.apply_params(60.0, 1.0, MAX_CN_DB, fr, sh, low);
+    assert_eq!(b.center_hz(), low);
+
+    let (sa, sb) = (a.next_samples(1 << 16), b.next_samples(1 << 16));
+    assert_ne!(sa, sb, "retuning changed nothing");
+    let (ra, rb) = (rms(&sa), rms(&sb));
+    assert!(
+        (ra - rb).abs() / ra < 0.05,
+        "retuning moved the level: {ra:.4} vs {rb:.4}"
     );
 }
 
@@ -483,11 +661,14 @@ fn every_fraction_renders_with_shaping_on() {
         .map(|&fr| {
             (
                 fr.label().to_string(),
-                CofdmShaping::default_for(fr).effective(fr),
+                CofdmShaping::default_for(fr).effective(fr, center(), COFDM_DEFAULT_FS),
             )
         })
         .collect();
-    for guard in [COFDM_MIN_EDGE_GUARD, COFDM_MAX_EDGE_GUARD] {
+    for guard in [
+        cofdm_min_edge_guard(center(), COFDM_DEFAULT_FS),
+        COFDM_MAX_EDGE_GUARD,
+    ] {
         cases.push((
             format!("guard {guard}"),
             CofdmShaping {
@@ -518,12 +699,25 @@ fn every_fraction_renders_with_shaping_on() {
 /// amplitude.  Returns `(narrowband, wideband)` in dB.
 fn snr_pair(fraction: CofdmBwFraction, cn_db: f32) -> (f32, f32) {
     let shaping = CofdmShaping::default_for(fraction);
-    let mut src = CofdmSource::new(2.0, 1.0, cn_db, fraction, shaping, COFDM_FS);
+    let mut src = CofdmSource::new(
+        2.0,
+        1.0,
+        cn_db,
+        fraction,
+        shaping,
+        center(),
+        COFDM_DEFAULT_FS,
+    );
     let s = src.next_samples(SPECTRUM_WINDOW_SAMPLES);
-    let bw = cofdm_occupied_bw(COFDM_FS, shaping.effective(fraction).edge_guard);
+    let bw = cofdm_occupied_bw(
+        COFDM_DEFAULT_FS,
+        shaping
+            .effective(fraction, center(), COFDM_DEFAULT_FS)
+            .edge_guard,
+    );
     (
-        nb_spectrum_snr_db(&s, COFDM_FS, COFDM_NOMINAL_CENTER),
-        wb_spectrum_snr_db(&s, COFDM_FS, COFDM_NOMINAL_CENTER, bw),
+        nb_spectrum_snr_db(&s, COFDM_DEFAULT_FS, center()),
+        wb_spectrum_snr_db(&s, COFDM_DEFAULT_FS, center(), bw),
     )
 }
 
@@ -609,7 +803,8 @@ fn the_derived_level_puts_every_fraction_over_the_shared_threshold() {
             COFDM_DEFAULT_CN_DB,
             fr,
             CofdmShaping::default_for(fr),
-            COFDM_FS,
+            center(),
+            COFDM_DEFAULT_FS,
         );
         let sig = mean_rms(&mut src, 20, 2048);
         assert!(
@@ -626,7 +821,15 @@ fn a_loud_enough_impairment_still_drowns_the_gap() {
     // the burst boundary once the noise floor climbs past the threshold, and
     // that is reachable well inside the row's range.
     let fr = CofdmBwFraction::OneQuarter;
-    let mut loud = CofdmSource::new(1.0, 5.0, 5.0, fr, CofdmShaping::default_for(fr), COFDM_FS);
+    let mut loud = CofdmSource::new(
+        1.0,
+        5.0,
+        5.0,
+        fr,
+        CofdmShaping::default_for(fr),
+        center(),
+        COFDM_DEFAULT_FS,
+    );
     loud.advance_time(1.5);
     assert!(!loud.in_signal());
     let gap_rms = mean_rms(&mut loud, 50, 2048);
@@ -647,7 +850,7 @@ fn the_source_reports_its_own_signal_phase_across_the_whole_settings_space() {
         for cn_db in [MAX_CN_DB, 45.0, 30.0, 15.0, MIN_CN_DB] {
             let sh = CofdmShaping::default_for(fr);
 
-            let src = CofdmSource::new(60.0, 60.0, cn_db, fr, sh, COFDM_FS);
+            let src = CofdmSource::new(60.0, 60.0, cn_db, fr, sh, center(), COFDM_DEFAULT_FS);
             assert_eq!(
                 src.signal_phase(),
                 Some(true),
@@ -655,7 +858,7 @@ fn the_source_reports_its_own_signal_phase_across_the_whole_settings_space() {
                 fr.label()
             );
 
-            let mut gap = CofdmSource::new(1.0, 60.0, cn_db, fr, sh, COFDM_FS);
+            let mut gap = CofdmSource::new(1.0, 60.0, cn_db, fr, sh, center(), COFDM_DEFAULT_FS);
             gap.advance_time(1.5);
             assert_eq!(
                 gap.signal_phase(),
@@ -690,7 +893,7 @@ fn the_rms_fallback_separates_signal_from_gap_over_its_stated_range() {
         for cn_db in [MAX_CN_DB, 55.0, 45.0, 30.0, FALLBACK_MIN_CN_DB] {
             let sh = CofdmShaping::default_for(fr);
 
-            let mut src = CofdmSource::new(60.0, 60.0, cn_db, fr, sh, COFDM_FS);
+            let mut src = CofdmSource::new(60.0, 60.0, cn_db, fr, sh, center(), COFDM_DEFAULT_FS);
             let sig = mean_rms(&mut src, 20, 2048);
             assert!(
                 sig > threshold,
@@ -699,7 +902,7 @@ fn the_rms_fallback_separates_signal_from_gap_over_its_stated_range() {
             );
             worst_signal = worst_signal.min(sig);
 
-            let mut src = CofdmSource::new(1.0, 60.0, cn_db, fr, sh, COFDM_FS);
+            let mut src = CofdmSource::new(1.0, 60.0, cn_db, fr, sh, center(), COFDM_DEFAULT_FS);
             src.advance_time(1.5);
             assert!(!src.in_signal(), "expected the gap phase");
             let gap = mean_rms(&mut src, 20, 2048);

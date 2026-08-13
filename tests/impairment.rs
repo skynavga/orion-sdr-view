@@ -12,10 +12,15 @@ use orion_sdr::util::rms;
 use orion_sdr_view::config::ViewConfig;
 use orion_sdr_view::decode::{SPECTRUM_WINDOW_SAMPLES, wb_cn_db};
 use orion_sdr_view::source::{
-    COFDM_DEFAULT_CN_DB, COFDM_DISPLAY_RMS_DBFS, COFDM_FS, COFDM_NOMINAL_CENTER, CofdmBwFraction,
-    CofdmShaping, CofdmSource, MAX_CN_DB, SignalSource, cofdm_occupied_bw, ft8::FT8_DEFAULT_CN_DB,
-    tone::TestSignalGen,
+    COFDM_DEFAULT_CN_DB, COFDM_DEFAULT_FS, COFDM_DISPLAY_RMS_DBFS, CofdmBwFraction, CofdmShaping,
+    CofdmSource, MAX_CN_DB, SignalSource, cofdm_default_center_hz, cofdm_occupied_bw,
+    ft8::FT8_DEFAULT_CN_DB, tone::TestSignalGen,
 };
+
+/// The band centre these tests use unless they are specifically moving it.
+fn center() -> f32 {
+    cofdm_default_center_hz(COFDM_DEFAULT_FS)
+}
 
 /// Blocks of this size, matching the viewer's per-frame feed granularity.
 const BLOCK: usize = 4096;
@@ -48,7 +53,8 @@ fn source(fraction: CofdmBwFraction, cn_db: f32) -> CofdmSource {
         cn_db,
         fraction,
         CofdmShaping::default_for(fraction),
-        COFDM_FS,
+        center(),
+        COFDM_DEFAULT_FS,
     )
 }
 
@@ -60,7 +66,12 @@ fn source(fraction: CofdmBwFraction, cn_db: f32) -> CofdmSource {
 /// `CnReference::sigma_for` shows up as a dB offset.
 fn achieved_cn_db(fraction: CofdmBwFraction, cn_db: f32) -> f32 {
     let shaping = CofdmShaping::default_for(fraction);
-    let occupied = cofdm_occupied_bw(COFDM_FS, shaping.effective(fraction).edge_guard);
+    let occupied = cofdm_occupied_bw(
+        COFDM_DEFAULT_FS,
+        shaping
+            .effective(fraction, center(), COFDM_DEFAULT_FS)
+            .edge_guard,
+    );
 
     let mut gap = source(fraction, cn_db);
     gap.advance_time(601.0);
@@ -73,7 +84,7 @@ fn achieved_cn_db(fraction: CofdmBwFraction, cn_db: f32) -> f32 {
 
     // C/N = P_signal / (N0 * B_occupied), N0 = P_noise / fs.  Complex baseband,
     // so the noise is white over the full fs — not over the display's Nyquist.
-    let n0 = p_noise / COFDM_FS;
+    let n0 = p_noise / COFDM_DEFAULT_FS;
     10.0 * (p_signal / (n0 * occupied)).log10()
 }
 
@@ -203,12 +214,17 @@ fn the_measured_cn_tracks_the_requested_cn() {
     // tightly is the *tracking*: 10 dB of knob must move the readout 10 dB.
     let fraction = CofdmBwFraction::OneQuarter;
     let shaping = CofdmShaping::default_for(fraction);
-    let occupied = cofdm_occupied_bw(COFDM_FS, shaping.effective(fraction).edge_guard);
+    let occupied = cofdm_occupied_bw(
+        COFDM_DEFAULT_FS,
+        shaping
+            .effective(fraction, center(), COFDM_DEFAULT_FS)
+            .edge_guard,
+    );
 
     let measure = |cn_db: f32| {
         let mut src = source(fraction, cn_db);
         let s = src.next_samples(SPECTRUM_WINDOW_SAMPLES);
-        wb_cn_db(&s, COFDM_FS, COFDM_NOMINAL_CENTER, occupied) + REAL_PROJECTION_CN_OFFSET_DB
+        wb_cn_db(&s, COFDM_DEFAULT_FS, center(), occupied) + REAL_PROJECTION_CN_OFFSET_DB
     };
 
     // The stated range: the default fraction, 10-30 dB.  Above that the

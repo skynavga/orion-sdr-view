@@ -9,6 +9,103 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.24] - 2026-08-13
+
+### Added
+
+- **COFDM has a band-centre knob, and `L` now retunes it.** `sources.cofdm.center_hz`
+  plus a `Center` settings row, wired through the same
+  `decode_carrier_hz` / `set_carrier_hz` pair the five narrowband sources use.
+  `L` (lock source to viewport centre) was previously a documented no-op on
+  COFDM — a key that did nothing on one source of six and said nothing about it.
+
+  Named `center_hz` rather than `carrier_hz` because an OFDM band has no
+  carrier: the DC subcarrier is null by default. The trait surface keeps the
+  `*_carrier_hz` names, which are the concept-independent ones, and that is what
+  makes the key uniform without a per-source special case anywhere.
+
+  **The centre and the edge guard are one constraint, not two.**
+  `COFDM_MIN_EDGE_GUARD` was a constant only because the centre was: pinned at
+  `fs/4` the widest band that fits is `n_fft/4 - 1` carriers per side, giving
+  64. It is now `cofdm_min_edge_guard(center, fs)`, and at the default centre it
+  reproduces 64 exactly — the check that says this is a generalisation rather
+  than a rewrite. Both are resolved through `CofdmShaping::effective`, which was
+  already the single resolver every consumer agrees on, rather than gaining a
+  second clamp at the settings row.
+
+  The consequence, stated because it is a behaviour and not a bug: an off-centre
+  band cannot be as wide as a centred one, so the wider `bandwidth` fractions
+  become unreachable as the centre moves out. At half the default centre only 31
+  carriers per side fit, so 1/8, 1/4 and 1/3 still do and 1/2 and up are clamped
+  down. The fraction stays a label; the Di bar's `BW` readout is authoritative.
+
+- **`sources.cofdm.fs_hz` makes the sample rate configurable.** Previously a
+  constant. Needed on the critical path for a narrowband DVB-T profile, which is
+  three bandwidth modes over one 2K structure — three sample rates over one
+  numerology.
+
+  **No settings row, deliberately:** changing the rate re-derives Nyquist and
+  clears the waterfall, persistence and spectrogram, since bin-indexed history
+  at the old scaling cannot be drawn at the new one. An arrow-nudged row would
+  wipe the display on every keypress. This is the one place where a config key
+  is right and a live knob is wrong.
+
+  A configured rate is safe *because* 0.0.23 made the impairment a ratio. While
+  it was an absolute amplitude, halving the rate would have silently changed the
+  link by 3 dB — the same `noise_amp` spread over half the bandwidth — with
+  nothing on screen to say so. The bandwidth fraction is rate-independent for a
+  related reason: it is a fraction of Nyquist and the spacing is `fs / n_fft`,
+  so the rate cancels and "1/4" means a quarter of the display at any rate.
+
+- **`display.zoom` sets the startup viewport span, with a matching `Zoom` row.**
+  Expressed as a ratio of full Nyquist rather than a span in Hz, so one value is
+  portable across sources: "open at 4x" means the same thing at 48 kHz and at
+  1.92 MHz. Previously every source opened at full span, which is 0–24 kHz to
+  look at a 62.5 Hz PSK31 signal.
+
+  Precedence: the configured value applies at startup, a source's
+  `preferred_span_hz` applies on switch **to** that source (COFDM states one, to
+  frame its band), and the keyboard applies until the next switch. So it is a
+  startup default rather than a persistent override; `R` on the Display tab
+  restores it. The row's upper bound follows the active source
+  (`nyquist / 1 kHz`, i.e. 24x narrowband and 960x for COFDM) so it can never
+  display a ratio the viewport has silently refused.
+
+### Fixed
+
+- **`M` no longer cycles the COFDM occupied bandwidth, and no longer depends on
+  whether the settings popover is open.** It did both: the key cycled the
+  bandwidth with the popover up and did nothing with it closed.
+
+  The state-dependence was a straightforward bug. `handle_keys` has two key
+  paths — the settings overlay consumes most input and returns early, so it
+  repeats the global keys itself — and the `M`/`N` dispatch was a duplicated
+  `match` in both that had drifted, with the COFDM arm reaching one copy alone.
+  Both paths now call one shared method, and the matches are exhaustive over
+  `SourceMode` rather than ending in `_ => {}`, so a new source has to state its
+  answer instead of inheriting silence.
+
+  The binding itself was the deeper problem. `M` cycles a *mode* — a modulation
+  or protocol variant, as on PSK31 (BPSK31/QPSK31) and FT8 (FT8/FT4). COFDM's
+  bandwidth is a 7-way occupancy parameter with its own settings row and its own
+  HUD field, which is a different kind of thing; three of the six sources have
+  no mode and the key is correctly inert on them. The name matters more than
+  usual here because DVB-T already uses "mode" for something specific — the
+  2K/8K FFT size — with bandwidth as a separate axis, so binding `M` to
+  bandwidth would leave a narrowband DVB-T profile's real mode knob nowhere to
+  go. Bandwidth remains on the `Bandwidth` settings row and in the HUD.
+
+### Changed
+
+- `FreqView` moved from the bin into the library (`orion_sdr_view::viewport`).
+  It is UI-independent arithmetic, and the zoom round-trip the settings row and
+  the `↑`/`↓` keys share is worth testing rather than asserting by inspection.
+  `FreqMarker`, which depends on egui for its colours, stays in the bin.
+
+- The stale `apply_source_sample_rate` comment naming a `Spec span` settings row
+  is gone. No such row existed; the `Zoom` row is now the thing it was
+  describing.
+
 ## [0.0.23] - 2026-08-12
 
 ### Changed

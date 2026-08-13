@@ -5,13 +5,17 @@ use crate::app::settings::{CofdmSettings, SettingsState};
 use crate::decode::DecodeMode;
 use crate::source::SignalSource;
 use crate::source::cofdm::{
-    self, COFDM_FS, COFDM_NOMINAL_CENTER, COFDM_PREFERRED_REF_DB, CofdmShaping, CofdmSource,
-    cofdm_occupied_bw,
+    self, COFDM_PREFERRED_REF_DB, CofdmShaping, CofdmSource, cofdm_occupied_bw,
 };
 use crate::source::ft8::Ft8ViewState;
 
-/// Build a fresh `CofdmSource` from current settings.  The sample rate is a
-/// fixed source property (`COFDM_FS`), not a settings value.
+/// Build a fresh `CofdmSource` from current settings.
+///
+/// The sample rate comes from settings like everything else now.  It is not a
+/// row (see `CofdmConfig::fs_hz`), but it *is* per-source state, and this is the
+/// only construction path — so a configured rate reaches the source, and
+/// `ViewApp::apply_source_sample_rate` then re-derives Nyquist from what the
+/// constructed source reports.
 pub(in crate::app) fn make(settings: &SettingsState) -> CofdmSource {
     CofdmSource::new(
         settings.cofdm_sig_secs(),
@@ -19,7 +23,8 @@ pub(in crate::app) fn make(settings: &SettingsState) -> CofdmSource {
         settings.cofdm_cn_db(),
         settings.cofdm_bw_fraction(),
         settings.cofdm_shaping(),
-        COFDM_FS,
+        settings.cofdm_center_hz(),
+        settings.cofdm_fs_hz(),
     )
 }
 
@@ -32,17 +37,20 @@ pub(in crate::app) fn sync(source: &mut dyn SignalSource, settings: &SettingsSta
             settings.cofdm_cn_db(),
             settings.cofdm_bw_fraction(),
             settings.cofdm_shaping(),
+            settings.cofdm_center_hz(),
         );
     }
 }
 
 /// Occupied bandwidth (Hz) for the current settings — reported in the Di bar.
 /// Keyed off the *effective* edge guard, which the shaping rows can override
-/// away from what the bandwidth fraction alone implies.
+/// away from what the bandwidth fraction alone implies, and which the band
+/// centre bounds.
 pub(in crate::app) fn occupied_bw_hz(settings: &SettingsState) -> f32 {
-    let fraction = settings.cofdm_bw_fraction();
-    let guard = settings.cofdm_shaping().effective(fraction).edge_guard;
-    cofdm_occupied_bw(COFDM_FS, guard)
+    cofdm_occupied_bw(
+        settings.cofdm_fs_hz(),
+        effective_shaping(settings).edge_guard,
+    )
 }
 
 /// The *effective* transmit shaping for the current settings.
@@ -52,9 +60,11 @@ pub(in crate::app) fn occupied_bw_hz(settings: &SettingsState) -> f32 {
 /// share one definition of the numerology rather than two that must be kept in
 /// agreement.
 pub(in crate::app) fn effective_shaping(settings: &SettingsState) -> CofdmShaping {
-    settings
-        .cofdm_shaping()
-        .effective(settings.cofdm_bw_fraction())
+    settings.cofdm_shaping().effective(
+        settings.cofdm_bw_fraction(),
+        settings.cofdm_center_hz(),
+        settings.cofdm_fs_hz(),
+    )
 }
 
 /// Submode line for the top HUD when COFDM is the active source.
@@ -70,13 +80,15 @@ impl super::SourceFactory for Factory {
     fn decode_mode(&self, _: &SettingsState, _: &Ft8ViewState) -> DecodeMode {
         DecodeMode::Cofdm
     }
-    fn decode_carrier_hz(&self, _settings: &SettingsState) -> f32 {
-        // The band center — used for the Di "ctr" readout only.
-        COFDM_NOMINAL_CENTER
+    fn decode_carrier_hz(&self, settings: &SettingsState) -> f32 {
+        // The band center: the Di "ctr" readout, and the frequency the wideband
+        // C/N estimator centres its occupied window on.  One value, so a retune
+        // cannot leave the measurement looking at the old band.
+        settings.cofdm_center_hz()
     }
-    fn set_carrier_hz(&self, _settings: &mut SettingsState, _hz: f32) {
-        // No-op: COFDM occupies a fixed wideband sub-band, not a single
-        // tunable carrier, so the source-lock (L key) does not retune it.
+    fn set_carrier_hz(&self, settings: &mut SettingsState, hz: f32) {
+        // The source-lock (L key), which used to be a documented no-op here.
+        settings.set_cofdm_center_hz(hz);
     }
 
     fn cn_db(&self, settings: &SettingsState) -> f32 {
@@ -84,15 +96,19 @@ impl super::SourceFactory for Factory {
     }
 
     // ── Wideband viewport preferences ───────────────────────────────────────
-    fn nominal_center_hz(&self, _settings: &SettingsState) -> Option<f32> {
-        Some(COFDM_NOMINAL_CENTER)
+    fn nominal_center_hz(&self, settings: &SettingsState) -> Option<f32> {
+        Some(settings.cofdm_center_hz())
     }
-    fn preferred_span_hz(&self, _settings: &SettingsState) -> Option<f32> {
+    fn preferred_span_hz(&self, settings: &SettingsState) -> Option<f32> {
         // Full Nyquist: the bandwidth fraction (a settings toggle) then controls
         // how much of this fixed span the occupied band fills.  Clamped to
         // Nyquist by `FreqView::reframe`.  The horizontal spectrogram follows
         // this same viewport span, so it needs no separate preference.
-        Some(COFDM_FS / 2.0)
+        //
+        // This is also the rule that makes the `Zoom` row a startup default
+        // rather than a persistent override: a switch *to* a source that states
+        // a preference reframes to it.
+        Some(settings.cofdm_fs_hz() / 2.0)
     }
     fn preferred_ref_db(&self, _settings: &SettingsState) -> Option<f32> {
         // Match the ~-15 dB signal peaks produced by the modulator gain.

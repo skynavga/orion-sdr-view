@@ -14,6 +14,14 @@ pub struct DisplayConfig {
     pub spec_time_range_secs: Option<f32>,
     /// Pan direction convention: "spectrum" (panadapter, default) or "signal".
     pub pan: Option<String>,
+    /// Startup viewport zoom ratio (1.0 = full span).
+    ///
+    /// **A startup default, not a persistent override.**  Switching to a source
+    /// that states a `preferred_span_hz` — COFDM does, to frame its band —
+    /// reframes the viewport, and the keyboard zoom then applies until the next
+    /// switch.  The alternative reading ("my setting was ignored") is the
+    /// obvious complaint, so the README says this too.
+    pub zoom: Option<f32>,
 }
 
 /// Parsed time-zone mode for the display settings row.
@@ -45,6 +53,17 @@ impl super::ViewConfig {
             .as_ref()
             .and_then(|d| d.spec_time_range_secs)
             .unwrap_or(Defaults::SPEC_TIME_RANGE_SECS)
+    }
+    /// Startup viewport zoom ratio.  Floored at 1.0 (full span); the upper
+    /// bound is per-source (`nyquist / MIN_SPAN_HZ`) and so is applied by the
+    /// viewport rather than here.
+    pub fn zoom(&self) -> f32 {
+        self.display
+            .as_ref()
+            .and_then(|d| d.zoom)
+            .filter(|v| v.is_finite())
+            .unwrap_or(Defaults::ZOOM)
+            .max(1.0)
     }
     /// True when pan is configured to "signal" mode; false ("spectrum") by
     /// default or on any unrecognized value.

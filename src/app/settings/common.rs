@@ -196,6 +196,7 @@ impl SettingsState {
         db_min: f32,
         db_max: f32,
         spec_time_range_secs: f32,
+        zoom: f32,
         freq_hz: f32,
         cn_db: f32,
         amp_max: f32,
@@ -251,7 +252,7 @@ impl SettingsState {
                 index: 0,
                 default: 0,
             }),
-            display: DisplayRows::new(db_min, db_max, spec_time_range_secs),
+            display: DisplayRows::new(db_min, db_max, spec_time_range_secs, zoom),
             sources,
         }
     }
@@ -264,6 +265,7 @@ impl SettingsState {
             cfg.db_min(),
             cfg.db_max(),
             cfg.spec_time_range_secs(),
+            cfg.zoom(),
             cfg.freq_hz(),
             cfg.cn_db(),
             cfg.amp_max(),

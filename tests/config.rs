@@ -17,6 +17,7 @@ fn defaults_all_match(cfg: &ViewConfig) {
         Defaults::SPEC_TIME_RANGE_SECS,
         "spec_time_range_secs"
     );
+    assert_eq!(cfg.zoom(), Defaults::ZOOM, "zoom");
     assert_eq!(cfg.freq_hz(), Defaults::FREQ_HZ, "freq_hz");
     assert_eq!(cfg.cn_db(), source::tone::TONE_DEFAULT_CN_DB, "cn_db");
     assert_eq!(cfg.amp_max(), Defaults::AMP_MAX, "amp_max");
@@ -597,4 +598,87 @@ fn cofdm_edge_guard_derives_from_every_fraction() {
         // The derived guard is what the settings row seeds from.
         assert!(cofdm_edge_guard_for(fr) > 0);
     }
+}
+
+// ── COFDM tuning: band centre and sample rate ─────────────────────────────
+
+use orion_sdr_view::source::{
+    COFDM_DEFAULT_FS, COFDM_MAX_FS, COFDM_MIN_FS, cofdm_center_bounds, cofdm_default_center_hz,
+};
+
+#[test]
+fn cofdm_tuning_defaults_when_absent() {
+    let cfg = cofdm_cfg("      bandwidth: 1/4\n");
+    assert_eq!(cfg.cofdm_fs_hz(), COFDM_DEFAULT_FS);
+    assert_eq!(
+        cfg.cofdm_center_hz(),
+        cofdm_default_center_hz(COFDM_DEFAULT_FS)
+    );
+}
+
+#[test]
+fn cofdm_center_and_rate_parse() {
+    let cfg = cofdm_cfg(concat!(
+        "      center_hz: 300000\n",
+        "      fs_hz:     1920000\n",
+    ));
+    assert_eq!(cfg.cofdm_fs_hz(), 1_920_000.0);
+    assert_eq!(cfg.cofdm_center_hz(), 300_000.0);
+}
+
+#[test]
+fn a_configured_rate_re_derives_the_default_centre() {
+    // The centre defaults to Nyquist/2, so configuring only the rate must still
+    // put the band mid-display rather than leaving it at the old rate's `fs/4` —
+    // which at a lower rate would be outside the band entirely.
+    let cfg = cofdm_cfg("      fs_hz: 480000\n");
+    assert_eq!(cfg.cofdm_fs_hz(), 480_000.0);
+    assert_eq!(cfg.cofdm_center_hz(), 120_000.0);
+}
+
+#[test]
+fn an_out_of_range_rate_or_centre_is_clamped() {
+    // Both arrive from a hand-edited YAML file, and every derived frequency is
+    // proportional to the rate — so a typo like `fs_hz: 1920` (meant as MHz)
+    // must land somewhere usable rather than collapsing the band.
+    assert_eq!(cofdm_cfg("      fs_hz: 1920\n").cofdm_fs_hz(), COFDM_MIN_FS);
+    assert_eq!(
+        cofdm_cfg("      fs_hz: 1.0e12\n").cofdm_fs_hz(),
+        COFDM_MAX_FS
+    );
+
+    let (lo, hi) = cofdm_center_bounds(COFDM_DEFAULT_FS);
+    assert_eq!(cofdm_cfg("      center_hz: 0\n").cofdm_center_hz(), lo);
+    assert_eq!(
+        cofdm_cfg("      center_hz: 5000000\n").cofdm_center_hz(),
+        hi
+    );
+    // A centre is clamped against the *configured* rate, not the default one.
+    let cfg = cofdm_cfg(concat!(
+        "      fs_hz:     480000\n",
+        "      center_hz: 480000\n",
+    ));
+    assert_eq!(cfg.cofdm_center_hz(), cofdm_center_bounds(480_000.0).1);
+}
+
+// ── Display: viewport zoom ────────────────────────────────────────────────
+
+#[test]
+fn zoom_defaults_and_parses() {
+    assert_eq!(display_cfg("").zoom(), Defaults::ZOOM);
+    assert_eq!(display_cfg("    zoom: 4.0\n").zoom(), 4.0);
+    // Floored at full span: a ratio below 1.0 would mean a window wider than
+    // the band.  The *upper* bound is per-source (`nyquist / MIN_SPAN_HZ`) so
+    // the viewport applies it, not the config.
+    assert_eq!(display_cfg("    zoom: 0.25\n").zoom(), 1.0);
+    assert_eq!(display_cfg("    zoom: -8\n").zoom(), 1.0);
+    assert_eq!(display_cfg("    zoom: 960\n").zoom(), 960.0);
+}
+
+/// Load a config from a `display:` block body (already indented).
+fn display_cfg(body: &str) -> ViewConfig {
+    let yaml = format!("view:\n  display:\n    db_max: -15\n{body}");
+    let mut f = NamedTempFile::new().unwrap();
+    f.write_all(yaml.as_bytes()).unwrap();
+    ViewConfig::load(Some(f.path().to_path_buf()))
 }

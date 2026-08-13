@@ -880,7 +880,7 @@ impl ViewApp {
             ("1 / 2 / 3\ttoggle Spectrum / Persistence / Waterfall", 2),
             ("I / M / N\tselect next source / mode / audio or message", 2),
             ("C / E / P\tcycle amplitude  |  envelope  |  peak hold", 2),
-            ("L\tlock source freq/carrier to display center", 2),
+            ("L\tlock source freq/carrier/center to display center", 2),
             ("D\tcycle decode bar: off → info → text → off", 2),
             (
                 "W\tcycle pane 3: waterfall (vertical) / spectrogram (horizontal)",

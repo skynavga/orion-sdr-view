@@ -4,21 +4,23 @@
 use super::field::{CoarseStep, NumField, Row, ToggleField};
 use crate::config::ViewConfig;
 use crate::source::cofdm::{
-    COFDM_DEFAULT_BW_FRACTION, COFDM_DEFAULT_MASK, COFDM_DEFAULT_SHAPING_ENABLED,
-    COFDM_DEFAULT_TAPER, COFDM_MAX_EDGE_GUARD, COFDM_MIN_EDGE_GUARD, CofdmBwFraction, CofdmMask,
-    CofdmShaping, CofdmTaper, cofdm_edge_guard_for,
+    COFDM_DEFAULT_BW_FRACTION, COFDM_DEFAULT_FS, COFDM_DEFAULT_MASK, COFDM_DEFAULT_SHAPING_ENABLED,
+    COFDM_DEFAULT_TAPER, COFDM_MAX_EDGE_GUARD, CofdmBwFraction, CofdmMask, CofdmShaping,
+    CofdmTaper, cofdm_center_bounds, cofdm_default_center_hz, cofdm_edge_guard_for,
+    cofdm_min_edge_guard, cofdm_spacing_hz,
 };
 
 // ── Row indices (local) ───────────────────────────────────────────────────
-const BANDWIDTH: usize = 0;
-const SHAPING: usize = 1;
-const EDGE_GUARD: usize = 2;
-const INCLUDE_DC: usize = 3;
-const TAPER: usize = 4;
-const MASK: usize = 5;
-const SIGNAL: usize = 6;
-const GAP: usize = 7;
-const CN: usize = 8;
+const CENTER: usize = 0;
+const BANDWIDTH: usize = 1;
+const SHAPING: usize = 2;
+const EDGE_GUARD: usize = 3;
+const INCLUDE_DC: usize = 4;
+const TAPER: usize = 5;
+const MASK: usize = 6;
+const SIGNAL: usize = 7;
+const GAP: usize = 8;
+const CN: usize = 9;
 
 /// Toggle option labels, in `CofdmBwFraction::ALL` order.
 const BW_OPTIONS: &[&str] = &["1/8", "1/4", "1/3", "1/2", "2/3", "3/4", "7/8"];
@@ -63,6 +65,15 @@ fn set_toggle(rows: &mut [Row], idx: usize, value: usize) {
 
 pub(super) struct CofdmRows {
     pub rows: Vec<Row>,
+    /// Native sample rate (Hz).  **Not a row** — see `CofdmConfig::fs_hz` for
+    /// why a live knob would be wrong.  It lives here anyway because
+    /// `SettingsState` is the only thing threaded to `make()` / `sync()` /
+    /// `occupied_bw_hz()`, so a per-source value that is not a row still has to
+    /// reach them through it.
+    ///
+    /// Being off the row list also means an R-reset leaves it alone, which is
+    /// right: resetting the display would otherwise silently re-derive Nyquist.
+    fs_hz: f32,
 }
 
 impl CofdmRows {
@@ -76,8 +87,28 @@ impl CofdmRows {
             index_of(CofdmTaper::ALL, d.taper),
             index_of(CofdmMask::ALL, d.mask),
         );
+        let fs_hz = COFDM_DEFAULT_FS;
+        let center = cofdm_default_center_hz(fs_hz);
+        let (center_lo, center_hi) = cofdm_center_bounds(fs_hz);
         Self {
+            fs_hz,
             rows: vec![
+                Row::Num(NumField {
+                    label: "Center",
+                    value: center,
+                    default: center,
+                    // One subcarrier per press.  Coarse for a nudge row, but
+                    // the arrow keys are not the tuning control here — `L`
+                    // (lock source to viewport centre) is, and it writes the
+                    // centre in directly at 10 Hz resolution.  A finer step
+                    // would need thousands of presses to cross the range and
+                    // would leave the band off the subcarrier grid for no gain.
+                    step: cofdm_spacing_hz(fs_hz),
+                    min: center_lo,
+                    max: center_hi,
+                    unit: " Hz",
+                    coarse: None,
+                }),
                 Row::Toggle(ToggleField {
                     label: "Bandwidth",
                     options: BW_OPTIONS,
@@ -95,7 +126,11 @@ impl CofdmRows {
                     value: d.edge_guard as f32,
                     default: d.edge_guard as f32,
                     step: 1.0,
-                    min: COFDM_MIN_EDGE_GUARD as f32,
+                    // Re-derived whenever `Center` moves — see
+                    // `reseed_edge_guard_bounds`.  The band must fit inside
+                    // `0..Nyquist`, and how much room there is depends on where
+                    // it sits.
+                    min: cofdm_min_edge_guard(center, fs_hz) as f32,
                     max: COFDM_MAX_EDGE_GUARD as f32,
                     unit: "",
                     coarse: None,
@@ -160,7 +195,7 @@ impl CofdmRows {
     /// shaping parameters are shown only while `Shaping` is on; with it off the
     /// source renders the fraction's own edge guard and no taper or mask.
     pub fn visible_indices(&self) -> Vec<usize> {
-        let mut v = vec![BANDWIDTH, SHAPING];
+        let mut v = vec![CENTER, BANDWIDTH, SHAPING];
         if self.shaping_enabled() {
             v.extend([EDGE_GUARD, INCLUDE_DC, TAPER, MASK]);
         }
@@ -179,6 +214,13 @@ impl CofdmRows {
             .unwrap_or(COFDM_DEFAULT_BW_FRACTION)
     }
 
+    fn center_hz(&self) -> f32 {
+        match &self.rows[CENTER] {
+            Row::Num(f) => f.value,
+            _ => cofdm_default_center_hz(self.fs_hz),
+        }
+    }
+
     /// Re-seed the `Edge guard` row from the current bandwidth fraction.  The
     /// fraction is what implies a guard; nudging the guard directly then
     /// overrides it until the fraction moves again.
@@ -191,6 +233,36 @@ impl CofdmRows {
         let guard = cofdm_edge_guard_for(self.bw_fraction()) as f32;
         if let Row::Num(f) = &mut self.rows[EDGE_GUARD] {
             f.value = guard.clamp(f.min, f.max);
+        }
+    }
+
+    /// Re-derive the `Edge guard` row's lower bound from where the band now
+    /// sits, and pull the current value up into the new range.
+    ///
+    /// This is the settings-side half of the centre/guard coupling.  It does
+    /// not *decide* the guard — [`CofdmShaping::effective`] is still the single
+    /// resolver, and it clamps again — but without it the row would display a
+    /// guard the source is not using, which is the disagreement the resolver
+    /// exists to prevent everywhere else.
+    fn reseed_edge_guard_bounds(&mut self) {
+        let min = cofdm_min_edge_guard(self.center_hz(), self.fs_hz) as f32;
+        if let Row::Num(f) = &mut self.rows[EDGE_GUARD] {
+            f.min = min;
+            f.value = f.value.clamp(f.min, f.max);
+        }
+    }
+
+    /// Re-derive the `Center` row's range and step from `fs_hz`, keeping the
+    /// current value inside it.  Called after the configured rate lands.
+    fn reseed_center_bounds(&mut self) {
+        let (lo, hi) = cofdm_center_bounds(self.fs_hz);
+        let step = cofdm_spacing_hz(self.fs_hz);
+        if let Row::Num(f) = &mut self.rows[CENTER] {
+            f.min = lo;
+            f.max = hi;
+            f.step = step;
+            f.value = f.value.clamp(lo, hi);
+            f.default = f.default.clamp(lo, hi);
         }
     }
 }
@@ -214,11 +286,26 @@ impl super::common::SourceRows for CofdmRows {
         self
     }
     fn after_nudge(&mut self, local_idx: usize) {
+        // Two triggers, one coupling: the fraction *implies* a guard, the
+        // centre *bounds* it.  A bandwidth nudge re-seeds the value against
+        // whatever bound the current centre left, so at an off-centre position
+        // the wider fractions land clamped — which is the same answer
+        // `CofdmShaping::effective` gives, and the point of routing both here.
+        if local_idx == CENTER {
+            self.reseed_edge_guard_bounds();
+        }
         if local_idx == BANDWIDTH {
             self.reseed_edge_guard();
         }
     }
     fn patch_from_config(&mut self, cfg: &ViewConfig) {
+        // Rate first: the centre's range, the centre's default and the edge
+        // guard's lower bound are all derived from it.
+        self.fs_hz = cfg.cofdm_fs_hz();
+        self.reseed_center_bounds();
+        self.rows[CENTER].patch_num(cfg.cofdm_center_hz());
+        self.reseed_edge_guard_bounds();
+
         self.rows[SIGNAL].patch_num(cfg.cofdm_sig_secs());
         self.rows[GAP].patch_num(cfg.cofdm_gap_secs());
         self.rows[CN].patch_num(cfg.cofdm_cn_db());
@@ -275,15 +362,19 @@ fn rows_mut(state: &mut super::SettingsState) -> &mut CofdmRows {
 /// Typed accessors for COFDM settings.  Implemented for `SettingsState`;
 /// callers `use crate::app::settings::CofdmSettings` to bring these in scope.
 ///
-/// COFDM has no user-tunable carrier (it occupies a fixed wideband sub-band),
-/// so there is no `set_*_carrier_hz`.
+/// `set_cofdm_center_hz` is what makes the `L` key uniform across all six
+/// sources.  It used to be absent, and `cofdm::Factory::set_carrier_hz` was a
+/// documented no-op — so `L` was a key that did nothing on one source and said
+/// nothing about it.
 pub(in crate::app) trait CofdmSettings {
     fn cofdm_sig_secs(&self) -> f32;
     fn cofdm_gap_secs(&self) -> f32;
     fn cofdm_cn_db(&self) -> f32;
     fn cofdm_bw_fraction(&self) -> CofdmBwFraction;
     fn cofdm_shaping(&self) -> CofdmShaping;
-    fn cycle_cofdm_bw(&mut self);
+    fn cofdm_center_hz(&self) -> f32;
+    fn cofdm_fs_hz(&self) -> f32;
+    fn set_cofdm_center_hz(&mut self, hz: f32);
 }
 
 impl CofdmSettings for super::SettingsState {
@@ -311,6 +402,23 @@ impl CofdmSettings for super::SettingsState {
     fn cofdm_bw_fraction(&self) -> CofdmBwFraction {
         rows(self).bw_fraction()
     }
+    fn cofdm_center_hz(&self) -> f32 {
+        rows(self).center_hz()
+    }
+    fn cofdm_fs_hz(&self) -> f32 {
+        rows(self).fs_hz
+    }
+    /// Write a new band centre (the `L` key's source-lock).  Clamped by the row
+    /// to what fits, and followed by the same edge-guard re-bound a manual nudge
+    /// gets — the two paths must not diverge, or locking to a viewport centre
+    /// would leave the guard row describing a band the source cannot render.
+    fn set_cofdm_center_hz(&mut self, hz: f32) {
+        let r = rows_mut(self);
+        if let Row::Num(f) = &mut r.rows[CENTER] {
+            f.value = hz.clamp(f.min, f.max);
+        }
+        r.reseed_edge_guard_bounds();
+    }
     fn cofdm_shaping(&self) -> CofdmShaping {
         let r = rows(self);
         let fraction = r.bw_fraction();
@@ -331,12 +439,5 @@ impl CofdmSettings for super::SettingsState {
                 .copied()
                 .unwrap_or(COFDM_DEFAULT_MASK),
         }
-    }
-    fn cycle_cofdm_bw(&mut self) {
-        let r = rows_mut(self);
-        if let Row::Toggle(f) = &mut r.rows[BANDWIDTH] {
-            f.next();
-        }
-        r.reseed_edge_guard();
     }
 }
