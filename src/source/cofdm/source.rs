@@ -12,25 +12,32 @@ use crate::source::{CnNoise, CnReference, MAX_SIG_SECS, NoiseDomain, SignalSourc
 
 // ── COFDM constants ───────────────────────────────────────────────────────────
 //
-// COFDM is a synthetic *wideband* coded-OFDM source.  Unlike the
-// narrowband sources it does not sit near a single tunable carrier: it occupies
-// a fixed sub-band and runs at its own high sample rate, which the viewer adopts
-// per-source (see `ViewApp::apply_source_sample_rate`).  The signal is rendered
-// natively at `COFDM_FS` — there is NO resampling, so the source mirrors the
-// PSK31 single-play→gap→repeat shape rather than FT8's resample+shift path.
+// COFDM is a synthetic *wideband* coded-OFDM source.  Unlike the narrowband
+// sources it does not sit near a single tunable *carrier* — an OFDM band has no
+// carrier, the DC subcarrier being null by convention — but it does sit
+// somewhere: it occupies a sub-band centred at `center_hz` and runs at its own
+// sample rate, which the viewer adopts per-source (see
+// `ViewApp::apply_source_sample_rate`).  Both are configurable; the defaults are
+// `fs/4` (mid-display) and `COFDM_DEFAULT_FS`.  The signal is rendered natively
+// at `fs` — there is NO resampling, so the source mirrors the PSK31
+// single-play→gap→repeat shape rather than FT8's resample+shift path.
 //
 // **Modulation is at baseband, upconversion is ours.**  `OfdmConfig`'s `rf_hz`
 // applies its rotation *inside* `OfdmMod::process`, i.e. per symbol, before
 // `OfdmFrameMod::modulate_frame` runs its spectral-shaping post-passes.  The
 // symbol-window taper is a real-valued magnitude ramp and commutes with that
 // rotation, but `TxLowpass` is a low-pass centered on DC: applied to a stream
-// already sitting at `COFDM_NOMINAL_CENTER` it would delete the signal outright.
-// So the config is built with `rf_hz = 0.0` and `render` upconverts afterwards
-// with a single continuous `Rotator`.  Two artifacts of the old arrangement go
-// away with it: `generate_ofdm_preamble` ignores its config, so the preamble and
-// training symbol used to be emitted at baseband while header/payload sat at
-// 480 kHz; and `map_bits_to_iq` builds a fresh rotator per block, so there was a
-// phase step at every header→payload and frame→frame seam.
+// already sitting at the band centre it would delete the signal outright.  So
+// the config is built with `rf_hz = 0.0` and `render` upconverts afterwards with
+// a single continuous `Rotator`.  Two artifacts of the old arrangement go away
+// with it: `generate_ofdm_preamble` ignores its config, so the preamble and
+// training symbol used to be emitted at baseband while header/payload sat at the
+// band centre; and `map_bits_to_iq` builds a fresh rotator per block, so there
+// was a phase step at every header→payload and frame→frame seam.
+//
+// A centre knob is a change to *that* rotator and nothing else: `rf_hz` stays
+// 0.0, which orion-sdr 0.0.58's frame layer asserts, and the receiver consumes
+// complex baseband so it needs no retuning at all.
 
 /// OFDM FFT size (number of subcarriers).
 pub const COFDM_N_FFT: usize = 256;
@@ -41,14 +48,6 @@ pub const COFDM_CP_LEN: usize = 32;
 /// conventionally null, so the plan spans `±(n_fft/2 - 1)`.
 const COFDM_MAX_CARRIER: usize = COFDM_N_FFT / 2 - 1;
 
-/// Narrowest edge guard the settings row allows.
-///
-/// The upconversion sits at `COFDM_NOMINAL_CENTER` = `fs/4`, i.e. `n_fft/4`
-/// bins from DC, so a carrier further out than that from DC lands outside the
-/// display's `0..Nyquist` window and folds back on itself.  One bin of margin
-/// keeps the outermost carrier clear of both ends.
-pub const COFDM_MIN_EDGE_GUARD: usize = COFDM_MAX_CARRIER - (COFDM_N_FFT / 4 - 1);
-
 /// Widest edge guard the settings row allows: the narrowest bandwidth
 /// fraction's own guard (1/8 ⇒ `n_fft/32` carriers per side).
 ///
@@ -57,6 +56,11 @@ pub const COFDM_MIN_EDGE_GUARD: usize = COFDM_MAX_CARRIER - (COFDM_N_FFT / 4 - 1
 /// — and the 40-frame render buffer with it — grows without bound as the guard
 /// approaches `n_fft/2`, for a band too narrow to be worth looking at.
 pub const COFDM_MAX_EDGE_GUARD: usize = COFDM_MAX_CARRIER - COFDM_N_FFT / 32;
+
+/// Occupied half-width (carriers per side) at the widest edge guard — the
+/// narrowest band the source will render, and so the one that fits at the most
+/// extreme band centre.  [`cofdm_center_bounds`] is derived from it.
+const COFDM_MIN_OCCUPIED_HALF: usize = COFDM_MAX_CARRIER - COFDM_MAX_EDGE_GUARD;
 
 /// Receiver FFT-window back-off, in samples.  RX-only — it does not change what
 /// is transmitted — but it is what makes the TX shaping below transparent, so it
@@ -94,14 +98,106 @@ pub const COFDM_SHAPING_SLACK: usize = {
 const COFDM_PREAMBLE_REPEATS: usize = 4;
 const COFDM_PREAMBLE_REPEAT_LEN: usize = 64;
 
-/// Native sample rate of the COFDM waveform (Hz).  Nyquist = 960 kHz.
-/// Subcarrier spacing = `COFDM_FS / COFDM_N_FFT` = 7 500 Hz.
-pub const COFDM_FS: f32 = 1_920_000.0;
+/// Default native sample rate of the COFDM waveform (Hz).  Nyquist = 960 kHz;
+/// subcarrier spacing = `fs / COFDM_N_FFT` = 7 500 Hz.
+///
+/// **A default, not a property.**  The rate is configurable per source
+/// (`sources.cofdm.fs_hz`), because a narrowband DVB-T profile is three
+/// bandwidth modes over one 2K structure — three sample rates over one
+/// numerology.  Everything downstream already takes `fs` as a parameter:
+/// [`cofdm_link_config`], [`cofdm_occupied_bw`], the [`Rotator`], and the
+/// viewer's `apply_source_sample_rate`.
+///
+/// What makes a configured rate *safe* is that the impairment is a ratio.
+/// While it was an absolute amplitude, changing `fs` would have silently
+/// changed the link: the same `noise_amp` spread over twice the bandwidth is
+/// 3 dB less noise in the occupied band, with nothing on screen to say so.  A
+/// C/N in dB is invariant to the rate by construction — see [`CnReference`].
+pub const COFDM_DEFAULT_FS: f32 = 1_920_000.0;
 
-/// RF upconversion frequency (Hz) = the nominal band center.  The DC-centered
-/// carriers make the occupied band symmetric about this frequency, so `.re`
-/// lands the band centered on the marker (at Nyquist/2, mid-display).
-pub const COFDM_NOMINAL_CENTER: f32 = COFDM_FS / 4.0; // 480 kHz = Nyquist/2
+/// Bounds on a configured sample rate.  Wide, because nothing in the render
+/// path is rate-dependent beyond the arithmetic — the bounds exist to reject a
+/// typo (`fs_hz: 1920` for 1.92 MHz) rather than to express a real limit.
+pub const COFDM_MIN_FS: f32 = 48_000.0;
+pub const COFDM_MAX_FS: f32 = 20_000_000.0;
+
+/// A configured sample rate, clamped to the supported range.  Non-finite and
+/// non-positive values fall back to the default rather than propagating a NaN
+/// into every derived frequency.
+pub fn cofdm_clamp_fs(fs: f32) -> f32 {
+    if fs.is_finite() && fs > 0.0 {
+        fs.clamp(COFDM_MIN_FS, COFDM_MAX_FS)
+    } else {
+        COFDM_DEFAULT_FS
+    }
+}
+
+/// Subcarrier spacing (Hz) at `fs`.
+pub fn cofdm_spacing_hz(fs: f32) -> f32 {
+    fs / COFDM_N_FFT as f32
+}
+
+/// Default band centre (Hz) at `fs`: Nyquist/2, i.e. mid-display.
+///
+/// The DC-centered carriers make the occupied band symmetric about the
+/// upconversion frequency, so `.re` lands the band centered on the marker.
+/// This being mid-display is a *choice of default*, not a property of the
+/// waveform — see [`cofdm_center_bounds`] for the range it can move over.
+pub fn cofdm_default_center_hz(fs: f32) -> f32 {
+    fs / 4.0
+}
+
+/// Legal range for the band centre (Hz) at `fs`.
+///
+/// A centre too close to either end of `0..Nyquist` leaves no room for even the
+/// narrowest renderable band, so the outermost carrier would land outside the
+/// display window and fold back on itself.  The bound is the narrowest band
+/// ([`COFDM_MIN_OCCUPIED_HALF`]) plus the one bin of margin
+/// [`cofdm_min_edge_guard`] keeps.
+pub fn cofdm_center_bounds(fs: f32) -> (f32, f32) {
+    let margin = (COFDM_MIN_OCCUPIED_HALF + 1) as f32 * cofdm_spacing_hz(fs);
+    (margin, fs / 2.0 - margin)
+}
+
+/// Narrowest edge guard that keeps the whole occupied band inside
+/// `0..Nyquist` when the band is centred at `center_hz`.
+///
+/// **This used to be a constant, and it was a constant only because the centre
+/// was.**  With the upconversion pinned at `fs/4` — `n_fft/4` bins from DC —
+/// the widest band that fits is `n_fft/4 - 1` carriers per side, giving
+/// `COFDM_MAX_CARRIER - (COFDM_N_FFT / 4 - 1)` = 64.  Move the centre and that
+/// bound moves with it:
+///
+/// ```text
+/// headroom = min(center, nyquist - center)     // distance to the nearer end
+/// max_half = floor(headroom / spacing) - 1     // one bin of margin
+/// min_edge_guard = COFDM_MAX_CARRIER - max_half
+/// ```
+///
+/// At `center = fs/4` this reproduces 64 exactly, which is the check that says
+/// the generalisation is a generalisation rather than a rewrite — see
+/// `the_generalised_guard_bound_reproduces_the_old_constant`.
+///
+/// The result never exceeds [`COFDM_MAX_EDGE_GUARD`], so the clamp range it
+/// bounds is always non-empty; a centre outside [`cofdm_center_bounds`] simply
+/// pins to the narrowest band rather than producing an inverted range.
+pub fn cofdm_min_edge_guard(center_hz: f32, fs: f32) -> usize {
+    COFDM_MAX_CARRIER - cofdm_max_occupied_half(center_hz, fs)
+}
+
+/// Widest occupied half-width (carriers per side) that fits at `center_hz`.
+fn cofdm_max_occupied_half(center_hz: f32, fs: f32) -> usize {
+    let spacing = cofdm_spacing_hz(fs);
+    let headroom = center_hz.min(fs / 2.0 - center_hz);
+    if !(spacing.is_finite() && spacing > 0.0) || !headroom.is_finite() {
+        return COFDM_MIN_OCCUPIED_HALF;
+    }
+    let half = (headroom / spacing).floor() - 1.0;
+    if half < COFDM_MIN_OCCUPIED_HALF as f32 {
+        return COFDM_MIN_OCCUPIED_HALF;
+    }
+    (half as usize).min(COFDM_MAX_CARRIER)
+}
 
 /// QPSK payload from the default MCS ladder (index 1: BPSK/QPSK/QAM16/QAM64).
 const COFDM_MCS_INDEX: u8 = 1;
@@ -211,10 +307,14 @@ impl CofdmBwFraction {
     /// Half-width (in subcarriers) of the DC-centered active carrier set for
     /// this fraction: the band spans `±half` about DC, i.e. `2*half` carriers.
     /// Clamped to the plan's usable range `±(n_fft/2 - 1)`.
+    ///
+    /// **Independent of `fs`, and that is what lets the sample rate be
+    /// configured without the bandwidth toggle changing meaning.**  The
+    /// fraction is of Nyquist (`fs/2`) and the spacing is `fs/n_fft`, so the
+    /// rate cancels: `half = round(fraction * n_fft / 4)`.  "1/4" is a quarter
+    /// of the display at every rate.
     fn carrier_half(self) -> i32 {
-        let spacing = COFDM_FS / COFDM_N_FFT as f32;
-        let band = self.value() * (COFDM_FS / 2.0); // fraction of Nyquist
-        let half = (band / 2.0 / spacing).round() as i32;
+        let half = (self.value() * COFDM_N_FFT as f32 / 4.0).round() as i32;
         half.clamp(1, (COFDM_N_FFT / 2) as i32 - 1)
     }
 }
@@ -434,20 +534,34 @@ impl CofdmShaping {
         }
     }
 
-    /// What is actually rendered: this set with its edge guard clamped to the
-    /// usable range when shaping is on, [`derived`](Self::derived) otherwise.
-    /// One resolver rather than a per-field pile, so every consumer — the
-    /// renderer and the Di bar's bandwidth readout — agrees.
-    pub fn effective(&self, fraction: CofdmBwFraction) -> Self {
-        if self.enabled {
-            Self {
-                edge_guard: self
-                    .edge_guard
-                    .clamp(COFDM_MIN_EDGE_GUARD, COFDM_MAX_EDGE_GUARD),
-                ..*self
-            }
+    /// What is actually rendered: this set with its edge guard clamped to what
+    /// fits at `center_hz`, or [`derived`](Self::derived) with the same clamp
+    /// when shaping is off.  One resolver rather than a per-field pile, so
+    /// every consumer — the renderer and the Di bar's bandwidth readout —
+    /// agrees.
+    ///
+    /// **The centre and the guard are one constraint, not two.**  Nudging
+    /// either can invalidate the other, so both are resolved here rather than
+    /// clamped separately at the settings rows.  A consequence worth stating:
+    /// an off-centre band cannot be as wide as a centred one, so the wider
+    /// bandwidth *fractions* stop being reachable as the centre moves out.  The
+    /// fraction remains a label — the Di bar's `BW` readout, which is keyed off
+    /// the guard this returns, is authoritative for what is transmitted.
+    ///
+    /// The disabled branch is clamped too, which it did not need to be while
+    /// the centre was fixed: every fraction's own guard clears the old constant
+    /// bound of 64, so `derived` could never fold.  Off centre it can.
+    pub fn effective(&self, fraction: CofdmBwFraction, center_hz: f32, fs: f32) -> Self {
+        let base = if self.enabled {
+            *self
         } else {
             Self::derived(fraction)
+        };
+        Self {
+            edge_guard: base
+                .edge_guard
+                .clamp(cofdm_min_edge_guard(center_hz, fs), COFDM_MAX_EDGE_GUARD),
+            ..base
         }
     }
 
@@ -567,6 +681,10 @@ pub struct CofdmSource {
     noise: CnNoise,
     pub fraction: CofdmBwFraction,
     pub shaping: CofdmShaping,
+    /// Band centre (Hz) the baseband buffer is upconverted to.  Bounded by
+    /// [`cofdm_center_bounds`] and coupled to the edge guard through
+    /// [`CofdmShaping::effective`].
+    center_hz: f32,
     fs: f32,
     /// Looping COFDM signal buffer, **complex baseband and noise-free** (fixed
     /// length; content, not duration).
@@ -604,18 +722,22 @@ impl CofdmSource {
         cn_db: f32,
         fraction: CofdmBwFraction,
         shaping: CofdmShaping,
+        center_hz: f32,
         fs: f32,
     ) -> Self {
+        let fs = cofdm_clamp_fs(fs);
+        let center_hz = clamp_center(center_hz, fs);
         let mut src = Self {
             sig_secs,
             gap_secs,
             noise: CnNoise::new(cn_db, cn_reference(0.0, 0.0, fs)),
             fraction,
             shaping,
+            center_hz,
             fs,
             iq: Vec::new(),
             pos: 0,
-            rot: Rotator::new(COFDM_NOMINAL_CENTER, fs),
+            rot: Rotator::new(center_hz, fs),
             last_iq: Vec::new(),
             display_gain: 1.0,
             in_signal: true,
@@ -624,6 +746,20 @@ impl CofdmSource {
         };
         src.render();
         src
+    }
+
+    /// Band centre (Hz), after clamping to [`cofdm_center_bounds`].
+    #[allow(dead_code)] // used by integration tests, not the binary
+    pub fn center_hz(&self) -> f32 {
+        self.center_hz
+    }
+
+    /// The shaping actually rendered — this source's set resolved through
+    /// [`CofdmShaping::effective`] at its centre and rate.
+    #[allow(dead_code)] // used by integration tests, not the binary
+    pub fn effective_shaping(&self) -> CofdmShaping {
+        self.shaping
+            .effective(self.fraction, self.center_hz, self.fs)
     }
 
     /// Requested carrier-to-noise ratio, in dB.
@@ -659,7 +795,7 @@ impl CofdmSource {
     /// display consumes and the complex baseband the decoder consumes — are
     /// derived from one impaired sample each rather than being built twice.
     fn render(&mut self) {
-        let shaping = self.shaping.effective(self.fraction);
+        let shaping = self.effective_shaping();
         let (cfg, preamble) = cofdm_link_config(&shaping, self.fs);
         let mask = shaping.mask_filter(cfg.carrier_plan.occupied_half_carriers());
         let table = McsTable::default_ladder();
@@ -736,15 +872,26 @@ impl CofdmSource {
             .collect()
     }
 
-    /// Apply fresh parameters.  Only the bandwidth fraction and the shaping set
-    /// change the rendered buffer; `sig_secs` / `gap_secs` are wall-clock phase
-    /// durations applied live, and `cn_db` is arithmetic on the cached
-    /// reference — **neither re-renders**.
+    /// Apply fresh parameters.  Only the bandwidth fraction, the shaping set
+    /// and the centre change the rendered buffer; `sig_secs` / `gap_secs` are
+    /// wall-clock phase durations applied live, and `cn_db` is arithmetic on
+    /// the cached reference — **neither re-renders**.
     ///
     /// That the C/N knob stays off the re-render path is deliberate: `render`
     /// runs FEC encoding, 40 frames of FFTs and a mask filter, so a 1 dB step
     /// held down on the arrow keys would otherwise rebuild the buffer per
     /// keypress.
+    ///
+    /// **The centre is on it, and has to be.**  The buffer itself is baseband
+    /// and would not care, but the centre clamps the edge guard
+    /// ([`CofdmShaping::effective`]), so a nudge can change the carrier plan —
+    /// and the C/N reference bandwidth with it.  Re-rendering only when the
+    /// *effective* shaping actually moved keeps the common case (a retune that
+    /// leaves the band width alone) off the expensive path.
+    ///
+    /// The rotator is rebuilt on a centre change, which steps its phase.  That
+    /// is a retune; a continuous phase across one is neither achievable nor
+    /// meaningful.
     pub fn apply_params(
         &mut self,
         sig_secs: f32,
@@ -752,12 +899,24 @@ impl CofdmSource {
         cn_db: f32,
         fraction: CofdmBwFraction,
         shaping: CofdmShaping,
+        center_hz: f32,
     ) {
-        let rerender = self.fraction != fraction || self.shaping != shaping;
+        let center_hz = clamp_center(center_hz, self.fs);
+        let retuned = center_hz != self.center_hz;
+        // The *effective* set is the whole of what `render` consumes, so
+        // comparing it is exactly the re-render condition — no need to also
+        // test the fraction or the raw set, both of which reach the buffer only
+        // through this.  (The raw set is still stored, since a later clamp
+        // resolves from it.)
+        let rerender = self.effective_shaping() != shaping.effective(fraction, center_hz, self.fs);
         self.sig_secs = sig_secs;
         self.gap_secs = gap_secs;
         self.fraction = fraction;
         self.shaping = shaping;
+        self.center_hz = center_hz;
+        if retuned {
+            self.rot = Rotator::new(center_hz, self.fs);
+        }
         if rerender {
             self.render();
         }
@@ -876,6 +1035,17 @@ impl SignalSource for CofdmSource {
 /// Target real-projection RMS implied by [`COFDM_DISPLAY_RMS_DBFS`].
 fn display_target_rms() -> f32 {
     10f32.powf(COFDM_DISPLAY_RMS_DBFS / 20.0)
+}
+
+/// A requested band centre, clamped to [`cofdm_center_bounds`].  A non-finite
+/// request falls back to the default centre rather than poisoning the rotator.
+fn clamp_center(center_hz: f32, fs: f32) -> f32 {
+    let (lo, hi) = cofdm_center_bounds(fs);
+    if center_hz.is_finite() {
+        center_hz.clamp(lo, hi)
+    } else {
+        cofdm_default_center_hz(fs)
+    }
 }
 
 /// Samples at the head of every frame that are **not** payload: the Schmidl &

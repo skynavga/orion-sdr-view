@@ -10,7 +10,7 @@ use crate::source::amdsb::AmDsbSource;
 
 use super::SourceMode;
 use super::common::source_mode_factory;
-use super::settings::{AmDsbSettings, CofdmSettings, CwSettings, Ft8Settings, ToneSettings};
+use super::settings::{AmDsbSettings, CwSettings, Ft8Settings, ToneSettings};
 use super::source::{amdsb, cofdm, cw, ft8, psk31, tone};
 use super::view::ViewApp;
 
@@ -109,15 +109,6 @@ impl ViewApp {
     /// restart_source flow the change through.
     pub(super) fn cycle_ft8_msg_type(&mut self) {
         self.settings.cycle_ft8_msg_type();
-        self.restart_source();
-    }
-
-    /// Cycle the COFDM occupied-bandwidth fraction (M key).  Cycles the toggle,
-    /// then restarts (which re-renders the source and re-derives the decode bw).
-    /// The spectrogram follows the viewport span, so no spectrogram reframe is
-    /// needed here.
-    pub(super) fn cycle_cofdm_bandwidth(&mut self) {
-        self.settings.cycle_cofdm_bw();
         self.restart_source();
     }
 

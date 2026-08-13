@@ -21,8 +21,14 @@
 //! smallest rate the tables report.
 
 use orion_sdr_view::source::{
-    COFDM_FS, CofdmBwFraction, CofdmRx, CofdmShaping, CofdmSource, SignalSource,
+    COFDM_DEFAULT_FS, CofdmBwFraction, CofdmRx, CofdmShaping, CofdmSource, SignalSource,
+    cofdm_default_center_hz,
 };
+
+/// The band centre these tests use unless they are specifically moving it.
+fn center() -> f32 {
+    cofdm_default_center_hz(COFDM_DEFAULT_FS)
+}
 
 const BLOCK: usize = 4096;
 /// Frames accounted per measurement point.  1/150 resolves ~0.7%, which is
@@ -48,11 +54,19 @@ struct Point {
 /// another.
 fn measure(fraction: CofdmBwFraction, cn_db: f32) -> Point {
     let shaping = CofdmShaping::default_for(fraction);
-    let effective = shaping.effective(fraction);
+    let effective = shaping.effective(fraction, center(), COFDM_DEFAULT_FS);
     // A signal phase long enough that the burst never ends: a gap would reset
     // the receiver mid-measurement and restart the sequence numbering.
-    let mut src = CofdmSource::new(1.0e6, 1.0, cn_db, fraction, shaping, COFDM_FS);
-    let mut rx = CofdmRx::new(&effective, COFDM_FS);
+    let mut src = CofdmSource::new(
+        1.0e6,
+        1.0,
+        cn_db,
+        fraction,
+        shaping,
+        center(),
+        COFDM_DEFAULT_FS,
+    );
+    let mut rx = CofdmRx::new(&effective, COFDM_DEFAULT_FS);
 
     let (mut evm_sum, mut cber_sum, mut iber_sum) = (0.0f64, 0.0f64, 0.0f64);
     let (mut evm_n, mut cber_n, mut iber_n) = (0u64, 0u64, 0u64);

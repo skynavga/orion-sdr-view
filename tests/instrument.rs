@@ -13,10 +13,15 @@ use orion_sdr_view::decode::instrument::*;
 use orion_sdr_view::decode::{DecodeResult, SPECTRUM_WINDOW_SAMPLES};
 use orion_sdr_view::source::cofdm::CofdmState;
 use orion_sdr_view::source::{
-    COFDM_CP_LEN, COFDM_DEFAULT_CN_DB, COFDM_DISPLAY_RMS_DBFS, COFDM_FS, COFDM_N_FFT,
-    COFDM_NOMINAL_CENTER, CofdmBwFraction, CofdmShaping, CofdmSource, MAX_CN_DB, SignalSource,
-    cofdm_data_carriers, cofdm_edge_guard_for, cofdm_mcs_facts, cofdm_occupied_bw,
+    COFDM_CP_LEN, COFDM_DEFAULT_CN_DB, COFDM_DEFAULT_FS, COFDM_DISPLAY_RMS_DBFS, COFDM_N_FFT,
+    CofdmBwFraction, CofdmShaping, CofdmSource, MAX_CN_DB, SignalSource, cofdm_data_carriers,
+    cofdm_default_center_hz, cofdm_edge_guard_for, cofdm_mcs_facts, cofdm_occupied_bw,
 };
+
+/// The band centre these tests use unless they are specifically moving it.
+fn center() -> f32 {
+    cofdm_default_center_hz(COFDM_DEFAULT_FS)
+}
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -24,18 +29,18 @@ use orion_sdr_view::source::{
 /// built the same way the provider builds them.
 fn facts_for(fraction: CofdmBwFraction, cn_db: f32) -> CofdmFacts {
     let guard = CofdmShaping::default_for(fraction)
-        .effective(fraction)
+        .effective(fraction, center(), COFDM_DEFAULT_FS)
         .edge_guard;
     let (constellation, bits_per_symbol, inner_code_rate) = cofdm_mcs_facts();
     CofdmFacts {
-        center_hz: COFDM_NOMINAL_CENTER,
-        bandwidth_hz: cofdm_occupied_bw(COFDM_FS, guard),
+        center_hz: center(),
+        bandwidth_hz: cofdm_occupied_bw(COFDM_DEFAULT_FS, guard),
         // Raw amplitudes against the source's own full-scale reference.
         level_amp: 1.8,
         peak_amp: 14.7,
         full_scale: 1.0,
         cn_db,
-        fs: COFDM_FS,
+        fs: COFDM_DEFAULT_FS,
         n_fft: COFDM_N_FFT,
         cp_len: COFDM_CP_LEN,
         data_carriers: cofdm_data_carriers(guard, false),
@@ -441,7 +446,7 @@ fn the_error_unit_switches_the_rate_label_but_not_the_count_or_the_widths() {
 #[test]
 fn the_bit_rate_matches_a_hand_computed_value_at_every_fraction() {
     let (_, bits_per_symbol, (k, n)) = cofdm_mcs_facts();
-    let symbol_rate = COFDM_FS as f64 / (COFDM_N_FFT + COFDM_CP_LEN) as f64;
+    let symbol_rate = COFDM_DEFAULT_FS as f64 / (COFDM_N_FFT + COFDM_CP_LEN) as f64;
     for &fraction in CofdmBwFraction::ALL {
         let f = facts_for(fraction, 28.5);
         let expect =
@@ -685,10 +690,19 @@ fn run_provider_with(
     with_receiver: bool,
 ) -> Vec<Option<Box<CofdmInstrument>>> {
     let fraction = CofdmBwFraction::OneQuarter;
-    let shaping = CofdmShaping::default_for(fraction).effective(fraction);
+    let shaping =
+        CofdmShaping::default_for(fraction).effective(fraction, center(), COFDM_DEFAULT_FS);
     let guard = shaping.edge_guard;
-    let bw = cofdm_occupied_bw(COFDM_FS, guard);
-    let mut src = CofdmSource::new(60.0, 1.0, cn_db, fraction, shaping, COFDM_FS);
+    let bw = cofdm_occupied_bw(COFDM_DEFAULT_FS, guard);
+    let mut src = CofdmSource::new(
+        60.0,
+        1.0,
+        cn_db,
+        fraction,
+        shaping,
+        center(),
+        COFDM_DEFAULT_FS,
+    );
     let (tx, rx) = std::sync::mpsc::sync_channel(4096);
 
     for _ in 0..blocks {
@@ -698,11 +712,11 @@ fn run_provider_with(
             &s,
             true,
             false,
-            COFDM_NOMINAL_CENTER,
+            center(),
             bw,
             shaping,
             iq.as_deref(),
-            COFDM_FS,
+            COFDM_DEFAULT_FS,
             &tx,
         );
     }
@@ -711,11 +725,11 @@ fn run_provider_with(
             &[],
             false,
             true,
-            COFDM_NOMINAL_CENTER,
+            center(),
             bw,
             shaping,
             None,
-            COFDM_FS,
+            COFDM_DEFAULT_FS,
             &tx,
         );
     }
@@ -1046,11 +1060,20 @@ fn a_clean_burst_counts_no_frame_errors() {
 #[test]
 fn a_new_burst_does_not_inherit_the_last_ones_sequence() {
     let fraction = CofdmBwFraction::OneQuarter;
-    let shaping = CofdmShaping::default_for(fraction).effective(fraction);
-    let bw = cofdm_occupied_bw(COFDM_FS, shaping.edge_guard);
+    let shaping =
+        CofdmShaping::default_for(fraction).effective(fraction, center(), COFDM_DEFAULT_FS);
+    let bw = cofdm_occupied_bw(COFDM_DEFAULT_FS, shaping.edge_guard);
     // Short phases so the run crosses several gaps quickly.  The cleanest link
     // the row offers: any error counted here is invented.
-    let mut src = CofdmSource::new(0.20, 0.10, MAX_CN_DB, fraction, shaping, COFDM_FS);
+    let mut src = CofdmSource::new(
+        0.20,
+        0.10,
+        MAX_CN_DB,
+        fraction,
+        shaping,
+        center(),
+        COFDM_DEFAULT_FS,
+    );
     let mut state = CofdmState::new();
     let (tx, rx) = std::sync::mpsc::sync_channel(4096);
 
@@ -1068,11 +1091,11 @@ fn a_new_burst_does_not_inherit_the_last_ones_sequence() {
             &s,
             is_signal,
             gap_edge,
-            COFDM_NOMINAL_CENTER,
+            center(),
             bw,
             shaping,
             Some(&iq),
-            COFDM_FS,
+            COFDM_DEFAULT_FS,
             &tx,
         );
         while let Ok(DecodeResult::Instrument(Some(inst))) = rx.try_recv() {

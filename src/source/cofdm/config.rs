@@ -10,6 +10,24 @@ use crate::source::cofdm::{
 
 #[derive(Debug, Deserialize)]
 pub struct CofdmConfig {
+    /// Band centre (Hz).  Absent means Nyquist/2 (`fs_hz / 4`), which puts the
+    /// band mid-display.  Clamped to the range in which the narrowest
+    /// renderable band still fits inside `0..Nyquist`.
+    ///
+    /// Named `center_hz`, not `carrier_hz` as the five narrowband sources are:
+    /// an OFDM band has no carrier — the DC subcarrier is null by default — and
+    /// this block already speaks its own vocabulary.  The *trait* surface stays
+    /// `decode_carrier_hz` / `set_carrier_hz`, which is the concept-independent
+    /// name for "where this source sits", and is what makes the `L` key uniform.
+    pub center_hz: Option<f32>,
+    /// Native sample rate (Hz).  Absent means [`COFDM_DEFAULT_FS`].
+    ///
+    /// **No settings row, deliberately.**  Changing the rate re-derives Nyquist
+    /// and clears the waterfall, persistence and spectrogram — bin-indexed
+    /// history at the old scaling cannot be drawn at the new one — so an
+    /// arrow-nudged row would wipe the display on every keypress.  This is the
+    /// one place where a config key is right and a live knob is wrong.
+    pub fs_hz: Option<f32>,
     /// Occupied bandwidth as a fraction of the full display span, one of
     /// "1/8", "1/4", "1/3", "1/2", "2/3", "3/4", "7/8".
     pub bandwidth: Option<String>,
@@ -38,6 +56,27 @@ pub struct CofdmConfig {
 }
 
 impl crate::config::ViewConfig {
+    /// Configured sample rate, clamped to the supported range.
+    pub fn cofdm_fs_hz(&self) -> f32 {
+        crate::source::cofdm::cofdm_clamp_fs(
+            self.cofdm()
+                .and_then(|c| c.fs_hz)
+                .unwrap_or(crate::source::cofdm::COFDM_DEFAULT_FS),
+        )
+    }
+    /// Configured band centre, clamped to what fits at the configured rate.
+    /// Defaults to Nyquist/2 — which is why it is derived from `cofdm_fs_hz`
+    /// rather than from the constant: configuring only `fs_hz` still centres
+    /// the band.
+    pub fn cofdm_center_hz(&self) -> f32 {
+        let fs = self.cofdm_fs_hz();
+        let (lo, hi) = crate::source::cofdm::cofdm_center_bounds(fs);
+        self.cofdm()
+            .and_then(|c| c.center_hz)
+            .filter(|v| v.is_finite())
+            .unwrap_or_else(|| crate::source::cofdm::cofdm_default_center_hz(fs))
+            .clamp(lo, hi)
+    }
     pub fn cofdm_sig_secs(&self) -> f32 {
         self.cofdm()
             .and_then(|c| c.sig_secs)

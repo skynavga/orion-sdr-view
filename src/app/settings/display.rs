@@ -8,9 +8,10 @@ use eframe::egui;
 // ── Row indices (local) ───────────────────────────────────────────────────
 const DB_MIN: usize = 0;
 const DB_MAX: usize = 1;
-const SPEC_TIME_RANGE: usize = 2;
-const PAN_DIR: usize = 3;
-const TIME_ZONE: usize = 4;
+const ZOOM: usize = 2;
+const SPEC_TIME_RANGE: usize = 3;
+const PAN_DIR: usize = 4;
+const TIME_ZONE: usize = 5;
 
 /// Pan-direction toggle options, in enum order.  "spectrum" = arrow scrolls the
 /// spectrum (panadapter convention; a fixed signal appears to move opposite the
@@ -22,7 +23,7 @@ pub(super) struct DisplayRows {
 }
 
 impl DisplayRows {
-    pub fn new(db_min: f32, db_max: f32, spec_time_range_secs: f32) -> Self {
+    pub fn new(db_min: f32, db_max: f32, spec_time_range_secs: f32, zoom: f32) -> Self {
         Self {
             rows: vec![
                 Row::Num(NumField {
@@ -43,6 +44,23 @@ impl DisplayRows {
                     min: -159.0,
                     max: 0.0,
                     unit: " dB",
+                    coarse: None,
+                }),
+                Row::Num(NumField {
+                    label: "Zoom",
+                    value: zoom,
+                    default: crate::config::Defaults::ZOOM,
+                    // Matches the keyboard's coarse ↑/↓ step, so the row and the
+                    // arrow keys move the viewport by the same amount.
+                    step: 0.5,
+                    min: 1.0,
+                    // Re-derived per source by `set_zoom_max` from the
+                    // viewport's own bound — 24x at 48 kHz, 960x for COFDM.  A
+                    // fixed bound here would either forbid a legitimate
+                    // wideband zoom or let this row show a ratio the viewport
+                    // had silently clamped.
+                    max: crate::app::SAMPLE_RATE / 2.0 / crate::viewport::MIN_SPAN_HZ,
+                    unit: "x",
                     coarse: None,
                 }),
                 Row::Num(NumField {
@@ -76,6 +94,11 @@ impl DisplayRows {
     pub fn patch_from_config(&mut self, cfg: &ViewConfig) {
         self.rows[DB_MIN].patch_num(cfg.db_min());
         self.rows[DB_MAX].patch_num(cfg.db_max());
+        // Clamped to the *startup* source's bound, since that is the viewport
+        // the configured value opens against.  Configuring a ratio beyond what
+        // 48 kHz allows (>24x) is asking for a 1 kHz window on a narrowband
+        // source, so clamping it is the honest answer rather than a loss.
+        self.rows[ZOOM].patch_num(cfg.zoom());
         self.rows[SPEC_TIME_RANGE].patch_num(cfg.spec_time_range_secs());
 
         let pan_idx = usize::from(cfg.pan_signal_follows());
@@ -318,7 +341,37 @@ impl super::SettingsState {
         if let Row::Num(f) = &self.display.rows[SPEC_TIME_RANGE] {
             f.value
         } else {
-            10.0
+            crate::config::Defaults::SPEC_TIME_RANGE_SECS
+        }
+    }
+    /// Viewport zoom ratio held by the `Zoom` row.
+    pub fn zoom_ratio(&self) -> f32 {
+        if let Row::Num(f) = &self.display.rows[ZOOM] {
+            f.value
+        } else {
+            crate::config::Defaults::ZOOM
+        }
+    }
+    /// Write the viewport's current zoom into the row.  Value only — `default`
+    /// stays the configured startup ratio, so an R-reset on the Display tab
+    /// restores what the YAML asked for rather than wherever the user last
+    /// zoomed to.
+    pub fn set_zoom_ratio(&mut self, v: f32) {
+        if let Row::Num(f) = &mut self.display.rows[ZOOM] {
+            f.value = v.clamp(f.min, f.max);
+        }
+    }
+    /// Re-derive the `Zoom` row's upper bound after a sample-rate change, and
+    /// pull the current value into it.
+    ///
+    /// Kept equal to `FreqView::max_zoom_ratio` so the row and the ↑/↓ keys
+    /// clamp identically; if they diverged, the row would display a ratio the
+    /// viewport refused to take.
+    pub fn set_zoom_max(&mut self, max: f32) {
+        if let Row::Num(f) = &mut self.display.rows[ZOOM] {
+            f.max = max.max(f.min);
+            f.value = f.value.clamp(f.min, f.max);
+            f.default = f.default.clamp(f.min, f.max);
         }
     }
     /// True when pan is in "signal" mode (arrow moves the center/signal in the

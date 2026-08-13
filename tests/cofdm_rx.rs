@@ -22,17 +22,30 @@ use orion_sdr::dsp::Rotator;
 use orion_sdr::fec::{FrameMetadata, FramePacket};
 use orion_sdr::modulate::{McsTable, OfdmFrameMod};
 use orion_sdr_view::source::{
-    COFDM_DEFAULT_CN_DB, COFDM_FS, COFDM_NOMINAL_CENTER, CofdmBwFraction, CofdmMask, CofdmRx,
-    CofdmShaping, CofdmSource, CofdmTaper, MAX_CN_DB, SignalSource, cofdm_edge_guard_for,
-    cofdm_link_config,
+    COFDM_DEFAULT_CN_DB, COFDM_DEFAULT_FS, CofdmBwFraction, CofdmMask, CofdmRx, CofdmShaping,
+    CofdmSource, CofdmTaper, MAX_CN_DB, SignalSource, cofdm_default_center_hz,
+    cofdm_edge_guard_for, cofdm_link_config,
 };
+
+/// The band centre these tests use unless they are specifically moving it.
+fn center() -> f32 {
+    cofdm_default_center_hz(COFDM_DEFAULT_FS)
+}
 
 /// The viewer's real per-render-frame block size, so the tests exercise the
 /// same feed granularity the decode thread sees rather than one big buffer.
 const BLOCK: usize = 4096;
 
 fn source_with(shaping: CofdmShaping, fraction: CofdmBwFraction, cn_db: f32) -> CofdmSource {
-    CofdmSource::new(60.0, 1.0, cn_db, fraction, shaping, COFDM_FS)
+    CofdmSource::new(
+        60.0,
+        1.0,
+        cn_db,
+        fraction,
+        shaping,
+        center(),
+        COFDM_DEFAULT_FS,
+    )
 }
 
 /// A C/N high enough that the injected noise is negligible for a test that
@@ -71,7 +84,7 @@ fn waveform_is_demodulable() {
     for fraction in [CofdmBwFraction::OneQuarter, CofdmBwFraction::SevenEighths] {
         let shaping = CofdmShaping::derived(fraction);
         let mut src = source_with(shaping, fraction, CLEAN_CN_DB);
-        let mut rx = CofdmRx::new(&shaping, COFDM_FS);
+        let mut rx = CofdmRx::new(&shaping, COFDM_DEFAULT_FS);
         pump(&mut src, &mut rx, samples_for(fraction, 6));
 
         let stats = rx.stats();
@@ -100,7 +113,7 @@ fn waveform_is_demodulable_with_shaping_on() {
         mask: CofdmMask::Db60,
     };
     let mut src = source_with(shaping, fraction, CLEAN_CN_DB);
-    let mut rx = CofdmRx::new(&shaping, COFDM_FS);
+    let mut rx = CofdmRx::new(&shaping, COFDM_DEFAULT_FS);
     pump(&mut src, &mut rx, samples_for(fraction, 6));
 
     assert!(
@@ -126,11 +139,11 @@ fn carrier_offset_is_observable() {
 
     let mut seen = Vec::new();
     for &offset_hz in &[0.0f32, 50.0, 200.0] {
-        let mut rx = CofdmRx::new(&shaping, COFDM_FS);
+        let mut rx = CofdmRx::new(&shaping, COFDM_DEFAULT_FS);
         src.restart();
         // Apply a genuine carrier offset to the complex baseband before it
         // reaches the receiver.
-        let mut rot = Rotator::new(offset_hz, COFDM_FS);
+        let mut rot = Rotator::new(offset_hz, COFDM_DEFAULT_FS);
         let mut taken = 0;
         while taken < samples_for(fraction, 4) {
             let _display = src.next_samples(BLOCK);
@@ -184,7 +197,7 @@ fn real_output_is_the_projection_of_the_decoded_samples() {
     let fraction = CofdmBwFraction::OneQuarter;
     let shaping = CofdmShaping::derived(fraction);
     let mut src = source_with(shaping, fraction, 30.0);
-    let mut rot = Rotator::new(COFDM_NOMINAL_CENTER, COFDM_FS);
+    let mut rot = Rotator::new(center(), COFDM_DEFAULT_FS);
 
     for _ in 0..4 {
         let real = src.next_samples(BLOCK);
@@ -207,12 +220,89 @@ fn real_output_is_the_projection_of_the_decoded_samples() {
     }
 }
 
+/// A retuned band must still decode, and must still project to the display.
+///
+/// **A demodulator that differs from the modulator by a frequency offset does
+/// not fail loudly — it never acquires, which looks identical to a dead
+/// signal.**  That is the same trap `cofdm_link_config` exists to prevent for
+/// the numerology; the band centre is a second axis of it.  The reason it is
+/// *not* a trap here is structural rather than lucky: the receiver consumes
+/// complex baseband, upstream of the upconversion, so the centre is a property
+/// of the display path alone.  This test is what says so — and what would fail
+/// if the tap were ever moved downstream of the rotator.
+#[test]
+fn the_receiver_follows_the_band_centre() {
+    let fraction = CofdmBwFraction::OneQuarter;
+    let shaping = CofdmShaping::derived(fraction);
+    // Three centres spanning the legal range at the 1/4 fraction, including one
+    // low enough that the widest fractions would not fit there.
+    for center_hz in [center() / 2.0, center(), center() * 1.5] {
+        let mut src = CofdmSource::new(
+            60.0,
+            1.0,
+            CLEAN_CN_DB,
+            fraction,
+            shaping,
+            center_hz,
+            COFDM_DEFAULT_FS,
+        );
+        assert_eq!(
+            src.center_hz(),
+            center_hz,
+            "centre was clamped unexpectedly"
+        );
+        let mut rx = CofdmRx::new(&shaping, COFDM_DEFAULT_FS);
+        pump(&mut src, &mut rx, samples_for(fraction, 6));
+
+        let stats = rx.stats();
+        assert!(
+            stats.decoded > 0 && stats.failed == 0 && stats.lost == 0,
+            "centre {center_hz} Hz: {stats:?}"
+        );
+
+        // ...and the display still shows the projection of what was decoded,
+        // now rotated to the new centre.
+        //
+        // On a *fresh* source, because the reference rotator starts at phase
+        // zero and the source's does not restart: it is advanced once per
+        // emitted sample and never reset, which is what keeps the phase
+        // continuous across block, loop and gap boundaries.  Rewinding the
+        // buffer with `restart` leaves the two oscillators out of step by
+        // however many samples have been drawn.
+        let mut fresh = CofdmSource::new(
+            60.0,
+            1.0,
+            CLEAN_CN_DB,
+            fraction,
+            shaping,
+            center_hz,
+            COFDM_DEFAULT_FS,
+        );
+        let mut rot = Rotator::new(center_hz, COFDM_DEFAULT_FS);
+        let real = fresh.next_samples(BLOCK);
+        let iq = fresh.last_samples_iq().expect("complex baseband").to_vec();
+        let worst = real
+            .iter()
+            .zip(&iq)
+            .map(|(&r, &c)| {
+                let p = rot.next();
+                (r - (c.re * p.re - c.im * p.im)).abs()
+            })
+            .fold(0.0f32, f32::max);
+        assert!(
+            worst < 1e-3,
+            "centre {center_hz} Hz: real output is not the projection at that centre \
+             (worst deviation {worst})"
+        );
+    }
+}
+
 #[test]
 fn diagnostics_are_populated() {
     let fraction = CofdmBwFraction::OneQuarter;
     let shaping = CofdmShaping::derived(fraction);
     let mut src = source_with(shaping, fraction, CLEAN_CN_DB);
-    let mut rx = CofdmRx::new(&shaping, COFDM_FS);
+    let mut rx = CofdmRx::new(&shaping, COFDM_DEFAULT_FS);
     pump(&mut src, &mut rx, samples_for(fraction, 6));
 
     let facts = rx.last().expect("a frame should have been decoded");
@@ -238,7 +328,7 @@ fn iber_never_exceeds_cber() {
     let shaping = CofdmShaping::derived(fraction);
     for &cn_db in &[CLEAN_CN_DB, 45.0, 31.0, 25.0] {
         let mut src = source_with(shaping, fraction, cn_db);
-        let mut rx = CofdmRx::new(&shaping, COFDM_FS);
+        let mut rx = CofdmRx::new(&shaping, COFDM_DEFAULT_FS);
         pump(&mut src, &mut rx, samples_for(fraction, 6));
 
         let Some(facts) = rx.last() else { continue };
@@ -256,7 +346,7 @@ fn reset_clears_frame_accounting() {
     let fraction = CofdmBwFraction::OneQuarter;
     let shaping = CofdmShaping::derived(fraction);
     let mut src = source_with(shaping, fraction, CLEAN_CN_DB);
-    let mut rx = CofdmRx::new(&shaping, COFDM_FS);
+    let mut rx = CofdmRx::new(&shaping, COFDM_DEFAULT_FS);
     pump(&mut src, &mut rx, samples_for(fraction, 4));
     assert!(rx.stats().decoded > 0);
 
@@ -270,7 +360,7 @@ fn reset_clears_frame_accounting() {
 #[test]
 fn frame_error_rate_is_none_before_any_frame() {
     let shaping = CofdmShaping::derived(CofdmBwFraction::OneQuarter);
-    let rx = CofdmRx::new(&shaping, COFDM_FS);
+    let rx = CofdmRx::new(&shaping, COFDM_DEFAULT_FS);
     assert!(rx.stats().frame_error_rate().is_none());
 }
 
@@ -289,7 +379,7 @@ fn no_frames_are_silently_dropped() {
     // The settings row's default C/N.  An excellent link -- any loss here is a
     // receiver defect, not a channel effect.
     let mut src = source_with(shaping, fraction, COFDM_DEFAULT_CN_DB);
-    let mut rx = CofdmRx::new(&shaping, COFDM_FS);
+    let mut rx = CofdmRx::new(&shaping, COFDM_DEFAULT_FS);
     pump(&mut src, &mut rx, samples_for(fraction, 8));
 
     let stats = rx.stats();
@@ -325,7 +415,7 @@ fn looping_the_buffer_does_not_invent_frame_losses() {
     let fraction = CofdmBwFraction::SevenEighths;
     let shaping = CofdmShaping::derived(fraction);
     let mut src = source_with(shaping, fraction, CLEAN_CN_DB);
-    let mut rx = CofdmRx::new(&shaping, COFDM_FS);
+    let mut rx = CofdmRx::new(&shaping, COFDM_DEFAULT_FS);
     // Comfortably more than one pass through the 40-frame buffer.
     pump(&mut src, &mut rx, 500_000);
 
@@ -364,7 +454,7 @@ fn a_failed_frame_is_not_also_counted_as_a_lost_one() {
     // vacuous; the first has to be clean or the baseline frame count is not one.
     for &cn_db in &[CLEAN_CN_DB, 24.0, 19.0] {
         let mut src = source_with(shaping, fraction, cn_db);
-        let mut rx = CofdmRx::new(&shaping, COFDM_FS);
+        let mut rx = CofdmRx::new(&shaping, COFDM_DEFAULT_FS);
         pump(&mut src, &mut rx, SAMPLES);
         let stats = rx.stats();
         assert_eq!(
@@ -416,7 +506,7 @@ fn the_display_gain_scales_every_segment_alike() {
     let shaping = CofdmShaping::derived(fraction);
 
     // The same link the source renders, at unit scale.
-    let (cfg, preamble) = cofdm_link_config(&shaping, COFDM_FS);
+    let (cfg, preamble) = cofdm_link_config(&shaping, COFDM_DEFAULT_FS);
     assert_eq!(
         cfg.gain, 1.0,
         "the waveform config must carry no display gain"

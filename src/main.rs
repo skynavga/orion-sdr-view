@@ -7,6 +7,7 @@ mod decode;
 mod source;
 #[allow(unused)]
 mod utils;
+mod viewport;
 
 use clap::Parser;
 use eframe::egui;
