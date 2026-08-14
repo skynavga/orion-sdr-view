@@ -123,6 +123,90 @@ fn waveform_is_demodulable_with_shaping_on() {
     );
 }
 
+/// Occupying the DC subcarrier must decode like any other carrier.
+///
+/// **Currently it does not, and the defect is in orion-sdr rather than here.**
+/// `generate_training_symbol_time_domain` (orion-sdr 0.0.59,
+/// `src/sync/ofdm_sync.rs:299`) zeroes bin 0 unconditionally, so the training
+/// symbol never transmits DC even when `CarrierPlan::with_contiguous_data` has
+/// made it a data carrier.  The channel estimate there is then noise, and
+/// `EQUALIZER_FLOOR` divides by it.
+///
+/// Written against the *fixed* behaviour and `#[ignore]`d, so it turns green on
+/// the dependency bump that lands the fix rather than needing to be remembered.
+///
+/// Measured on 0.0.59, both halves fail:
+///
+/// | | EVM | frames |
+/// | --- | --- | --- |
+/// | bare round trip, DC off | -142.4 dB | 4/4 |
+/// | bare round trip, DC on | **-15.4 dB** | 4/4 |
+/// | through the source, DC off | -66.7 dB | 4 decoded, 0 failed |
+/// | through the source, DC on | **+54.8 dB** | 3 decoded, 5 failed |
+///
+/// `sqrt(1/33)` is -15.2 dB, so the bare figure is exactly one carrier of 33
+/// completely wrong — the DC one — with the other 32 perfect.  A DC offset in
+/// the transmitted baseband was the obvious explanation and is *not* the cause:
+/// measured at -37 dB relative to total RMS, some 22 dB below a single
+/// carrier's amplitude.
+#[test]
+#[ignore = "orion-sdr defect: an occupied DC subcarrier does not demodulate"]
+fn occupying_dc_survives_a_round_trip() {
+    let fraction = CofdmBwFraction::OneQuarter;
+    // `include_dc` only means anything with shaping on: `CofdmShaping::effective`
+    // returns `derived()` — no DC, no taper, no mask — when it is off.  Building
+    // a receiver from the unresolved shaping while the source resolves it is a
+    // carrier-plan mismatch, which fails for an entirely different reason.
+    let shaping = CofdmShaping {
+        include_dc: true,
+        ..CofdmShaping::default_for(fraction)
+    };
+    let effective = shaping.effective(fraction, center(), COFDM_DEFAULT_FS);
+    assert!(effective.include_dc, "the fixture must actually occupy DC");
+
+    // Part 1: the library alone — no source, no impairment, no upconversion, no
+    // transmit shaping.  Isolates orion-sdr from everything this crate adds.
+    let (cfg, preamble) = cofdm_link_config(&effective, COFDM_DEFAULT_FS);
+    let modu = OfdmFrameMod::new(cfg, McsTable::default_ladder(), preamble);
+    let mut bare = CofdmRx::new(&effective, COFDM_DEFAULT_FS);
+    for seq in 0..4u32 {
+        let frame = modu.modulate_frame(
+            &FramePacket::new(FrameMetadata::new(seq, 1), vec![0x5a; 184]),
+            0,
+        );
+        bare.process(&frame);
+    }
+    let bare_evm = bare
+        .last()
+        .and_then(|f| f.evm_db)
+        .expect("a noiseless round trip should report EVM");
+    assert!(
+        bare_evm < -60.0,
+        "a noiseless round trip with DC occupied measured {bare_evm:.1} dB EVM; \
+         with DC nulled it is -142 dB, and -15.2 dB would be exactly one carrier \
+         of 33 in error"
+    );
+
+    // Part 2: through the source, on a link clean enough that any loss is
+    // structural rather than a channel effect.
+    let mut src = source_with(shaping, fraction, CLEAN_CN_DB);
+    let mut rx = CofdmRx::new(&effective, COFDM_DEFAULT_FS);
+    pump(&mut src, &mut rx, samples_for(fraction, 4));
+    let stats = rx.stats();
+    assert_eq!(
+        stats.failed,
+        0,
+        "{} of {} frames failed with DC occupied on a {CLEAN_CN_DB} dB link",
+        stats.failed,
+        stats.expected()
+    );
+    let evm = rx.last().and_then(|f| f.evm_db).expect("EVM");
+    assert!(
+        evm < -40.0,
+        "EVM {evm:.1} dB with DC occupied; with DC nulled the same link gives -67 dB"
+    );
+}
+
 /// A carrier offset must actually be measurable.
 ///
 /// **This is the test that catches a structurally-blind front end.**  Decoding

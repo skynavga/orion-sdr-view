@@ -191,13 +191,29 @@ impl CofdmRows {
         }
     }
 
-    /// Visible rows in the order they appear in the settings overlay.  The four
+    /// Visible rows in the order they appear in the settings overlay.  The
     /// shaping parameters are shown only while `Shaping` is on; with it off the
     /// source renders the fraction's own edge guard and no taper or mask.
+    ///
+    /// **`INCLUDE_DC` is deliberately not listed.**  Occupying the DC
+    /// subcarrier does not survive a round trip: a bare `OfdmFrameMod` →
+    /// `CofdmRx` pass with matched carrier plans and no channel measures
+    /// -15.4 dB EVM against -142.4 dB with DC nulled — `sqrt(1/33)` is
+    /// -15.2 dB, i.e. exactly one carrier of 33 completely wrong, the DC one.
+    /// Through the source it is far worse: EVM goes *positive* (error power
+    /// above signal power) and about half the frames fail even on a 70 dB link.
+    ///
+    /// The defect is below this crate, in orion-sdr's handling of an occupied
+    /// DC bin, so the row is withdrawn rather than fixed here — a toggle that
+    /// silently breaks the link is worse than no toggle.  `sources.cofdm.
+    /// include_dc` still works from YAML, deliberately: it is how the defect is
+    /// reproduced and how the eventual fix will be verified.  See
+    /// `occupying_dc_survives_a_round_trip` in `tests/cofdm_rx.rs`, which is
+    /// `#[ignore]`d and will pass when it lands.
     pub fn visible_indices(&self) -> Vec<usize> {
         let mut v = vec![CENTER, BANDWIDTH, SHAPING];
         if self.shaping_enabled() {
-            v.extend([EDGE_GUARD, INCLUDE_DC, TAPER, MASK]);
+            v.extend([EDGE_GUARD, TAPER, MASK]);
         }
         v.extend([SIGNAL, GAP, CN]);
         v

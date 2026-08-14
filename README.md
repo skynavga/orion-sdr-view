@@ -127,7 +127,7 @@ view:
       bandwidth:  1/4    # occupied BW as a fraction of span: 1/8 1/4 1/3 1/2 2/3 3/4 7/8
       shaping:    true   # out-of-band spectral shaping (default true)
       edge_guard: 111    # null carriers per band edge; omit to derive from `bandwidth`
-      include_dc: false  # occupy the DC subcarrier
+      include_dc: false  # occupy the DC subcarrier — see the warning below
       taper:      1/4    # symbol-window roll-off, as a fraction of the guard: off 1/8 1/4 3/8
       mask:       60     # baseband-mask stop-band depth in dB: off 40 60 80
       sig_secs:   10.0   # signal-burst duration (wall-clock seconds)
@@ -136,6 +136,13 @@ view:
 ```
 
 All fields are optional; missing fields fall back to built-in defaults.
+
+**`sources.cofdm.include_dc` is known-broken and has no settings row.** Occupying the DC subcarrier
+does not survive a round trip: the training symbol in orion-sdr 0.0.59 never transmits bin 0, so the
+channel estimate there is noise and the equalizer divides by it. Measured through the receiver, EVM
+goes from −67 dB to **+55 dB** — error power above signal power — and about half the frames fail on
+an otherwise clean link. The defect is upstream, so the toggle was withdrawn rather than patched
+here; the config key still works, deliberately, as the way to reproduce it and to verify the fix.
 
 ### Noise: `cn_db`
 
