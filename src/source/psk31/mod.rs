@@ -5,7 +5,6 @@ mod config;
 mod decode;
 mod source;
 
-#[allow(unused_imports)]
 pub use config::Psk31Config;
 pub use decode::{INFO_INTERVAL, PSK31_MAX_ACCUM_SYMS, Psk31State, SYNC_MIN_SYMS, SYNC_SEARCH_HZ};
 pub use source::{

@@ -12,7 +12,7 @@
 //! the row stop displaying a ratio the viewport refused.  Those are the two
 //! properties here.
 
-use orion_sdr_view::viewport::{FreqView, MIN_SPAN_HZ};
+use orion_sdr_view::viewport::{FreqView, MIN_SPAN_HZ, PAN_AUTO_ZOOM};
 
 /// The narrowband sources' Nyquist (48 kHz sample rate).
 const NB_NYQUIST: f32 = 24_000.0;
@@ -144,6 +144,118 @@ fn reframing_a_wideband_source_yields_a_representable_ratio() {
     assert_eq!(r, 1.0, "full-span reframe should read as 1.0x");
     assert!((1.0..=v.max_zoom_ratio()).contains(&r));
     assert_eq!(v.center_hz, WB_NYQUIST / 2.0);
+}
+
+#[test]
+fn the_auto_zoom_unlocks_panning_and_no_more() {
+    // At full span `pan` cannot move: the centre clamp range collapses to a
+    // point.  The ←/→ handler nudges off full span first, and the *size* of that
+    // nudge is the whole question — it used to be a coarse `step_zoom(1.0)`,
+    // landing on 2.0x, which put a COFDM band at the 1/4 fraction across half
+    // the visible span before the user had asked for any magnification.
+    for nyquist in [NB_NYQUIST, WB_NYQUIST] {
+        let mut v = FreqView::new(nyquist);
+        assert!(v.is_full());
+
+        let before = v.center_hz;
+        v.pan(nyquist / 12.0);
+        assert_eq!(v.center_hz, before, "full span must not pan at all");
+
+        assert!(v.ensure_pannable(), "should have moved off full span");
+        assert_eq!(v.zoom_ratio(), PAN_AUTO_ZOOM);
+        v.pan(nyquist / 12.0);
+        assert!(
+            v.center_hz > before,
+            "the viewport should pan once off full span"
+        );
+        assert!(v.lo() >= 0.0 && v.hi() <= nyquist);
+    }
+}
+
+#[test]
+fn the_auto_zoom_leaves_a_chosen_zoom_alone() {
+    // It fires on every ←/→ press, so it has to be a no-op once the user has
+    // zoomed: silently re-zooming mid-pan would fight the ↑/↓ keys.
+    let mut v = FreqView::new(WB_NYQUIST);
+    v.set_zoom_ratio(8.0);
+    assert!(!v.ensure_pannable());
+    assert_eq!(v.zoom_ratio(), 8.0);
+
+    // Including at a ratio *below* the auto-zoom's, which the `Zoom` row can
+    // produce: 1.0 is the row's minimum, and anything above it already pans.
+    v.set_zoom_ratio(1.005);
+    let ratio = v.zoom_ratio();
+    assert!(!v.ensure_pannable(), "already off full span");
+    assert_eq!(v.zoom_ratio(), ratio);
+}
+
+#[test]
+fn the_pan_range_is_exactly_what_is_off_screen() {
+    // The identity that makes the auto-zoom a single trade rather than a free
+    // choice.  `pan` keeps the window inside the band, so the distance it can
+    // travel is precisely the part of the band not currently visible — and the
+    // step is a fraction of the *visible* span, so:
+    //
+    //     presses to sweep = travel / step = (N - span) / (span/12) = 12(r - 1)
+    //
+    // Which is why no ratio gives both a small signal and a long pan: widening
+    // the span to shrink the signal is the same act as shortening the travel.
+    for &r in &[1.5_f32, 2.0, 4.0, 10.0] {
+        let mut v = FreqView::new(WB_NYQUIST);
+        v.set_zoom_ratio(r);
+        let step = v.span_hz / 12.0;
+
+        // Walk from one clamp edge to the other, counting presses.
+        v.center_hz = 0.0;
+        v.pan(0.0);
+        let lo_edge = v.center_hz;
+        let mut presses = 0;
+        while v.center_hz < WB_NYQUIST - v.span_hz / 2.0 - 0.5 && presses < 1000 {
+            v.pan(step);
+            presses += 1;
+        }
+        assert_eq!(
+            presses,
+            (12.0 * (r - 1.0)).round() as i32,
+            "at {r}x the band should take 12(r-1) presses to sweep"
+        );
+        let travel = v.center_hz - lo_edge;
+        assert!(
+            (travel - (WB_NYQUIST - v.span_hz)).abs() < 1.0,
+            "at {r}x the travel was {travel} Hz, not the {} Hz off screen",
+            WB_NYQUIST - v.span_hz
+        );
+    }
+}
+
+#[test]
+fn the_auto_zoom_balances_the_signal_against_the_pan_range() {
+    // Both halves of the trade, pinned at the chosen ratio.  COFDM's 1/4
+    // bandwidth fraction is ~240 kHz of a 1.92 MHz band; the old auto-zoom was a
+    // coarse `step_zoom(1.0)` landing on 2.0x, which put that band across half
+    // the visible span the instant an arrow was pressed.
+    const COFDM_OCCUPIED_HZ: f32 = 240_000.0;
+    let mut v = FreqView::new(WB_NYQUIST);
+    v.ensure_pannable();
+
+    let fill = COFDM_OCCUPIED_HZ / v.visible_span();
+    let presses = 12.0 * (PAN_AUTO_ZOOM - 1.0);
+    assert!(
+        fill < 0.45,
+        "the band fills {:.0}% of the span, no better than the old 2.0x",
+        fill * 100.0
+    );
+    assert!(
+        presses >= 4.0,
+        "only {presses:.0} presses to sweep the band — too little to be a pan"
+    );
+
+    let mut old = FreqView::new(WB_NYQUIST);
+    old.step_zoom(1.0); // what the handler used to do
+    assert!(
+        v.visible_span() > old.visible_span(),
+        "the whole point is to show more band than the old 2.0x did"
+    );
 }
 
 #[test]

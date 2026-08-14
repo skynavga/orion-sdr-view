@@ -199,4 +199,29 @@ impl WaterfallDisplay {
     pub fn texture_handle(&self) -> Option<&egui::TextureHandle> {
         self.texture.as_ref()
     }
+
+    /// How many rows have been committed (saturates at `max_rows`).
+    pub fn filled(&self) -> usize {
+        self.filled
+    }
+
+    /// The committed rows in the order [`draw_cropped`](Self::draw_cropped)
+    /// paints them, top of the pane first — so **newest first**, going back in
+    /// time downward, which is what makes it a waterfall.
+    ///
+    /// Only the `filled` rows that have actually been written are yielded; the
+    /// black remainder of a partly-filled ring is not.
+    ///
+    /// This exists so the ring arithmetic is assertable with no renderer: the
+    /// pixels are CPU-side, and resolving the two-quad seam at `head` back into
+    /// one ordered sequence is precisely the logic worth a test.  Reading it
+    /// through this method rather than a `pub pixels` keeps the physical layout
+    /// an implementation detail.
+    pub fn rows_in_display_order(&self) -> impl Iterator<Item = &[egui::Color32]> {
+        let (head, rows, bins) = (self.head, self.max_rows, self.freq_bins);
+        (0..self.filled).map(move |i| {
+            let phys = (head + rows - 1 - i) % rows;
+            &self.pixels[phys * bins..(phys + 1) * bins]
+        })
+    }
 }

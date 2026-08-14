@@ -6,7 +6,6 @@ mod decode;
 mod rx;
 mod source;
 
-#[allow(unused_imports)]
 pub use config::CofdmConfig;
 pub use decode::CofdmState;
 pub use rx::{CofdmRx, CofdmRxFacts, CofdmRxStats};

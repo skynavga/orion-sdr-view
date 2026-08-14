@@ -14,19 +14,13 @@ pub use common::{
 pub use orion_sdr::util::SIGNAL_THRESHOLD;
 
 // Re-exports for integration tests (not used by the binary itself).
-#[allow(unused_imports)]
 pub use crate::source::cw::{cw_char_timing, morse_char_units};
-#[allow(unused_imports)]
 pub use crate::source::ft8::{FT4_BW_HZ, FT8_BW_HZ};
-#[allow(unused_imports)]
 pub use crate::source::psk31::{
     INFO_INTERVAL, PSK31_MAX_ACCUM_SYMS, SYNC_MIN_SYMS, SYNC_SEARCH_HZ,
 };
-#[allow(unused_imports)]
 pub use orion_sdr::codec::psk31::Psk31Stream;
-#[allow(unused_imports)]
 pub use orion_sdr::util::{
     PSK31_BW_HZ, best_sync, nb_spectrum_snr_db, power_spectrum, spectrum_bw_hz, wb_spectrum_snr_db,
 };
-#[allow(unused_imports)]
 pub use spectral::wb_cn_db;

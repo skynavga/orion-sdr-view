@@ -110,7 +110,7 @@ const COFDM_PREAMBLE_REPEAT_LEN: usize = 64;
 ///
 /// What makes a configured rate *safe* is that the impairment is a ratio.
 /// While it was an absolute amplitude, changing `fs` would have silently
-/// changed the link: the same `noise_amp` spread over twice the bandwidth is
+/// changed the link: the same amplitude spread over twice the bandwidth is
 /// 3 dB less noise in the occupied band, with nothing on screen to say so.  A
 /// C/N in dB is invariant to the rate by construction — see [`CnReference`].
 pub const COFDM_DEFAULT_FS: f32 = 1_920_000.0;
@@ -242,13 +242,27 @@ pub const COFDM_PREFERRED_REF_DB: f32 = -36.0;
 pub const COFDM_DEFAULT_SIG_SECS: f32 = 10.0;
 /// Default silence gap between bursts, in **wall-clock seconds**.
 pub const COFDM_DEFAULT_GAP_SECS: f32 = 2.0;
-/// Default C/N (dB), chosen to reproduce the noise floor the pre-`C/N` default
-/// (`noise_amp` 0.05) put on screen at the default 1/4 bandwidth fraction.
+/// Default C/N (dB).
 ///
-/// The lowest default of the six sources: COFDM's 240 kHz occupancy against
-/// noise spread over 1.92 MHz is a 9 dB spreading factor, where the narrowband
-/// sources sit at 20-27 dB.
-pub const COFDM_DEFAULT_CN_DB: f32 = 45.0;
+/// **Chosen so the out-of-band noise floor is visible**, which is the one thing
+/// this source exists to show.  The guard, taper and mask rows all shape the
+/// skirt outside the occupied band; at the 45 dB this used to sit at, the floor
+/// they shape against fell below what the display resolves, so the controls
+/// moved a skirt into blackness and looked inert.  10 dB lower puts the floor
+/// on screen and gives the shaping something to sit against.
+///
+/// **It is not near the cliff.**  Every bandwidth fraction decodes with zero
+/// frame errors here — see `the_default_cn_decodes_cleanly_at_every_bandwidth`
+/// in `tests/cofdm_rx.rs`, which is what keeps this a display choice rather than
+/// a link one.  The FEC cliff is around 11-14 dB depending on the fraction; the
+/// measured tables are in the 0.0.23 `CHANGELOG` entry.
+///
+/// Unlike the other five defaults this is *not* the level that reproduces the
+/// pre-`C/N` amplitude default — it is deliberately 10 dB noisier.  COFDM's
+/// 240 kHz occupancy against noise spread over 1.92 MHz is only a 9 dB
+/// spreading factor, where the narrowband sources sit at 20-27 dB, so the same
+/// requested ratio buys a much less prominent floor here than there.
+pub const COFDM_DEFAULT_CN_DB: f32 = 35.0;
 
 // ── Bandwidth fraction ──────────────────────────────────────────────────────
 
@@ -749,39 +763,33 @@ impl CofdmSource {
     }
 
     /// Band centre (Hz), after clamping to [`cofdm_center_bounds`].
-    #[allow(dead_code)] // used by integration tests, not the binary
     pub fn center_hz(&self) -> f32 {
         self.center_hz
     }
 
     /// The shaping actually rendered — this source's set resolved through
     /// [`CofdmShaping::effective`] at its centre and rate.
-    #[allow(dead_code)] // used by integration tests, not the binary
     pub fn effective_shaping(&self) -> CofdmShaping {
         self.shaping
             .effective(self.fraction, self.center_hz, self.fs)
     }
 
     /// Requested carrier-to-noise ratio, in dB.
-    #[allow(dead_code)] // used by integration tests, not the binary
     pub fn cn_db(&self) -> f32 {
         self.noise.cn_db()
     }
 
     /// Per-component standard deviation of the injected complex noise.
-    #[allow(dead_code)] // used by integration tests, not the binary
     pub fn noise_sigma(&self) -> f32 {
         self.noise.sigma()
     }
 
     /// The display scalar `render` derived for the current configuration.
-    #[allow(dead_code)] // used by integration tests, not the binary
     pub fn display_gain(&self) -> f32 {
         self.display_gain
     }
 
     /// True while in the signal phase (exposed for tests / decode gating).
-    #[allow(dead_code)]
     pub fn in_signal(&self) -> bool {
         self.in_signal
     }

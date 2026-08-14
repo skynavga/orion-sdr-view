@@ -5,10 +5,8 @@ mod config;
 mod decode;
 mod source;
 
-#[allow(unused_imports)]
 pub use config::AmDsbConfig;
 pub use decode::AmDsbState;
-#[allow(unused_imports)]
 pub use source::{
     AM_CN_REF_BW_HZ, AM_DEFAULT_CN_DB, AmDsbSource, BuiltinAudio, hud_submode_str, load_builtin,
     load_wav_file,

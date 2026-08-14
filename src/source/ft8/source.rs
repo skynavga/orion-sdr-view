@@ -18,8 +18,8 @@ pub const FT8_DEFAULT_CALL_DE: &str = "N0GNR";
 pub const FT8_DEFAULT_GRID: &str = "FN31";
 pub const FT8_DEFAULT_FREE_TEXT: &str = "CQ DX";
 
-/// Default C/N (dB), chosen to reproduce the noise floor the pre-`C/N` default
-/// (`noise_amp` 0.05, uniform) put on screen.  The highest default of the six
+/// Default C/N (dB), chosen to reproduce the noise floor the pre-`C/N`
+/// amplitude default put on screen.  The highest default of the six
 /// sources, because FT8's 50 Hz occupancy against noise spread over 24 kHz is
 /// the largest spreading factor in the set (26.8 dB).
 pub const FT8_DEFAULT_CN_DB: f32 = 55.0;
@@ -54,7 +54,6 @@ pub enum Ft8MsgType {
 /// Pre-renders a complete modulated frame at 12 kHz, then upsamples 4x
 /// to the viewer's 48 kHz sample rate.  The frame plays `msg_repeat` times
 /// followed by a configurable silence gap, then repeats indefinitely.
-#[allow(dead_code)]
 pub struct Ft8Source {
     pub carrier_hz: f32,
     pub gap_secs: f32,
@@ -223,7 +222,6 @@ impl Ft8Source {
     }
 
     /// Recompute the gap sample count after `gap_secs` changes.
-    #[allow(dead_code)]
     pub fn update_gap(&mut self) {
         self.gap_samples = (self.gap_secs * self.mod_rate) as usize;
     }
@@ -272,13 +270,11 @@ impl Ft8Source {
     }
 
     /// Requested carrier-to-noise ratio, in dB.
-    #[allow(dead_code)] // used by integration tests, not the binary
     pub fn cn_db(&self) -> f32 {
         self.noise.cn_db()
     }
 
     /// Per-component standard deviation of the injected noise.
-    #[allow(dead_code)] // used by integration tests, not the binary
     pub fn noise_sigma(&self) -> f32 {
         self.noise.sigma()
     }

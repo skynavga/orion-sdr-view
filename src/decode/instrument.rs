@@ -123,7 +123,6 @@ pub enum ErrorUnit {
     Frame,
     /// Set by a DVB-T provider; the synthetic source is frame-oriented, so
     /// nothing selects this yet.
-    #[allow(dead_code)]
     Packet,
 }
 
@@ -571,7 +570,6 @@ pub fn column_origins(widths: &[f32; COLUMNS]) -> [f32; COLUMNS] {
 /// The binary paints cells at measured pixel offsets rather than calling this,
 /// but the layout is only assertable through it: `src/app/` is bin-only, so a
 /// test cannot reach the painting side at all.
-#[allow(dead_code)] // exercised by tests/instrument.rs, not by the binary
 pub fn render_text(rows: &[Row]) -> Vec<String> {
     let widths = reference_column_widths(|s| s.chars().count() as f32);
     let pad = |out: &mut String, text: &str, col: usize| {

@@ -26,8 +26,8 @@ pub const PSK31_DEFAULT_CUSTOM_TEXT: &str = "Custom message";
 pub const PSK31_DEFAULT_REPEAT: usize = 3;
 pub const PSK31_DEFAULT_GAP_SECS: f32 = 15.0;
 
-/// Default C/N (dB), chosen to reproduce the noise floor the pre-`C/N` default
-/// (`noise_amp` 0.05, uniform) put on screen.  It sits ~9 dB above COFDM's
+/// Default C/N (dB), chosen to reproduce the noise floor the pre-`C/N`
+/// amplitude default put on screen.  It sits ~9 dB above COFDM's
 /// equivalent because a 62.5 Hz signal against noise spread over 24 kHz is a
 /// 25.8 dB spreading factor, against COFDM's 9 dB.
 pub const PSK31_DEFAULT_CN_DB: f32 = 54.0;
@@ -92,13 +92,11 @@ impl Psk31Source {
     }
 
     /// Requested carrier-to-noise ratio, in dB.
-    #[allow(dead_code)] // used by integration tests, not the binary
     pub fn cn_db(&self) -> f32 {
         self.noise.cn_db()
     }
 
     /// Per-component standard deviation of the injected noise.
-    #[allow(dead_code)] // used by integration tests, not the binary
     pub fn noise_sigma(&self) -> f32 {
         self.noise.sigma()
     }

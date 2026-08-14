@@ -291,37 +291,10 @@ fn the_display_gain_is_not_one_constant() {
     );
 }
 
-// ── D. The breaking config change ───────────────────────────────────────────
+// ── D. Per-source defaults ──────────────────────────────────────────────────
 
 #[test]
-fn a_retired_noise_amp_key_is_refused_not_ignored() {
-    // The whole reason the rejection field exists: every field is `Option<T>`
-    // and nothing sets `deny_unknown_fields`, so serde would drop `noise_amp`
-    // silently and fall back to the `cn_db` default — a config that looks like
-    // it loaded while discarding what the user wrote.
-    let yaml = r#"
-view:
-  sources:
-    cofdm:
-      bandwidth: 1/4
-      noise_amp: 0.5
-"#;
-    let cfg: ViewConfig = serde_yaml::from_str::<serde_yaml::Value>(yaml)
-        .ok()
-        .and_then(|v| serde_yaml::from_value::<TestFile>(v).ok())
-        .map(|f| f.view)
-        .expect("fixture parses");
-    let errs = cfg.retired_key_errors();
-    assert_eq!(errs.len(), 1, "expected exactly one diagnostic: {errs:?}");
-    assert!(
-        errs[0].contains("cn_db") && errs[0].contains("cofdm"),
-        "diagnostic must name the source and the replacement: {}",
-        errs[0]
-    );
-}
-
-#[test]
-fn a_current_config_produces_no_retired_key_diagnostics() {
+fn per_source_cn_db_falls_back_to_that_source_s_own_default() {
     let yaml = r#"
 view:
   sources:
@@ -336,7 +309,6 @@ view:
         .and_then(|v| serde_yaml::from_value::<TestFile>(v).ok())
         .map(|f| f.view)
         .expect("fixture parses");
-    assert!(cfg.retired_key_errors().is_empty());
     assert_eq!(cfg.cofdm_cn_db(), 30.0);
     assert_eq!(cfg.psk31_cn_db(), 45.0);
     // An untouched source falls back to its own default, which differs from

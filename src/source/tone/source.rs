@@ -16,9 +16,9 @@ pub const TONE_CN_REF_BW_HZ: f32 = 500.0;
 
 /// Default C/N (dB) for the test tone.
 ///
-/// Chosen to reproduce the noise floor the pre-`C/N` default (`noise_amp` 0.05
-/// of Gaussian noise) put on screen, so the schema change is not also a visual
-/// change.  See `CHANGELOG` for the equivalence.
+/// Chosen to reproduce the noise floor the pre-`C/N` amplitude default put on
+/// screen, so the schema change was not also a visual change.  See `CHANGELOG`
+/// (0.0.23) for the equivalence.
 pub const TONE_DEFAULT_CN_DB: f32 = 36.0;
 
 /// Default peak tone amplitude, and the power reference for [`TONE_DEFAULT_CN_DB`].
@@ -95,7 +95,6 @@ impl TestSignalGen {
     }
 
     /// Requested carrier-to-noise ratio, in dB.
-    #[allow(dead_code)] // used by integration tests, not the binary
     pub fn cn_db(&self) -> f32 {
         self.noise.cn_db()
     }
@@ -107,7 +106,6 @@ impl TestSignalGen {
 
     /// Per-component standard deviation of the injected noise — the absolute
     /// amplitude the requested C/N works out to against the current reference.
-    #[allow(dead_code)] // used by integration tests, not the binary
     pub fn noise_sigma(&self) -> f32 {
         self.noise.sigma()
     }
@@ -138,7 +136,6 @@ impl TestSignalGen {
     }
 
     /// Reset to initial state: zero phase, full amplitude, FSM at PauseHigh.
-    #[allow(dead_code)] // used by integration tests, not the binary
     pub fn restart(&mut self) {
         self.phase = 0.0;
         self.tone_amp = self.amp_max;

@@ -15,9 +15,7 @@ pub use common::{
     keyed_carrier_power, mean_power, mean_power_c,
 };
 
-#[allow(unused_imports)]
 pub use amdsb::{AmDsbSource, BuiltinAudio, load_builtin};
-#[allow(unused_imports)]
 pub use cofdm::{
     COFDM_CP_LEN, COFDM_DEFAULT_CN_DB, COFDM_DEFAULT_FS, COFDM_DISPLAY_RMS_DBFS,
     COFDM_MAX_EDGE_GUARD, COFDM_MAX_FS, COFDM_MIN_FS, COFDM_N_FFT, COFDM_PAYLOAD_BYTES,
@@ -27,9 +25,6 @@ pub use cofdm::{
     cofdm_mcs_facts, cofdm_min_edge_guard, cofdm_occupied_bw, cofdm_occupied_half,
     cofdm_spacing_hz,
 };
-#[allow(unused_imports)]
 pub use cw::CwSource;
-#[allow(unused_imports)]
 pub use ft8::{Ft8Mode, Ft8MsgType, Ft8Source};
-#[allow(unused_imports)]
 pub use psk31::{Psk31Mode, Psk31Source};

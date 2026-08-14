@@ -10,15 +10,15 @@ mod view;
 
 pub(super) mod freqview;
 pub(super) mod persistence;
-pub(super) mod settings;
-pub(super) mod spectrogram;
+pub mod settings;
+pub mod spectrogram;
 pub(super) mod spectrum;
 pub(super) mod utils;
-pub(super) mod waterfall;
+pub mod waterfall;
 
-pub(crate) use common::DECODE_BAR_H;
+pub use common::{DECODE_BAR_H, SourceMode};
 pub(super) use common::{
     DecodeBarMode, FFT_SIZE, MAX_SAMPLES_PER_FRAME, MIN_SAMPLES_PER_FRAME, PANE_BG, SAMPLE_RATE,
-    SourceMode, WaterfallMode,
+    WaterfallMode,
 };
-pub(crate) use view::ViewApp;
+pub use view::ViewApp;

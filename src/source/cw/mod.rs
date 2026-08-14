@@ -5,10 +5,8 @@ mod config;
 mod decode;
 mod source;
 
-#[allow(unused_imports)]
 pub use config::CwConfig;
 pub use decode::{CwState, cw_char_timing, morse_char_units};
-#[allow(unused_imports)]
 pub use source::{
     CW_CN_REF_BW_HZ, CW_DEFAULT_CANNED_TEXT, CW_DEFAULT_CARRIER_HZ, CW_DEFAULT_CHAR_SPACE,
     CW_DEFAULT_CN_DB, CW_DEFAULT_CUSTOM_TEXT, CW_DEFAULT_DASH_WEIGHT, CW_DEFAULT_FALL_MS,

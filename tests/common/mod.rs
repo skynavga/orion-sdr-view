@@ -10,4 +10,7 @@
 
 #![allow(dead_code)] // each test binary uses a subset of this module
 
+/// The app layer needs egui, so it is only reachable when `gui` is on.
+#[cfg(feature = "gui")]
+pub mod harness;
 pub mod ticker;

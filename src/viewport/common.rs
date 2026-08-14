@@ -17,6 +17,43 @@
 /// viewport had silently clamped.
 pub const MIN_SPAN_HZ: f32 = 1000.0;
 
+/// Zoom the `←`/`→` handler applies when panning from full span.
+///
+/// At exactly full span [`FreqView::pan`] is a no-op *by construction*: the
+/// centre clamp range `[span/2, nyquist - span/2]` collapses to a single point.
+/// So the first arrow press has to zoom in or the key does nothing at all,
+/// which reads as broken.
+///
+/// **How far to zoom is a single trade, because the visible span and the pan
+/// range are the same quantity from opposite ends** — [`pan`](FreqView::pan)
+/// keeps the window inside the band, so the distance it can travel is exactly
+/// the part of the band that is *not* on screen:
+///
+/// ```text
+/// travel  = nyquist - span
+/// step    = span / 12                       (a fraction of the visible span)
+/// presses = travel / step = 12 · (r - 1)    (to sweep the whole band)
+/// ```
+///
+/// So a wide span shows a small signal and pans barely; a narrow one pans far
+/// and fills the screen.  There is no ratio that gives both.
+///
+/// | r | span of 1.92 MHz | presses to sweep | COFDM 1/4 fills |
+/// | --- | --- | --- | --- |
+/// | 1.01 | 950 kHz | 1 (clamped) | 25% |
+/// | **1.5** | **640 kHz** | **6** | **38%** |
+/// | 2.0 | 480 kHz | 12 | 50% |
+///
+/// 1.5 is the middle of that: six presses to cross the band, and a COFDM band
+/// at the 1/4 fraction over about a third of the width rather than half.  2.0
+/// was what a coarse `step_zoom(1.0)` happened to land on, which is not a
+/// reason for a value.
+///
+/// Having both would mean letting the window hang past the band edges into
+/// empty space, as most panadapters do — a change to `pan`'s clamp, not to this
+/// number, and its own piece of work.
+pub const PAN_AUTO_ZOOM: f32 = 1.5;
+
 /// Frequency viewport: defines which portion of [0, nyquist] is displayed.
 ///
 /// `center_hz` is the displayed center frequency (also the primary marker position).
@@ -56,7 +93,6 @@ impl FreqView {
 
     /// Fractional UV position [0.0, 1.0] within the full spectrum for `hz`.
     /// Used for waterfall/persistence texture UV mapping.
-    #[allow(dead_code)]
     pub fn hz_to_uv(&self, hz: f32) -> f32 {
         hz / self.nyquist
     }
@@ -65,6 +101,19 @@ impl FreqView {
     /// within the visible window. Values outside `[lo, hi]` may be outside [0,1].
     pub fn hz_to_x_norm(&self, hz: f32) -> f32 {
         (hz - self.lo()) / self.visible_span()
+    }
+
+    /// Zoom to [`PAN_AUTO_ZOOM`] if the viewport is at full span, so that a
+    /// subsequent [`pan`](Self::pan) can move.  No-op otherwise, so it cannot
+    /// disturb a zoom the user chose.
+    ///
+    /// Returns whether it changed anything.
+    pub fn ensure_pannable(&mut self) -> bool {
+        if self.span_hz < self.nyquist {
+            return false;
+        }
+        self.set_zoom_ratio(PAN_AUTO_ZOOM);
+        true
     }
 
     /// Pan by `delta_hz`, keeping the window fully within [0, nyquist].
@@ -154,7 +203,6 @@ impl FreqView {
     }
 
     /// Returns true if the view is showing the full spectrum (no zoom/pan).
-    #[allow(dead_code)]
     pub fn is_full(&self) -> bool {
         (self.span_hz - self.nyquist).abs() < 1.0
     }

@@ -105,7 +105,8 @@ fn ft8_source_repeat_two_frames() {
     // Second frame should also be signal.
     let frame2 = src.next_samples(FT8_FRAME_LEN_48K);
     assert!(rms(&frame2) > 0.1, "frame 2 should be non-silent");
-    // Gap (50 ms) should be silent (no noise_amp).
+    // Past the last repeat the source emits hard zero, not the noise floor —
+    // the impairment rides on a signal, and there is no longer one.
     let gap = src.next_samples(100);
     for (i, &s) in gap.iter().enumerate() {
         assert_eq!(s, 0.0, "gap sample {i} should be 0.0");
@@ -135,7 +136,7 @@ fn ft8_source_loop_gap_timing() {
     assert!(rms(&frame2) > 0.1, "second loop frame should be non-silent");
 }
 
-/// Noise amp adds non-zero samples during the gap period.
+/// The inter-repeat gap carries a noise floor rather than silence.
 #[test]
 fn ft8_source_noise_in_gap() {
     let mut src = Ft8Source::new(
@@ -154,7 +155,10 @@ fn ft8_source_noise_in_gap() {
     let _frame = src.next_samples(FT8_FRAME_LEN_48K);
     let gap = src.next_samples(4096);
     let has_noise = gap.iter().any(|&s| s.abs() > 1e-6);
-    assert!(has_noise, "gap should contain noise when noise_amp > 0");
+    assert!(
+        has_noise,
+        "gap should carry the C/N noise floor, not silence"
+    );
 }
 
 /// `restart()` resets the source so it plays the frame from the beginning.

@@ -53,8 +53,8 @@ pub const CW_DEFAULT_FALL_MS: f32 = 5.0;
 /// from the WPM**, or changing the sending speed would change the noise floor.
 pub const CW_CN_REF_BW_HZ: f32 = 500.0;
 
-/// Default C/N (dB), chosen to reproduce the noise floor the pre-`C/N` default
-/// (`noise_amp` 0.05, uniform) put on screen.
+/// Default C/N (dB), chosen to reproduce the noise floor the pre-`C/N`
+/// amplitude default put on screen.
 pub const CW_DEFAULT_CN_DB: f32 = 45.0;
 pub const CW_DEFAULT_REPEAT: usize = 3;
 pub const CW_DEFAULT_CANNED_TEXT: &str = "CQ CQ CQ DE N0GNR";
@@ -258,13 +258,11 @@ impl CwSource {
     }
 
     /// Requested carrier-to-noise ratio, in dB.
-    #[allow(dead_code)] // used by integration tests, not the binary
     pub fn cn_db(&self) -> f32 {
         self.noise.cn_db()
     }
 
     /// Per-component standard deviation of the injected noise.
-    #[allow(dead_code)] // used by integration tests, not the binary
     pub fn noise_sigma(&self) -> f32 {
         self.noise.sigma()
     }

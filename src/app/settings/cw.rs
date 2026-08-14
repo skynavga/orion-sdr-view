@@ -509,7 +509,7 @@ fn rows_mut(state: &mut super::SettingsState) -> &mut CwRows {
 /// Typed accessors for CW settings.  Implemented for `SettingsState`;
 /// callers `use crate::app::settings::CwSettings` to bring these methods in
 /// scope.
-pub(in crate::app) trait CwSettings {
+pub trait CwSettings {
     fn cw_wpm(&self) -> f32;
     fn cw_jitter_pct(&self) -> f32;
     fn cw_dash_weight(&self) -> f32;

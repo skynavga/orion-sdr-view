@@ -64,6 +64,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Needed by the `gui` test run below; see the note in the check job.
+      - name: Install GUI build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwayland-dev
+
       - name: Install ${{ matrix.toolchain }} toolchain
         uses: dtolnay/rust-toolchain@master
         with:
@@ -81,3 +87,12 @@ jobs:
 
       - name: Run tests
         run: cargo test --no-default-features --release
+
+      # The app layer lives behind `gui`, so the headless `ViewApp` tests
+      # (tests/app.rs, tests/panes.rs, tests/script.rs) are compiled out of the
+      # run above entirely.  Without this step they would never execute in CI —
+      # the same gap that left the GUI uncompiled before 0.0.16.  No display or
+      # GPU is needed: the harness drives `egui::Context` directly and never
+      # opens a window.
+      - name: Run tests (gui)
+        run: cargo test --features gui --release

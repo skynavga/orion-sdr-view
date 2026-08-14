@@ -19,7 +19,6 @@ pub enum BuiltinAudio {
 
 impl BuiltinAudio {
     pub const ALL: [BuiltinAudio; 2] = [BuiltinAudio::Morse, BuiltinAudio::Voice];
-    #[allow(dead_code)]
     pub fn label(self) -> &'static str {
         match self {
             BuiltinAudio::Morse => "Morse",
@@ -38,8 +37,8 @@ impl BuiltinAudio {
 /// it back into the impairment would make the noise floor breathe with speech.
 pub const AM_CN_REF_BW_HZ: f32 = 6_000.0;
 
-/// Default C/N (dB), chosen to reproduce the noise floor the pre-`C/N` default
-/// (`noise_amp` 0.05, uniform) put on screen.
+/// Default C/N (dB), chosen to reproduce the noise floor the pre-`C/N`
+/// amplitude default put on screen.
 pub const AM_DEFAULT_CN_DB: f32 = 34.0;
 
 /// Average power of the AM DSB carrier at the `carrier_level = 1.0` this source
@@ -201,13 +200,11 @@ impl AmDsbSource {
     }
 
     /// Requested carrier-to-noise ratio, in dB.
-    #[allow(dead_code)] // used by integration tests, not the binary
     pub fn cn_db(&self) -> f32 {
         self.noise.cn_db()
     }
 
     /// Per-component standard deviation of the injected noise.
-    #[allow(dead_code)] // used by integration tests, not the binary
     pub fn noise_sigma(&self) -> f32 {
         self.noise.sigma()
     }

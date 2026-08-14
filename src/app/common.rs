@@ -25,7 +25,7 @@ pub(crate) const MIN_SAMPLES_PER_FRAME: usize = 128;
 /// a high-`fs` source) can't dump an unbounded block into the pipeline.
 pub(crate) const MAX_SAMPLES_PER_FRAME: usize = 4096;
 /// Fixed pixel height of the decode bar (does not participate in pane proportions).
-pub(crate) const DECODE_BAR_H: f32 = 28.0;
+pub const DECODE_BAR_H: f32 = 28.0;
 
 // ── Decode bar mode ───────────────────────────────────────────────────────────
 
@@ -84,8 +84,8 @@ impl WaterfallMode {
 
 // ── Source mode ───────────────────────────────────────────────────────────────
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SourceMode {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceMode {
     TestTone,
     Cw,
     AmDsb,
@@ -95,7 +95,7 @@ pub(crate) enum SourceMode {
 }
 
 impl SourceMode {
-    pub(crate) const ALL: &'static [SourceMode] = &[
+    pub const ALL: &'static [SourceMode] = &[
         SourceMode::TestTone,
         SourceMode::Cw,
         SourceMode::AmDsb,
@@ -104,7 +104,7 @@ impl SourceMode {
         SourceMode::Cofdm,
     ];
 
-    pub(crate) fn label(self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
             SourceMode::TestTone => "Test Tone",
             SourceMode::Cw => "CW",
@@ -115,11 +115,11 @@ impl SourceMode {
         }
     }
 
-    pub(crate) fn index(self) -> usize {
+    pub fn index(self) -> usize {
         Self::ALL.iter().position(|&m| m == self).unwrap_or(0)
     }
 
-    pub(crate) fn next(self) -> Self {
+    pub fn next(self) -> Self {
         let idx = (self.index() + 1) % Self::ALL.len();
         Self::ALL[idx]
     }

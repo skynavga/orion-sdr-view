@@ -49,7 +49,7 @@ fn source_with(shaping: CofdmShaping, fraction: CofdmBwFraction, cn_db: f32) -> 
 }
 
 /// A C/N high enough that the injected noise is negligible for a test that
-/// wants a clean waveform.  Replaces the pre-`C/N` `noise_amp = 0.0`.
+/// wants a clean waveform.  There is no "off" — a ratio has no infinite value.
 const CLEAN_CN_DB: f32 = MAX_CN_DB;
 
 /// Pulls `n` samples in `BLOCK`-sized bites, exactly as the app does: take the
@@ -376,7 +376,7 @@ fn frame_error_rate_is_none_before_any_frame() {
 fn no_frames_are_silently_dropped() {
     let fraction = CofdmBwFraction::OneQuarter;
     let shaping = CofdmShaping::derived(fraction);
-    // The settings row's default C/N.  An excellent link -- any loss here is a
+    // The settings row's default C/N.  A sound link -- any loss here is a
     // receiver defect, not a channel effect.
     let mut src = source_with(shaping, fraction, COFDM_DEFAULT_CN_DB);
     let mut rx = CofdmRx::new(&shaping, COFDM_DEFAULT_FS);
@@ -396,6 +396,48 @@ fn no_frames_are_silently_dropped() {
         stats.expected(),
         stats.failed
     );
+}
+
+/// The default C/N is a *display* choice, and this is what keeps it one.
+///
+/// It was lowered to 35 dB so the out-of-band noise floor is visible on screen —
+/// the guard, taper and mask rows shape a skirt, and at 45 dB the floor they
+/// shape against sat below what the display resolves.  Moving a default toward
+/// the FEC cliff to make a picture better is exactly the change that quietly
+/// breaks the link on the fraction nobody demos, so every fraction is checked,
+/// not just the default one.
+///
+/// Zero errors, not a rate: at this C/N the margin is tens of dB and a single
+/// failure means something structural moved, so a threshold would only mask it.
+#[test]
+fn the_default_cn_decodes_cleanly_at_every_bandwidth() {
+    for &fraction in CofdmBwFraction::ALL {
+        let shaping = CofdmShaping::derived(fraction);
+        let mut src = source_with(shaping, fraction, COFDM_DEFAULT_CN_DB);
+        let mut rx = CofdmRx::new(&shaping, COFDM_DEFAULT_FS);
+        pump(&mut src, &mut rx, samples_for(fraction, 4));
+
+        let stats = rx.stats();
+        let label = fraction.label();
+        assert!(
+            stats.decoded > 0,
+            "{label}: nothing decoded at {COFDM_DEFAULT_CN_DB} dB -- {stats:?}"
+        );
+        assert_eq!(
+            stats.failed,
+            0,
+            "{label}: {} of {} frames failed FEC at the default {COFDM_DEFAULT_CN_DB} dB",
+            stats.failed,
+            stats.expected()
+        );
+        assert_eq!(
+            stats.lost,
+            0,
+            "{label}: {} of {} frames vanished at the default {COFDM_DEFAULT_CN_DB} dB",
+            stats.lost,
+            stats.expected()
+        );
+    }
 }
 
 /// Looping the source's frame buffer must not invent losses.

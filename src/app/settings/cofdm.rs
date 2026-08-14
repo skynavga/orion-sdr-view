@@ -366,7 +366,7 @@ fn rows_mut(state: &mut super::SettingsState) -> &mut CofdmRows {
 /// sources.  It used to be absent, and `cofdm::Factory::set_carrier_hz` was a
 /// documented no-op — so `L` was a key that did nothing on one source and said
 /// nothing about it.
-pub(in crate::app) trait CofdmSettings {
+pub trait CofdmSettings {
     fn cofdm_sig_secs(&self) -> f32;
     fn cofdm_gap_secs(&self) -> f32;
     fn cofdm_cn_db(&self) -> f32;

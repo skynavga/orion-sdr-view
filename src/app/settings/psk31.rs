@@ -437,7 +437,7 @@ fn rows_mut(state: &mut super::SettingsState) -> &mut Psk31Rows {
 /// Typed accessors for PSK31 settings.  Implemented for `SettingsState`;
 /// callers `use crate::app::settings::Psk31Settings` to bring these methods
 /// in scope.
-pub(in crate::app) trait Psk31Settings {
+pub trait Psk31Settings {
     fn psk31_mode_str(&self) -> &str;
     fn psk31_carrier_hz(&self) -> f32;
     fn psk31_gap_secs(&self) -> f32;
