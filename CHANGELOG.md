@@ -9,6 +9,98 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.25] - 2026-08-14
+
+### Added
+
+- **The app layer is testable.** `src/app/**` moves from the binary into the
+  library behind the `gui` feature, so `tests/` can reach it at all. `ViewApp`
+  takes an `egui::Context` rather than an `eframe::CreationContext`, and
+  per-frame work splits into `advance(&ctx, dt)` and `draw(&mut Ui)` with
+  `impl eframe::App` left as a thin adapter.
+
+  **The `dt` is injected, which is the load-bearing part.** The one
+  `Instant::now()` in the per-frame path now lives in that adapter. Everything
+  downstream — `advance_time`, the `dt * fs` sample budget, the waterfall scroll
+  pacing, the decode ticker — was already a pure function of it, so with both
+  PRNGs seeded from fixed constants the same script produces the same samples.
+
+  Every UI-layer defect this project has produced was found by *reading* rather
+  than testing, because there was no way to test it: `L` inert on COFDM, `M`
+  alive only with the settings popover open, `switch_source` reading rows that
+  `reset_playback` then restored, the `Zoom` row diverging from the keyboard
+  clamp. All four are now regression tests.
+
+- **A headless harness** (`tests/common/harness.rs`) driving complete egui
+  passes with no window, renderer or GPU — `begin_pass` / `advance` /
+  `handle_keys` / `end_pass` against a bare `Context`. Note that `handle_keys`
+  runs from `draw`, not `advance`, so a harness that only advances processes
+  samples and never sees a keystroke.
+
+- **A timed key-script format** (`utils::script`), shared with the planned
+  headless replay driver so that a reproduction recipe and a regression test are
+  the same artifact. A repeat count means *frames*, not events: `key_pressed` is
+  a per-pass boolean, so five presses in one pass register as one.
+
+- **Display-order accessors** on the waterfall and spectrogram ring buffers.
+  Both keep their pixels in CPU memory, so the ring seam and the dB→colour
+  mapping are assertable without a GPU.
+
+- **CI runs the test suite twice**, once per feature configuration. The app
+  tests are `gui`-gated, so the existing `--no-default-features` run compiled
+  them out entirely and they would never have executed — the same shape as the
+  gap that left the GUI uncompiled before 0.0.16, one level up.
+
+### Changed
+
+- **COFDM's default C/N is 35 dB**, down from 45. The guard, taper and mask rows
+  shape the skirt *outside* the occupied band, and at 45 dB the noise floor they
+  shape against sat below what the display resolves — the controls moved a skirt
+  into blackness. This is a display choice, not a link one: every bandwidth
+  fraction still decodes with zero frame errors there, against an FEC cliff
+  around 11-14 dB.
+
+- **The pan auto-zoom is an explicit 1.5x** (`PAN_AUTO_ZOOM`) rather than
+  whatever a coarse `step_zoom(1.0)` happened to land on, which was 2.0x.
+
+  At full span `pan` is a no-op by construction, so the first `←`/`→` press has
+  to zoom in or the key does nothing. How far is a single trade, because the
+  visible span and the pan range are the same quantity from opposite ends:
+  `pan` keeps the window inside the band, so travel is exactly the part not on
+  screen and `presses to sweep = 12·(ratio - 1)`. At 2.0x a COFDM band at the
+  1/4 fraction filled half the screen the instant an arrow was touched; at 1.5x
+  it fills 38%, with six presses to cross the band.
+
+- **`Include DC` is withdrawn from the COFDM settings rows.** Occupying the DC
+  subcarrier does not survive a round trip — see Fixed. The
+  `sources.cofdm.include_dc` config key still works, deliberately, as the way to
+  reproduce the defect and verify the eventual fix.
+
+- **The `noise_amp` rejection fields are retired**, two releases after the 0.0.23
+  impairment change, as their own comment asked. A stale `noise_amp` is now
+  ignored like any other unrecognised key rather than refused. The generic
+  policy it relied on — unknown keys load silently, because nothing sets
+  `deny_unknown_fields` — is now pinned by a test, since the next schema rename
+  inherits no scaffolding.
+
+### Fixed
+
+- **CI saved its cargo cache only on the first run for a given `Cargo.lock`.**
+  `actions/cache` skips the save when the primary key hits exactly, so the cache
+  froze at whatever that first run built and anything a later step started
+  compiling was rebuilt from scratch every run, indefinitely.
+
+### Known issues
+
+- **`sources.cofdm.include_dc` produces a broken link** and is documented as
+  such. The defect is upstream: orion-sdr 0.0.59's training symbol zeroes bin 0
+  unconditionally, so it never transmits DC even when the carrier plan has made
+  it a data carrier. The channel estimate there is noise and the equalizer
+  divides by it — a null when noiseless, a gain of up to 10⁶ when not. Measured
+  EVM goes from -67 dB to +55 dB, with about half the frames failing on an
+  otherwise clean link. `occupying_dc_survives_a_round_trip` in
+  `tests/cofdm_rx.rs` is `#[ignore]`d and written against the fixed behaviour.
+
 ## [0.0.24] - 2026-08-13
 
 ### Added
