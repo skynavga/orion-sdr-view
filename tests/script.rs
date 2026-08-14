@@ -12,7 +12,9 @@
 
 #![cfg(feature = "gui")]
 
-use orion_sdr_view::utils::script::{Action, Script};
+use std::path::{Path, PathBuf};
+
+use orion_sdr_view::utils::script::{Action, Script, ScriptSettings};
 
 const EXAMPLE: &str = "
 # t(s)   directive
@@ -175,4 +177,105 @@ fn a_negative_time_is_refused() {
     // is meaningless rather than "as early as possible".
     let err = Script::parse("-1.0 key Q").expect_err("should not parse");
     assert!(err.message.contains("must be finite"), "{}", err.message);
+}
+
+// ── Run settings ────────────────────────────────────────────────────────────
+
+#[test]
+fn a_script_can_carry_its_own_duration_and_dump() {
+    // The point of putting these in the script is that one file is a complete
+    // recipe: what to press, how long for, and where the answer goes.  A bug
+    // report that needs a remembered command line alongside it is not one.
+    let s = Script::parse(
+        "
+duration 30
+dump     run.jsonl
+
+0.00 key I x5
+",
+    )
+    .expect("parses");
+    assert_eq!(s.settings.duration, Some(30.0));
+    assert_eq!(s.settings.dump.as_deref(), Some(Path::new("run.jsonl")));
+    assert_eq!(s.steps.len(), 1, "a setting is not a step");
+}
+
+#[test]
+fn settings_may_appear_anywhere_and_are_not_timed() {
+    // No time column, because they configure the run rather than happen during
+    // it.  Convention is to put them at the top; nothing enforces it.
+    let s = Script::parse("0.0 key Q\nduration 5\n").expect("parses");
+    assert_eq!(s.settings.duration, Some(5.0));
+    assert_eq!(s.steps.len(), 1);
+    assert_eq!(s.duration_secs(), 0.0, "`duration` is not a step time");
+}
+
+#[test]
+fn a_repeated_setting_is_an_error_rather_than_last_wins() {
+    // Two `duration` lines mean the author believed one of them.  Silently
+    // taking the other is the kind of thing only noticed after a run has
+    // produced the wrong answer.
+    let e = Script::parse("duration 5\nduration 10\n").expect_err("should refuse");
+    assert_eq!(e.line, 2);
+    assert!(e.message.contains("more than once"), "{}", e.message);
+}
+
+#[test]
+fn a_bad_setting_names_itself() {
+    // A zero or negative duration is refused rather than clamped: it can only be
+    // a mistake, and a run that silently did nothing would be worse than one
+    // that would not start.
+    for (src, line, needle) in [
+        ("duration nope\n", 1, "not a duration"),
+        ("duration -1\n", 1, "greater than 0"),
+        ("duration 0\n", 1, "greater than 0"),
+        ("0.0 key Q\nduration\n", 2, "exactly one argument"),
+        ("dump a b\n", 1, "exactly one argument"),
+    ] {
+        let e = Script::parse(src).unwrap_err();
+        assert_eq!(e.line, line, "wrong line for {src:?}");
+        assert!(
+            e.message.contains(needle),
+            "{src:?}: expected {needle:?}, got {:?}",
+            e.message
+        );
+    }
+}
+
+#[test]
+fn a_mistyped_time_still_reports_a_bad_time() {
+    // The parser dispatches on the *first word* being a known setting verb
+    // rather than on "does it parse as a number", precisely so this diagnostic
+    // does not degrade into "not a directive".
+    let e = Script::parse("0.O5 key Q\n").expect_err("should refuse");
+    assert_eq!(e.line, 1);
+    assert!(
+        e.message.contains("not a time in seconds"),
+        "expected a time diagnostic, got: {}",
+        e.message
+    );
+}
+
+#[test]
+fn a_dump_path_is_taken_verbatim_whether_relative_or_absolute() {
+    // No rewriting either way: the directive is a default for `--dump`, so the
+    // same string has to mean the same file through both. A relative path is
+    // therefore resolved against the working directory by the OS, exactly as a
+    // path from a shell would be.
+    for spec in [
+        "out.jsonl",
+        "runs/out.jsonl",
+        "/tmp/run.jsonl",
+        "../up.jsonl",
+    ] {
+        let s = Script::parse(&format!("dump {spec}\n0.0 key Q\n")).expect("parses");
+        assert_eq!(s.settings.dump, Some(PathBuf::from(spec)));
+    }
+}
+
+#[test]
+fn a_script_with_no_settings_carries_none() {
+    let s = Script::parse("0.0 key Q\n").expect("parses");
+    assert_eq!(s.settings, ScriptSettings::default());
+    assert_eq!(s.settings.dump, None, "no dump named, no dump written");
 }

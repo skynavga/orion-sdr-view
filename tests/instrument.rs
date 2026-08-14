@@ -1170,3 +1170,41 @@ fn the_demod_row_carries_the_frame_count() {
         "the lock run must survive the inserted column"
     );
 }
+
+/// The loop timer marks an overflow rather than clamping silently.
+///
+/// This is what lets a burst outlast the display.  Every source used to
+/// truncate itself at `MAX_SIG_SECS` so this string could not grow — a HUD field
+/// width deciding how long a signal could last.  The marker slot is always
+/// present, so the field cannot reflow and `99.99` stays distinguishable from
+/// `99.99+`; the same convention a wrapped error count already uses.
+#[test]
+fn the_loop_timer_marks_an_overflow_without_changing_width() {
+    use orion_sdr_view::source::MAX_SIG_SECS;
+    use orion_sdr_view::utils::timer::LoopTimer;
+
+    let mut t = LoopTimer::new();
+    // The first active tick is the signal *onset*, which zeroes the phase; time
+    // only accumulates from the second one.
+    t.tick_active(true, 0.0);
+    t.tick_active(true, 12.34);
+    let short = t.label();
+    assert!(short.contains("12.34"), "{short}");
+    assert!(
+        !short.contains('+'),
+        "an in-range reading must not be marked: {short}"
+    );
+
+    t.tick_active(true, MAX_SIG_SECS);
+    let long = t.label();
+    assert!(
+        long.contains("99.99+"),
+        "past the field width the reading should be marked: {long}"
+    );
+    assert_eq!(
+        short.len(),
+        long.len(),
+        "the marker slot must always be present or the HUD reflows: \
+         {short:?} vs {long:?}"
+    );
+}

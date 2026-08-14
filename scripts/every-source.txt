@@ -1,0 +1,18 @@
+# Walk all six sources, pausing on each.
+#
+# A smoke test, and a tour of the dump: `source` records mark each switch and
+# carry the new sample rate (48 kHz for the five narrowband sources, 1.92 MHz for
+# COFDM), `info` and `text` records show what each one decodes, and `gap` records
+# mark the silences between bursts.
+#
+# The repeat counts are frames, not events: `key_pressed` is a per-pass boolean,
+# so five presses inside one pass would register as one.
+
+duration 40
+
+0.00  key I        # -> CW
+6.00  key I        # -> AM DSB
+12.00 key I        # -> PSK31
+18.00 key I        # -> FT8
+24.00 key I        # -> COFDM
+30.00 key I        # -> Test Tone (wraps)

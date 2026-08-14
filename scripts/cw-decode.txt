@@ -1,0 +1,16 @@
+# CW text decode.
+#
+# The one place a replay run's clock is visible: CW frames each burst with an
+# opening timestamp, so the dump's `text` records begin
+#
+#   || 00:00:00.033 |
+#
+# A replay run stamps from a fixed epoch advanced by the injected frame delta, so
+# that reads as "33 ms into the run" and repeats exactly.  The interactive app
+# uses the system clock, where the same field is a real time of day.
+
+duration 15
+
+0.00 key I         # Test Tone -> CW
+0.50 key D         # decode bar: off -> Di
+0.75 key D         # Di -> Dt (text)

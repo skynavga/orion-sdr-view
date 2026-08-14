@@ -108,6 +108,7 @@ impl CofdmRows {
                     max: center_hi,
                     unit: " Hz",
                     coarse: None,
+                    max_label: None,
                 }),
                 Row::Toggle(ToggleField {
                     label: "Bandwidth",
@@ -134,6 +135,7 @@ impl CofdmRows {
                     max: COFDM_MAX_EDGE_GUARD as f32,
                     unit: "",
                     coarse: None,
+                    max_label: None,
                 }),
                 Row::Toggle(ToggleField {
                     label: "Include DC",
@@ -160,12 +162,18 @@ impl CofdmRows {
                     // 0.5 s steps below 10 s, 1 s steps at/above.
                     step: 0.5,
                     min: 1.0,
-                    max: 99.99,
+                    // One step past the longest burst the decode-bar timer can
+                    // show is `cont`: the burst never ends.  See
+                    // `CONTINUOUS_SIG_SECS` — a sentinel rather than a bigger
+                    // number because no useful long burst is reachable by
+                    // nudging at a second per press.
+                    max: crate::source::CONTINUOUS_SIG_SECS,
                     unit: " s",
                     coarse: Some(CoarseStep {
                         threshold: 10.0,
                         step: 1.0,
                     }),
+                    max_label: Some("cont"),
                 }),
                 Row::Num(NumField {
                     label: "Gap",
@@ -176,6 +184,7 @@ impl CofdmRows {
                     max: 99.99,
                     unit: " s",
                     coarse: None,
+                    max_label: None,
                 }),
                 Row::Num(NumField {
                     label: "C/N",
@@ -186,6 +195,7 @@ impl CofdmRows {
                     max: MAX_CN_DB,
                     unit: " dB",
                     coarse: None,
+                    max_label: None,
                 }),
             ],
         }
@@ -195,28 +205,37 @@ impl CofdmRows {
     /// shaping parameters are shown only while `Shaping` is on; with it off the
     /// source renders the fraction's own edge guard and no taper or mask.
     ///
-    /// **`INCLUDE_DC` is deliberately not listed.**  Occupying the DC
-    /// subcarrier does not survive a round trip: a bare `OfdmFrameMod` →
-    /// `CofdmRx` pass with matched carrier plans and no channel measures
-    /// -15.4 dB EVM against -142.4 dB with DC nulled — `sqrt(1/33)` is
-    /// -15.2 dB, i.e. exactly one carrier of 33 completely wrong, the DC one.
-    /// Through the source it is far worse: EVM goes *positive* (error power
-    /// above signal power) and about half the frames fail even on a 70 dB link.
+    /// `INCLUDE_DC` belongs to that group for a reason beyond tidiness:
+    /// `CofdmShaping::effective` returns `derived()` — which never occupies DC —
+    /// whenever shaping is off, so the row would be inert if shown there.
     ///
-    /// The defect is below this crate, in orion-sdr's handling of an occupied
-    /// DC bin, so the row is withdrawn rather than fixed here — a toggle that
-    /// silently breaks the link is worse than no toggle.  `sources.cofdm.
-    /// include_dc` still works from YAML, deliberately: it is how the defect is
-    /// reproduced and how the eventual fix will be verified.  See
-    /// `occupying_dc_survives_a_round_trip` in `tests/cofdm_rx.rs`, which is
-    /// `#[ignore]`d and will pass when it lands.
+    /// It was withdrawn entirely in 0.0.25 because an occupied DC subcarrier did
+    /// not survive a round trip, and restored in 0.0.26 on orion-sdr 0.0.60,
+    /// which fixed it.  See `occupying_dc_survives_a_round_trip` in
+    /// `tests/cofdm_rx.rs` for the before-and-after figures; it is the
+    /// acceptance test and is no longer `#[ignore]`d.
+    /// `Gap` is hidden while `Signal` reads `cont`, for the same reason the
+    /// shaping parameters hide with shaping off: a burst that never ends has no
+    /// gap after it, so the row would be a control that does nothing.
     pub fn visible_indices(&self) -> Vec<usize> {
         let mut v = vec![CENTER, BANDWIDTH, SHAPING];
         if self.shaping_enabled() {
-            v.extend([EDGE_GUARD, TAPER, MASK]);
+            v.extend([EDGE_GUARD, INCLUDE_DC, TAPER, MASK]);
         }
-        v.extend([SIGNAL, GAP, CN]);
+        v.push(SIGNAL);
+        if !self.sig_continuous() {
+            v.push(GAP);
+        }
+        v.push(CN);
         v
+    }
+
+    /// True when the `Signal` row asks for a burst that never ends.
+    fn sig_continuous(&self) -> bool {
+        match &self.rows[SIGNAL] {
+            Row::Num(f) => crate::source::is_continuous_sig(f.value),
+            _ => false,
+        }
     }
 
     fn shaping_enabled(&self) -> bool {

@@ -9,6 +9,119 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.26] - 2026-08-14
+
+### Added
+
+- **A headless replay driver.** `orion-sdr-view --headless --script demo.txt
+  --dump run.jsonl` runs the viewer with no window, no renderer and no GPU,
+  driven from a timed key script at a fixed frame delta, and writes the
+  measurement stream the `Di` bar and `X` panel consume as JSON Lines.
+
+  **The same script produces the same bytes.** Four impure reads had to go for
+  that, and the plan had named only one. The frame clock was already injected in
+  0.0.25; `DecodeState` is now hoisted out of `DecodeWorker::run` so a replay
+  decodes *inline* rather than on a worker thread (where results arrive when the
+  scheduler gets to them and a full channel silently discards); the drop count is
+  asserted rather than assumed; and `utils::time::Clock` supplies a **scripted
+  wall clock**, because CW and PSK31 stamp each burst open and FT8 stamps each
+  decoded frame — so the time of day would otherwise land in the dump and three
+  of six sources would differ between runs in the timestamp and nothing else.
+
+  JSON Lines rather than CSV **because of the `Option`s**: every reading is a
+  `Metric<T>` carrying a value that may be absent and the provenance of that
+  value, and `rx.rs` documents that the BER rungs go `None` exactly when the link
+  fails. A format that could not hold `null` would render a dead link as a
+  perfect one.
+
+  A dump's `t` is *scripted* time, not signal time — the per-frame budget is
+  `dt * fs` clamped to 4096, and at COFDM's 1.92 MHz that clamp binds hard — so
+  every record also carries the cumulative `samples` actually consumed.
+
+- **Scripts carry their own `duration` and `dump`**, as untimed directives,
+  so one file is a complete recipe rather than something needing a remembered
+  command line beside it. The command line overrides either, which is what keeps
+  the recipe reusable. With neither set, a run ends **one second past the last
+  step** — without that margin it would stop on the very frame the last action
+  lands on, and whatever that action was for would never be measured — and
+  writes nothing.
+
+- **A continuous signal burst.** A `sig_secs` of 100 or more means the burst
+  never ends; the `Signal` settings row reaches it as one press past the top of
+  its finite range, where it reads `cont`, and the `Gap` row hides while it is
+  set.
+
+- **Six example scripts** in `scripts/`, covering a COFDM link measurement, a
+  link broken below the FEC cliff, a continuous burst, a walk of every source,
+  CW decode with its burst timestamps, and a viewport reproduction recipe.
+
+- `/release` now cuts the GitHub release, covering the span since the last
+  release that *exists* rather than since the last tag.
+
+### Changed
+
+- **Requires orion-sdr 0.0.60**, which fixes an occupied DC subcarrier: the
+  training symbol took the occupied band's half-width, which cannot express
+  whether bin 0 is live, so it nulled DC while the carrier plan handed it out as
+  data. Measured through the receiver, EVM goes from **+54.8 dB** to −66.1 dB.
+  The same release stops `EQUALIZER_FLOOR` clamping a channel null and dividing
+  anyway — a gain of up to 1e6 on the one bin carrying no information — and
+  erases instead.
+
+- **`Include DC` is restored to the COFDM settings rows**, withdrawn in 0.0.25
+  for the defect above. It sits in the shaping group, since
+  `CofdmShaping::effective` returns the derived plan with shaping off and the row
+  would be inert there.
+
+- **`sig_secs` of 100 or more now means continuous rather than a burst silently
+  truncated to 99.99 s.** Every source used to clamp itself to that value —
+  psk31, ft8, amdsb and cw truncating their rendered buffer, COFDM its phase
+  timer — because `LoopTimer::label` renders `sig NN.NN` in a fixed-width field
+  and a wider number would reflow the HUD. **A display constraint was deciding
+  how long a signal could last, and doing it silently**: a five-minute audio file
+  was simply cut off. The timer marks an overflow now instead (`sig 99.99+s`),
+  with the marker slot always present so the field width never changes — the same
+  convention a wrapped error count already used.
+
+  This changes what an existing config means: `sig_secs: 600` was a truncated
+  99.99 s burst, and is now a continuous one. That is the plain reading of what
+  was written.
+
+- **`tests/cofdm_link_budget.rs` measures through the replay driver**, leaving
+  one measurement path instead of two. It reproduces the recorded 0.0.23 tables
+  nearly cell for cell — 1/8 at 25 dB: 0.305 against 0.313; 7/8 at 11 dB: 0.108
+  against 0.107 — and EVM stays flat to 0.2 dB across all seven bandwidth
+  fractions.
+
+- New dependency: `serde_json`, for the dump.
+
+### Fixed
+
+- **The old link-budget harness had been measuring a configuration no user could
+  reach.** It passed `CofdmSource::new` a `sig_secs` of 1.0e6, which the settings
+  row clamped to 99.99 s; past that the burst ended, the receiver reset, the
+  frame accounting restarted, and each point silently reported only its tail.
+  The run completed and exited zero throughout. Going through the driver — and
+  removing the clamp — fixes it, and the harness now fails a point outright if
+  any gap appears mid-measurement.
+
+### Testing
+
+- **294 tests** with `gui`, up from 259; 230 without. `tests/replay.rs` holds 25
+  of the new ones, pinning byte-identical dumps across runs, that no decode chunk
+  is dropped, that `null` and provenance survive serialization, that the dump
+  agrees with what the panel holds, and that a bad script, an unbounded run and a
+  dropped chunk each fail loudly.
+- A four-point C/N sweep driven entirely by script and dump reproduces the shape
+  of the hand-written harness, and at the failing rung `cber` and `mer_db` come
+  out `null` rather than zero.
+
+### Documentation
+
+- README documents the headless mode, the script format and its run settings,
+  the dump's records, continuous bursts, and the `Include DC` restoration.
+- `scripts/README.md` describes each example and how to run it.
+
 ## [0.0.25] - 2026-08-14
 
 ### Added

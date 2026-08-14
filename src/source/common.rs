@@ -1,10 +1,33 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-/// Maximum continuous signal duration in a single loop cycle.
-/// Sources clamp the signal burst to this value so the decode-bar timer
-/// ("sig NN.NN") never overflows its fixed-width display.
+/// Longest burst the decode-bar timer can show without its field changing
+/// width: `sig NN.NN`.
+///
+/// **This is a display bound, not a capability.**  Every source used to *clamp*
+/// its burst to it — psk31, ft8, amdsb and cw truncated their rendered buffer,
+/// COFDM clamped its phase timer — which put a HUD field width in charge of how
+/// long a signal could last, and did it silently.  The timer now marks an
+/// overflow instead (`sig 99.99+s`), the same convention a wrapped error count
+/// already uses, so the field never widens and nothing is cut short.
 pub const MAX_SIG_SECS: f32 = 99.99;
+
+/// A `sig_secs` at or above this means **the burst never ends**.
+///
+/// One step past [`MAX_SIG_SECS`] on the settings row, so "continuous" is one
+/// keypress rather than a number nobody can nudge to: at a second per press,
+/// the top of any usefully large finite range is hundreds of presses away.
+///
+/// A sentinel rather than `f32::INFINITY` because it has to survive a YAML
+/// round trip, a row clamp and a display format, and infinity is awkward in all
+/// three.  Any larger value means the same thing, so a config asking for
+/// `1.0e9` gets what it plainly intended.
+pub const CONTINUOUS_SIG_SECS: f32 = 100.0;
+
+/// True when `sig_secs` asks for a burst with no gap after it.
+pub fn is_continuous_sig(sig_secs: f32) -> bool {
+    sig_secs >= CONTINUOUS_SIG_SECS
+}
 
 // ── C/N-specified additive noise ─────────────────────────────────────────────
 //

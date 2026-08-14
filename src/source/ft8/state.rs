@@ -73,8 +73,11 @@ impl Ft8ViewState {
     }
 
     /// Capture signal onset on rising edge.  Idempotent within a burst.
-    pub fn on_signal_rising_edge(&mut self) {
-        self.pending_onset = Some(SystemTime::now());
+    ///
+    /// The instant is supplied rather than read here, so a scripted run stamps
+    /// the same time every run — see [`Clock`](crate::utils::time::Clock).
+    pub fn on_signal_rising_edge(&mut self, now: SystemTime) {
+        self.pending_onset = Some(now);
     }
 
     /// Increment the frame counter and consume `pending_onset` to set

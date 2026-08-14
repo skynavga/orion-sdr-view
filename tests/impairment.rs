@@ -46,10 +46,19 @@ fn real_rms(src: &mut CofdmSource, blocks: usize) -> f32 {
         / blocks as f32
 }
 
+/// Burst and gap for the fixtures below.
+///
+/// **Must stay under [`CONTINUOUS_SIG_SECS`]**, which is the point of naming it:
+/// a `sig_secs` at or above that sentinel means the burst never ends, so
+/// `advance_time` would never reach the gap and `achieved_cn_db` could not
+/// measure the noise floor.  It was 600.0 while the old clamp silently cut every
+/// burst to 99.99 s, and that only worked by accident.
+const PHASE_SECS: f32 = 60.0;
+
 fn source(fraction: CofdmBwFraction, cn_db: f32) -> CofdmSource {
     CofdmSource::new(
-        600.0,
-        600.0,
+        PHASE_SECS,
+        PHASE_SECS,
         cn_db,
         fraction,
         CofdmShaping::default_for(fraction),
@@ -74,7 +83,7 @@ fn achieved_cn_db(fraction: CofdmBwFraction, cn_db: f32) -> f32 {
     );
 
     let mut gap = source(fraction, cn_db);
-    gap.advance_time(601.0);
+    gap.advance_time(PHASE_SECS + 1.0);
     assert!(!gap.in_signal(), "expected the gap phase");
     let p_noise = iq_power(&mut gap, 40);
 

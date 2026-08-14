@@ -1,0 +1,9 @@
+# A COFDM source that transmits without ever gapping.
+#
+# Any `sig_secs` at or above 100 means continuous.  1.0e9 is written out rather
+# than 100 to say the intent plainly: this is not a very long burst, it is a
+# burst with no end.
+view:
+  sources:
+    cofdm:
+      sig_secs: 1.0e9

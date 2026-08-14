@@ -7,7 +7,7 @@ use orion_sdr::message::{CallsignHashTable, Ft8Message, GridField, pack77};
 use orion_sdr::modulate::{Ft4Mod, Ft8Mod};
 
 use crate::source::ft8::decode::{FT4_BW_HZ, FT8_BW_HZ};
-use crate::source::{CnNoise, CnReference, MAX_SIG_SECS, NoiseDomain, SignalSource, mean_power};
+use crate::source::{CnNoise, CnReference, NoiseDomain, SignalSource, mean_power};
 
 // ── FT8 constants ─────────────────────────────────────────────────────────────
 
@@ -310,9 +310,10 @@ impl SignalSource for Ft8Source {
     }
 
     fn next_samples(&mut self, n: usize) -> Vec<f32> {
-        // Cap total signal samples per burst so the decode-bar timer cannot
-        // overflow the fixed-width "sig NN.NN" display.
-        let max_sig_samples = (MAX_SIG_SECS * self.mod_rate) as usize;
+        // The burst runs for `msg_repeat` whole frames.  It used to be cut short
+        // at `MAX_SIG_SECS` as well, so the decode-bar timer's fixed-width field
+        // could not overflow — which meant a repeat count the user had set was
+        // silently not honoured.  The timer marks the overflow now instead.
         let frame_len = self.samples.len();
         let mut out = Vec::with_capacity(n);
         let mut i = 0;
@@ -331,15 +332,7 @@ impl SignalSource for Ft8Source {
                     self.play_count = 0;
                 }
             } else if self.pos < frame_len {
-                // Samples already emitted in this burst across prior repeats + this frame.
-                let emitted = self.play_count * frame_len + self.pos;
-                let remaining_budget = max_sig_samples.saturating_sub(emitted);
-                if remaining_budget == 0 {
-                    // Hit the signal-duration cap mid-burst — truncate and enter gap.
-                    self.gap_remaining = self.gap_samples;
-                    continue;
-                }
-                let available = (frame_len - self.pos).min(n - i).min(remaining_budget);
+                let available = (frame_len - self.pos).min(n - i);
                 for k in 0..available {
                     let noise = self.noise.next();
                     out.push(self.samples[self.pos + k] + noise);

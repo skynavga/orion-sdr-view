@@ -102,10 +102,14 @@ jobs:
         run: cargo test --no-default-features --release
 
       # The app layer lives behind `gui`, so the headless `ViewApp` tests
-      # (tests/app.rs, tests/panes.rs, tests/script.rs) are compiled out of the
-      # run above entirely.  Without this step they would never execute in CI —
-      # the same gap that left the GUI uncompiled before 0.0.16.  No display or
-      # GPU is needed: the harness drives `egui::Context` directly and never
-      # opens a window.
+      # (tests/app.rs, panes.rs, script.rs, replay.rs and cofdm_link_budget.rs)
+      # are compiled out of the run above entirely.  Without this step they would
+      # never execute in CI — the same gap that left the GUI uncompiled before
+      # 0.0.16.  No display or GPU is needed: the harness drives `egui::Context`
+      # directly and never opens a window.
+      #
+      # `cofdm_link_budget` is `#[ignore]`d and neither step passes `--ignored`,
+      # so it compiles here but does not run — which is the useful half, since a
+      # refactor that broke the measurement harness still fails the build.
       - name: Run tests (gui)
         run: cargo test --features gui --release

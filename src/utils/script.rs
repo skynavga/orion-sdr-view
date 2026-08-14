@@ -5,6 +5,9 @@
 //! human at the keyboard.
 //!
 //! ```text
+//! duration 30                    # run settings: no time, at most one each
+//! dump     run.jsonl
+//!
 //! # t(s)   directive
 //! 0.00     key I x5              # cycle to COFDM
 //! 0.50     key L                 # lock the source to the viewport centre
@@ -22,8 +25,26 @@
 //! Times are **absolute seconds**, not deltas: with the `dt` injected into
 //! [`ViewApp::advance`](crate::app::ViewApp::advance) a driver steps exactly to
 //! each boundary, so "at t = 0.75 s" is exact rather than approximate.
+//!
+//! # Run settings
+//!
+//! `duration` and `dump` take **no time**, because they configure the run rather
+//! than happen during it.  That is also what makes them unambiguous to parse: a
+//! line beginning with one of those two words is a setting, and anything else
+//! must begin with a time exactly as before, so no existing diagnostic changes.
+//!
+//! They exist so a script can be a **self-contained recipe** — one file that
+//! says what to press, how long for, and where the answer goes.  The command
+//! line overrides either, which is what keeps that recipe reusable: the same
+//! script can be run longer, or dumped somewhere else, without editing it.
+//!
+//! A `dump` path may be absolute or relative, and a relative one resolves
+//! **against the viewer's working directory** — the same as `--dump` and as any
+//! other path a shell hands a program.  The directive is a default for the flag,
+//! so the two must mean the same thing given the same string.
 
 use std::fmt;
+use std::path::PathBuf;
 
 /// A parse failure, carrying the 1-based source line so the diagnostic can name
 /// it.  A headless run must fail loudly on an unparsable script rather than
@@ -121,9 +142,24 @@ pub struct Step {
     pub line: usize,
 }
 
-/// A parsed script: steps in ascending time order.
+/// Run settings a script may carry, each optional and each at most once.
+///
+/// Both are **defaults, not commands**: the driver's caller overrides either, so
+/// a script that names its own duration and dump can still be re-run for longer
+/// or written elsewhere without being edited.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ScriptSettings {
+    /// Where to write the dump.  Absolute or relative; a relative path resolves
+    /// against the working directory, exactly as `--dump` does.
+    pub dump: Option<PathBuf>,
+    /// How long to run, in scripted seconds.
+    pub duration: Option<f32>,
+}
+
+/// A parsed script: run settings plus steps in ascending time order.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Script {
+    pub settings: ScriptSettings,
     pub steps: Vec<Step>,
 }
 
@@ -131,19 +167,23 @@ impl Script {
     /// Parse a script, failing on the first bad line.
     pub fn parse(src: &str) -> Result<Self, ScriptError> {
         let mut steps = Vec::new();
+        let mut settings = ScriptSettings::default();
         for (i, raw) in src.lines().enumerate() {
             let line = i + 1;
             let text = strip_comment(raw);
             if text.trim().is_empty() {
                 continue;
             }
-            steps.push(parse_step(text, line)?);
+            match parse_line(text, line)? {
+                Line::Step(s) => steps.push(s),
+                Line::Setting(set) => set.apply(&mut settings, line)?,
+            }
         }
         // Sort by time so a script may be written out of order, but keep equal
         // times in source order — two directives at the same instant are meant
         // to happen in the order they were written.
         steps.sort_by(|a, b| a.t_secs.total_cmp(&b.t_secs));
-        Ok(Self { steps })
+        Ok(Self { settings, steps })
     }
 
     /// Steps due in the half-open window `[from, to)`.
@@ -170,6 +210,90 @@ fn strip_comment(line: &str) -> &str {
     match line.find('#') {
         Some(i) => &line[..i],
         None => line,
+    }
+}
+
+/// One non-blank line: either a timed step or a run setting.
+enum Line {
+    Step(Step),
+    Setting(Setting),
+}
+
+/// A parsed run-setting line, before it is folded into [`ScriptSettings`].
+enum Setting {
+    Dump(PathBuf),
+    Duration(f32),
+}
+
+impl Setting {
+    /// Fold into `settings`, refusing a second occurrence.
+    ///
+    /// A repeat is an error rather than last-wins: two `duration` lines mean the
+    /// author believed one of them, and silently picking the other is the kind
+    /// of thing that is only noticed after a run has produced the wrong answer.
+    fn apply(self, settings: &mut ScriptSettings, line: usize) -> Result<(), ScriptError> {
+        let dup = |what: &str| ScriptError {
+            line,
+            message: format!("`{what}` is given more than once"),
+        };
+        match self {
+            Setting::Dump(p) => {
+                if settings.dump.is_some() {
+                    return Err(dup("dump"));
+                }
+                settings.dump = Some(p);
+            }
+            Setting::Duration(d) => {
+                if settings.duration.is_some() {
+                    return Err(dup("duration"));
+                }
+                settings.duration = Some(d);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Words that begin a run-setting line rather than a time.
+///
+/// Dispatching on the *first word* rather than on "does it parse as a number"
+/// is deliberate: a mistyped time like `0.O5 key Q` still reports "not a time in
+/// seconds" instead of "not a directive", so no existing diagnostic gets worse.
+const SETTING_VERBS: [&str; 2] = ["dump", "duration"];
+
+fn parse_line(text: &str, line: usize) -> Result<Line, ScriptError> {
+    let first = text.split_whitespace().next().unwrap_or_default();
+    if SETTING_VERBS.contains(&first) {
+        return parse_setting(text, line).map(Line::Setting);
+    }
+    parse_step(text, line).map(Line::Step)
+}
+
+fn parse_setting(text: &str, line: usize) -> Result<Setting, ScriptError> {
+    let err = |message: String| ScriptError { line, message };
+    let mut words = text.split_whitespace();
+    let verb = words.next().unwrap_or_default();
+    let rest: Vec<&str> = words.collect();
+    let [arg] = rest[..] else {
+        return Err(err(format!(
+            "`{verb}` takes exactly one argument, got {}",
+            rest.len()
+        )));
+    };
+    match verb {
+        "dump" => Ok(Setting::Dump(PathBuf::from(arg))),
+        "duration" => {
+            let secs: f32 = arg
+                .parse()
+                .map_err(|_| err(format!("`{arg}` is not a duration in seconds")))?;
+            if !secs.is_finite() || secs <= 0.0 {
+                return Err(err(format!(
+                    "duration `{arg}` must be finite and greater than 0"
+                )));
+            }
+            Ok(Setting::Duration(secs))
+        }
+        other => Err(err(format!("`{other}` is not a run setting"))),
     }
 }
 

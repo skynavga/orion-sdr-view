@@ -1,0 +1,18 @@
+# A COFDM link that never gaps, for a long measurement.
+#
+# Needs scripts/continuous.yaml, which sets `sig_secs: 1.0e9` — anything at or
+# above 100 means continuous.  The `Signal` settings row shows `cont` for it and
+# hides `Gap`, since a burst with no end has no gap after it.
+#
+#   orion-sdr-view --headless --config scripts/continuous.yaml \
+#     --script scripts/cofdm-continuous.txt --dump run.jsonl
+#
+# Why it matters for a measurement: a gap resets the receiver and restarts its
+# frame accounting, so a run that outlasted the burst would report only the
+# frames after the last gap — with nothing in the dump to say so except an
+# `instrumentcleared` record.  `tests/cofdm_link_budget.rs` uses exactly this
+# configuration, and asserts that no such record appears.
+
+duration 60
+
+0.00 key I x5

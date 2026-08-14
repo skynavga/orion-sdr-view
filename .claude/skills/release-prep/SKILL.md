@@ -152,4 +152,5 @@ Tell the user:
 - What version was bumped (OLD → NEW)
 - That all tests passed
 - That the commit and signed tag are ready locally
-- That the next step is `/release NEW_VERSION` to push and publish to crates.io
+- That the next step is `/release NEW_VERSION`, which pushes the tag, publishes
+  to crates.io and cuts the GitHub release

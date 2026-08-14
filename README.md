@@ -127,22 +127,49 @@ view:
       bandwidth:  1/4    # occupied BW as a fraction of span: 1/8 1/4 1/3 1/2 2/3 3/4 7/8
       shaping:    true   # out-of-band spectral shaping (default true)
       edge_guard: 111    # null carriers per band edge; omit to derive from `bandwidth`
-      include_dc: false  # occupy the DC subcarrier — see the warning below
+      include_dc: false  # occupy the DC subcarrier (needs `shaping: true`)
       taper:      1/4    # symbol-window roll-off, as a fraction of the guard: off 1/8 1/4 3/8
       mask:       60     # baseband-mask stop-band depth in dB: off 40 60 80
-      sig_secs:   10.0   # signal-burst duration (wall-clock seconds)
+      sig_secs:   10.0   # signal-burst duration (wall-clock seconds); >= 100 means continuous
       gap_secs:   2.0    # silence gap between bursts (wall-clock seconds)
       cn_db:      35.0   # carrier-to-noise ratio in dB
 ```
 
 All fields are optional; missing fields fall back to built-in defaults.
 
-**`sources.cofdm.include_dc` is known-broken and has no settings row.** Occupying the DC subcarrier
-does not survive a round trip: the training symbol in orion-sdr 0.0.59 never transmits bin 0, so the
-channel estimate there is noise and the equalizer divides by it. Measured through the receiver, EVM
-goes from −67 dB to **+55 dB** — error power above signal power — and about half the frames fail on
-an otherwise clean link. The defect is upstream, so the toggle was withdrawn rather than patched
-here; the config key still works, deliberately, as the way to reproduce it and to verify the fix.
+### Continuous bursts: `sig_secs`
+
+**A `sig_secs` of 100 or more means the burst never ends.** The `Signal` settings row reaches it as
+one press past the top of its finite range, where it reads `cont`; the `Gap` row hides while it is
+set, since a burst with no end has no gap after it.
+
+A sentinel rather than a larger maximum, because no usefully long burst is reachable by nudging at a
+second per press. Any value at or above the threshold means the same thing, so a config asking for
+`1.0e9` gets what it plainly intended.
+
+**This used to be silently impossible.** Every source clamped its burst to 99.99 s — psk31, ft8,
+amdsb and cw truncated their rendered buffer, COFDM clamped its phase timer — because the decode-bar
+timer renders `sig NN.NN` in a fixed-width field and a wider number would reflow the HUD. A display
+constraint was deciding how long a signal could last, and doing it without saying so: a 5-minute
+audio file, or an FT8 repeat count that ran long, was simply cut off.
+
+The timer now marks an overflow instead — `sig 99.99+s` — with the marker slot always present so the
+field width never changes. That is the same convention the error counter already uses for a wrapped
+count, and for the same reason: `99.99` and `99.99+` are very different readings, and clamping
+without saying so under-reports silently.
+
+**`sources.cofdm.include_dc` takes effect only with `shaping: true`.** With shaping off the source
+renders the bandwidth fraction's own derived plan, which never occupies DC, so the key — and the
+matching settings row — are inert. This mirrors `edge_guard`, `taper` and `mask`.
+
+Occupying DC was broken until orion-sdr 0.0.60 and the row was withdrawn for release 0.0.25: the
+training symbol never transmitted bin 0, so the channel estimate there was noise and the equalizer
+divided by it, taking EVM from −67 dB to **+55 dB** — error power above signal power — with about
+half the frames failing on an otherwise clean link. Fixed upstream in 0.0.60; occupying DC now costs
+nothing measurable.
+
+Leaving it off remains the right default for anything resembling real hardware, since a
+direct-conversion front end puts its LO leakage on bin 0.
 
 ### Noise: `cn_db`
 
@@ -309,6 +336,99 @@ trailing `+` once it has rolled over.
 The labels deliberately avoid naming a decoder or a code family — the inner FEC can be LDPC,
 convolutional, or absent, so DVB's `VBER` spelling (after the Viterbi algorithm) would only ever be
 right for one of them.
+
+## Headless replay
+
+```sh
+orion-sdr-view --headless --script demo.txt --dump run.jsonl --duration 30
+```
+
+Runs the viewer with **no window, no renderer and no GPU**, driven from a timed key script at a
+fixed frame delta, and writes the measurement stream the `Di` bar and the `X` panel consume as
+machine-readable records.
+
+A script is plain text, times in absolute seconds:
+
+```text
+duration 30                    # run settings: no time column, at most one each
+dump     run.jsonl
+
+# t(s)   directive
+0.00     key I x5              # cycle to COFDM
+0.50     key ArrowUp x3        # zoom in
+1.00     key L                 # lock the band to the viewport centre
+1.50     text a                # markers arrive as Text, not Key
+2.00     assert center_hz 520000
+```
+
+A repeat count is **frames, not events**: `key_pressed` is a per-pass boolean, so five press events
+inside one pass register as one. `assert` directives are parsed — a typo is still an error — and
+then ignored; executing them is the test suite's job. It is one format with two readers, so a
+reproduction recipe and a regression test are the same file.
+
+### Run settings, and what overrides what
+
+`duration` and `dump` take no time column, because they configure the run rather than happen during
+it. They let a script be a complete recipe — what to press, how long for, and where the answer goes
+— instead of a file that needs a remembered command line beside it.
+
+**The command line overrides either**, which is what keeps that recipe reusable: the same script can
+be run longer or written elsewhere without being edited. Paths are taken verbatim, so a relative
+`dump` resolves against the working directory exactly as `--dump` does.
+
+With neither naming a value:
+
+- **no duration** → the run ends **one second past the last scripted step**. Without that margin it
+  would stop on the very frame the last action lands on, and whatever that action was for would
+  never be measured.
+- **no dump** → nothing is written. The run is still worth doing: it fails on a panic, an
+  unparsable script or a dropped chunk just the same.
+
+`--duration` may also be shorter than the script. Every step still runs — the loop waits on the
+script as well as the clock — so cutting a run short cannot silently skip the actions that were
+asked for.
+
+### Example scripts
+
+Ready-to-run recipes live in [`scripts/`](scripts/), with a one-line description of each in
+[`scripts/README.md`](scripts/README.md): measuring a COFDM link, breaking one below the FEC cliff
+to see the `null` readings, walking every source, CW decode with its burst timestamps, and a
+viewport reproduction recipe built from `assert` directives.
+
+**The same script produces the same bytes.** Both pseudo-random generators are seeded from fixed
+constants, and a replay run removes the four impure reads that would otherwise vary: the frame
+clock is injected, the decode runs inline rather than on a worker thread, no chunk can be dropped,
+and timestamps come from a scripted clock starting at 2026-01-01T00:00:00Z rather than from the
+system one. A run therefore reads `|| 00:00:00.033 |` for a burst 33 ms in — legible as elapsed
+time and impossible to mistake for a real one.
+
+### The dump
+
+One JSON object per line. JSON Lines rather than CSV because every instrument reading is an
+`Option` with a provenance:
+
+```json
+{"kind":"header","version":"0.0.26","source":"Test Tone","fs_hz":48000.0,"script_sha256":"3072e5…"}
+{"kind":"source","t":0.083,"samples":4000,"source":"COFDM","fs_hz":1920000.0}
+{"kind":"info","t":0.483,"samples":102304,"modulation":"COFDM","center_hz":480000.0,"bw_hz":240000.0,"snr_db":34.5}
+{"kind":"instrument","t":0.483,"samples":102304,"cn_db":{"v":34.5,"prov":"measured"},"clock_error_ppm":{"v":null,"prov":"unavailable"},…}
+{"kind":"summary","t":3.0,"frames":180,"samples":720800,"dropped_chunks":0,"records":20}
+```
+
+`null` and `0.0` must stay distinguishable: the BER rungs go absent exactly when the link fails, so
+a format that could not hold `null` would render a dead link as a flawless one. `prov` is the same
+distinction the panel's `SIM` badge draws — `measured` came off the air, `known` was declared by the
+source, `unavailable` has no provider at all.
+
+**`t` is scripted time, not signal time.** The per-frame sample budget is `dt × fs` clamped to 4096,
+and at COFDM's 1.92 MHz that clamp binds hard — a 1/60 s frame asks for 32 000 samples and gets
+4096. Every record therefore also carries `samples`, the cumulative count actually consumed, which
+is the honest measure. `dropped_chunks` in the summary must be zero; a hole breaks a streaming
+demodulator's framing, so anything else means the dump measured the harness rather than the link.
+
+A headless run **fails loudly** — non-zero exit and a message on stderr — for an unparsable script,
+an unwritable dump, or a dropped chunk. Nobody is watching it, so a quiet failure would look exactly
+like a clean run.
 
 ## Keyboard Shortcuts
 

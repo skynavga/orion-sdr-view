@@ -350,6 +350,177 @@ impl DecodeTicker {
 /// 4096 samples at 48 kHz = ~85 ms; bin resolution = 11.7 Hz.
 pub const SPECTRUM_WINDOW_SAMPLES: usize = 4096;
 
+/// Everything the decode worker carries between chunks.
+///
+/// Split out of [`DecodeWorker::run`], which held all of it as locals above a
+/// `recv_timeout` loop and so had no per-chunk entry point.  The threaded worker
+/// is now a thin adapter over [`DecodeState::process`], and the headless replay
+/// driver calls the same method inline — one decode path, driven two ways.
+///
+/// **Running it inline is not merely convenient, it is what makes a measurement
+/// reproducible.**  On the thread, results arrive when the scheduler gets to
+/// them and both channels `try_send`, so a full channel silently discards.  That
+/// is the right trade for a real-time display and the wrong one for a dump,
+/// which would otherwise be measuring the viewer's frame pacing.
+pub struct DecodeState {
+    last_mode: DecodeMode,
+    last_carrier: f32,
+    was_signal: bool,
+    last_seq: Option<u64>,
+    /// Chunks the sequence counter says never arrived.
+    ///
+    /// Zero is the invariant a synchronous run must hold, and asserting it is
+    /// the cheapest proof that a dump measures the link rather than the harness
+    /// — a hole breaks a streaming demodulator's framing, so it would surface as
+    /// frame errors on a perfectly good signal.
+    dropped: u64,
+    psk31: psk31::Psk31State,
+    cw: cw::CwState,
+    amdsb: amdsb::AmDsbState,
+    testtone: tone::ToneState,
+    ft8: ft8::Ft8State,
+    cofdm: cofdm::CofdmState,
+}
+
+impl Default for DecodeState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DecodeState {
+    pub fn new() -> Self {
+        Self {
+            last_mode: DecodeMode::Off,
+            last_carrier: 0.0,
+            was_signal: false,
+            last_seq: None,
+            dropped: 0,
+            psk31: psk31::Psk31State::new(),
+            cw: cw::CwState::new(),
+            amdsb: amdsb::AmDsbState::new(),
+            testtone: tone::ToneState::new(),
+            ft8: ft8::Ft8State::new(),
+            cofdm: cofdm::CofdmState::new(),
+        }
+    }
+
+    /// How many chunks the sequence counter says went missing.  See [`dropped`].
+    ///
+    /// [`dropped`]: Self::dropped
+    pub fn dropped(&self) -> u64 {
+        self.dropped
+    }
+
+    /// Reset every per-mode decoder.  Called on a flush chunk and on any config
+    /// change that invalidates accumulated samples.
+    fn reset_all(&mut self) {
+        self.psk31.reset();
+        self.cw.reset();
+        self.amdsb.reset();
+        self.testtone.reset();
+        self.ft8.reset();
+        self.cofdm.reset();
+        self.was_signal = false;
+    }
+
+    /// Decode one chunk, emitting any results through `tx`.
+    ///
+    /// `cfg` is passed by reference rather than read from the shared
+    /// `Arc<Mutex<..>>` here, so the threaded and inline callers cannot diverge
+    /// on *which* fields they sample or on when they sample them — the lock
+    /// scope belongs to the caller, the field set to this method.
+    pub fn process(
+        &mut self,
+        chunk: &DecodeChunk,
+        cfg: &DecodeConfig,
+        tx: &SyncSender<DecodeResult>,
+    ) {
+        let samples = &chunk.real;
+
+        // A hole in the sample stream breaks a streaming demodulator's framing,
+        // so start its accounting over rather than charging the link for samples
+        // the viewer dropped. See `DecodeChunk::seq`.
+        if let Some(prev) = self.last_seq
+            && chunk.seq != prev.wrapping_add(1)
+        {
+            self.dropped += chunk.seq.wrapping_sub(prev).wrapping_sub(1);
+            self.cofdm.reset();
+        }
+        self.last_seq = Some(chunk.seq);
+
+        // CW decodes against a known message and schedule, so its state carries
+        // config rather than reading it per call.
+        if cfg.mode == DecodeMode::Cw {
+            self.cw.message.clone_from(&cfg.cw_message);
+            self.cw.wpm = cfg.cw_wpm;
+            self.cw.dash_weight = cfg.cw_dash_weight;
+            self.cw.char_space = cfg.cw_char_space;
+            self.cw.word_space = cfg.cw_word_space;
+            self.cw.msg_repeat = cfg.cw_msg_repeat;
+        }
+        let (mode, carrier_hz, fs) = (cfg.mode, cfg.carrier_hz, cfg.fs);
+
+        // Empty vec is a flush signal (sent by main thread on source reset).
+        if samples.is_empty() {
+            self.reset_all();
+            self.last_mode = mode;
+            self.last_carrier = carrier_hz;
+            return;
+        }
+
+        // Flush accumulated buffer on config change.
+        if mode != self.last_mode || (carrier_hz - self.last_carrier).abs() > 0.5 {
+            self.reset_all();
+            self.last_mode = mode;
+            self.last_carrier = carrier_hz;
+        }
+
+        let is_signal = chunk
+            .signal
+            .unwrap_or_else(|| rms(samples) >= cfg.signal_threshold);
+        let gap_edge = !is_signal && self.was_signal;
+        self.was_signal = is_signal;
+
+        match mode {
+            DecodeMode::Bpsk31 | DecodeMode::Qpsk31 => {
+                self.psk31
+                    .process(samples, is_signal, gap_edge, mode, carrier_hz, fs, tx);
+            }
+            DecodeMode::Cw => {
+                self.cw
+                    .process(samples, is_signal, gap_edge, carrier_hz, fs, tx);
+            }
+            DecodeMode::AmDsb => {
+                self.amdsb
+                    .process(samples, is_signal, gap_edge, carrier_hz, fs, tx);
+            }
+            DecodeMode::TestTone => {
+                self.testtone
+                    .process(samples, is_signal, gap_edge, carrier_hz, fs, tx);
+            }
+            DecodeMode::Ft8 | DecodeMode::Ft4 => {
+                self.ft8
+                    .process(samples, is_signal, gap_edge, mode, carrier_hz, fs, tx);
+            }
+            DecodeMode::Cofdm => {
+                self.cofdm.process(
+                    samples,
+                    is_signal,
+                    gap_edge,
+                    carrier_hz,
+                    cfg.cofdm_bw_hz,
+                    cfg.cofdm_shaping,
+                    chunk.iq.as_deref(),
+                    fs,
+                    tx,
+                );
+            }
+            DecodeMode::Off => {}
+        }
+    }
+}
+
 pub struct DecodeWorker {
     config: Arc<Mutex<DecodeConfig>>,
     rx: Receiver<DecodeChunk>,
@@ -365,121 +536,23 @@ impl DecodeWorker {
         Self { config, rx, tx }
     }
 
+    /// Receive chunks until the sender hangs up, decoding each one.
+    ///
+    /// The whole body is [`DecodeState::process`]; what is left here is the
+    /// thread's own concerns — the timeout, the disconnect, and holding the
+    /// config lock across exactly one chunk.
     pub fn run(self) {
-        let mut last_mode = DecodeMode::Off;
-        let mut last_carrier = 0.0_f32;
-        let mut was_signal = false;
-        let mut last_seq: Option<u64> = None;
-
-        // Per-mode state.
-        let mut psk31 = psk31::Psk31State::new();
-        let mut cw = cw::CwState::new();
-        let mut amdsb = amdsb::AmDsbState::new();
-        let mut testtone = tone::ToneState::new();
-        let mut ft8 = ft8::Ft8State::new();
-        let mut cofdm = cofdm::CofdmState::new();
-
+        let mut state = DecodeState::new();
         loop {
             let chunk = match self.rx.recv_timeout(std::time::Duration::from_millis(100)) {
                 Ok(c) => c,
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
             };
-            let samples = &chunk.real;
-
-            // A hole in the sample stream breaks a streaming demodulator's
-            // framing, so start its accounting over rather than charging the
-            // link for samples the viewer dropped. See `DecodeChunk::seq`.
-            let dropped = last_seq.is_some_and(|prev| chunk.seq != prev.wrapping_add(1));
-            last_seq = Some(chunk.seq);
-            if dropped {
-                cofdm.reset();
-            }
-
-            let (mode, carrier_hz, fs, cofdm_bw_hz, cofdm_shaping, signal_threshold) = {
-                let cfg = self.config.lock().unwrap();
-                if cfg.mode == DecodeMode::Cw {
-                    cw.message.clone_from(&cfg.cw_message);
-                    cw.wpm = cfg.cw_wpm;
-                    cw.dash_weight = cfg.cw_dash_weight;
-                    cw.char_space = cfg.cw_char_space;
-                    cw.word_space = cfg.cw_word_space;
-                    cw.msg_repeat = cfg.cw_msg_repeat;
-                }
-                (
-                    cfg.mode,
-                    cfg.carrier_hz,
-                    cfg.fs,
-                    cfg.cofdm_bw_hz,
-                    cfg.cofdm_shaping,
-                    cfg.signal_threshold,
-                )
-            };
-
-            // Empty vec is a flush signal (sent by main thread on source reset).
-            if samples.is_empty() {
-                psk31.reset();
-                cw.reset();
-                amdsb.reset();
-                testtone.reset();
-                ft8.reset();
-                cofdm.reset();
-                was_signal = false;
-                last_mode = mode;
-                last_carrier = carrier_hz;
-                continue;
-            }
-
-            // Flush accumulated buffer on config change.
-            if mode != last_mode || (carrier_hz - last_carrier).abs() > 0.5 {
-                psk31.reset();
-                cw.reset();
-                amdsb.reset();
-                testtone.reset();
-                ft8.reset();
-                cofdm.reset();
-                was_signal = false;
-                last_mode = mode;
-                last_carrier = carrier_hz;
-            }
-
-            let is_signal = chunk
-                .signal
-                .unwrap_or_else(|| rms(samples) >= signal_threshold);
-            let gap_edge = !is_signal && was_signal;
-            was_signal = is_signal;
-
-            match mode {
-                DecodeMode::Bpsk31 | DecodeMode::Qpsk31 => {
-                    psk31.process(samples, is_signal, gap_edge, mode, carrier_hz, fs, &self.tx);
-                }
-                DecodeMode::Cw => {
-                    cw.process(samples, is_signal, gap_edge, carrier_hz, fs, &self.tx);
-                }
-                DecodeMode::AmDsb => {
-                    amdsb.process(samples, is_signal, gap_edge, carrier_hz, fs, &self.tx);
-                }
-                DecodeMode::TestTone => {
-                    testtone.process(samples, is_signal, gap_edge, carrier_hz, fs, &self.tx);
-                }
-                DecodeMode::Ft8 | DecodeMode::Ft4 => {
-                    ft8.process(samples, is_signal, gap_edge, mode, carrier_hz, fs, &self.tx);
-                }
-                DecodeMode::Cofdm => {
-                    cofdm.process(
-                        samples,
-                        is_signal,
-                        gap_edge,
-                        carrier_hz,
-                        cofdm_bw_hz,
-                        cofdm_shaping,
-                        chunk.iq.as_deref(),
-                        fs,
-                        &self.tx,
-                    );
-                }
-                DecodeMode::Off => {}
-            }
+            // Snapshot rather than hold the guard across `process`: decoding a
+            // chunk is unbounded work, and the writer is the UI thread.
+            let cfg = self.config.lock().unwrap().clone();
+            state.process(&chunk, &cfg, &self.tx);
         }
     }
 }
