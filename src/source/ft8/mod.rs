@@ -6,7 +6,6 @@ mod decode;
 mod source;
 mod state;
 
-#[allow(unused_imports)]
 pub use config::Ft8Config;
 pub use decode::{FT4_BW_HZ, FT8_BW_HZ, Ft8State};
 pub use source::{

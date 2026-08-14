@@ -200,7 +200,6 @@ fn format_offset_min_signed(min: i32) -> String {
 
 pub(super) struct TzKeysResult {
     /// True when user pressed Enter to commit a sub-edit.
-    #[allow(dead_code)]
     pub accepted: bool,
     /// True if the key event was consumed (don't fall through to navigation).
     pub consumed: bool,

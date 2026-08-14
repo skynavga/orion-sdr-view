@@ -1,0 +1,307 @@
+// Copyright (c) 2026 G & R Associates LLC
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+//! A timed key script: the shared input format for driving the app without a
+//! human at the keyboard.
+//!
+//! ```text
+//! # t(s)   directive
+//! 0.00     key I x5              # cycle to COFDM
+//! 0.50     key L                 # lock the source to the viewport centre
+//! 0.75     key shift+ArrowRight
+//! 0.80     text a                # markers arrive as Text, not Key
+//! 1.00     assert center_hz 520000
+//! ```
+//!
+//! **One format, two readers.**  A test harness replays the `key`/`text`
+//! directives and *executes* the `assert` ones; the headless replay driver
+//! replays and *ignores* them.  Defining it once is what makes a bug report and
+//! a regression test the same artifact — a reproduction recipe can be dropped
+//! into `tests/` unchanged, and a failing test can be replayed interactively.
+//!
+//! Times are **absolute seconds**, not deltas: with the `dt` injected into
+//! [`ViewApp::advance`](crate::app::ViewApp::advance) a driver steps exactly to
+//! each boundary, so "at t = 0.75 s" is exact rather than approximate.
+
+use std::fmt;
+
+/// A parse failure, carrying the 1-based source line so the diagnostic can name
+/// it.  A headless run must fail loudly on an unparsable script rather than
+/// silently skipping the line — nobody is watching it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScriptError {
+    pub line: usize,
+    pub message: String,
+}
+
+impl fmt::Display for ScriptError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "line {}: {}", self.line, self.message)
+    }
+}
+
+impl std::error::Error for ScriptError {}
+
+/// What one directive does.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Action {
+    /// Synthesize a key press and its matching release.
+    Key {
+        key: egui::Key,
+        modifiers: egui::Modifiers,
+    },
+    /// Synthesize text input.
+    ///
+    /// Not redundant with `Key`: the app reads `?`, `a`/`b`, `A`/`B` and `[`/`]`
+    /// out of [`egui::Event::Text`], so a key-only format could not reach the
+    /// marker or dB-reference bindings at all.
+    Text { text: String },
+    /// A property for the *test harness* to check.  The replay driver parses it
+    /// — so a typo is still an error — and then ignores it.
+    Assert { name: String, args: Vec<String> },
+}
+
+impl Action {
+    /// The raw events this action delivers in **one** pass.
+    ///
+    /// A key is pressed and released within the same pass so it cannot stick
+    /// down across later frames.  The cost is that bindings reading
+    /// `key_down` rather than `key_pressed` — the Ctrl+←/→ coarse marker move is
+    /// the only one — see the key up again in the same pass and so do not fire.
+    pub fn events(&self) -> Vec<egui::Event> {
+        match self {
+            Self::Key { key, modifiers } => vec![
+                egui::Event::Key {
+                    key: *key,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: *modifiers,
+                },
+                egui::Event::Key {
+                    key: *key,
+                    physical_key: None,
+                    pressed: false,
+                    repeat: false,
+                    modifiers: *modifiers,
+                },
+            ],
+            Self::Text { text } => vec![egui::Event::Text(text.clone())],
+            Self::Assert { .. } => Vec::new(),
+        }
+    }
+
+    /// The modifier state to put on the pass's [`egui::RawInput`].
+    ///
+    /// Separate from the events because `InputState::modifiers` — which is what
+    /// `handle_keys` reads for shift/ctrl/alt — is taken from `RawInput`, not
+    /// from the key event.  Setting only one of the two would give a script a
+    /// `shift+` that the app never sees.
+    pub fn modifiers(&self) -> egui::Modifiers {
+        match self {
+            Self::Key { modifiers, .. } => *modifiers,
+            _ => egui::Modifiers::default(),
+        }
+    }
+}
+
+/// One directive at one instant.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Step {
+    /// Absolute time from the start of the run, in seconds.
+    pub t_secs: f32,
+    /// How many **consecutive frames** the action occupies (the `xN` suffix).
+    ///
+    /// Frames, not events: `key_pressed` is a per-pass boolean, so five press
+    /// events in one pass are indistinguishable from one.  `key I x5` therefore
+    /// has to be five passes to switch five sources.
+    pub repeat: usize,
+    pub action: Action,
+    /// 1-based source line, for diagnostics.
+    pub line: usize,
+}
+
+/// A parsed script: steps in ascending time order.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Script {
+    pub steps: Vec<Step>,
+}
+
+impl Script {
+    /// Parse a script, failing on the first bad line.
+    pub fn parse(src: &str) -> Result<Self, ScriptError> {
+        let mut steps = Vec::new();
+        for (i, raw) in src.lines().enumerate() {
+            let line = i + 1;
+            let text = strip_comment(raw);
+            if text.trim().is_empty() {
+                continue;
+            }
+            steps.push(parse_step(text, line)?);
+        }
+        // Sort by time so a script may be written out of order, but keep equal
+        // times in source order — two directives at the same instant are meant
+        // to happen in the order they were written.
+        steps.sort_by(|a, b| a.t_secs.total_cmp(&b.t_secs));
+        Ok(Self { steps })
+    }
+
+    /// Steps due in the half-open window `[from, to)`.
+    ///
+    /// Half-open so that stepping a run as `[0, dt)`, `[dt, 2·dt)`, … delivers
+    /// every step exactly once, whatever `dt` is.
+    pub fn steps_in(&self, from: f32, to: f32) -> impl Iterator<Item = &Step> {
+        self.steps
+            .iter()
+            .filter(move |s| s.t_secs >= from && s.t_secs < to)
+    }
+
+    /// Time of the last step, or 0.0 for an empty script.  A driver still has to
+    /// run past this to let the last action's repeats and the frame it lands on
+    /// take effect.
+    pub fn duration_secs(&self) -> f32 {
+        self.steps.last().map_or(0.0, |s| s.t_secs)
+    }
+}
+
+/// Drop a trailing `#` comment.  Text directives therefore cannot contain `#`,
+/// which no binding in this app needs.
+fn strip_comment(line: &str) -> &str {
+    match line.find('#') {
+        Some(i) => &line[..i],
+        None => line,
+    }
+}
+
+fn parse_step(text: &str, line: usize) -> Result<Step, ScriptError> {
+    let err = |message: String| ScriptError { line, message };
+    let mut words = text.split_whitespace();
+
+    let t_word = words
+        .next()
+        .ok_or_else(|| err("expected a time".to_owned()))?;
+    let t_secs: f32 = t_word
+        .parse()
+        .map_err(|_| err(format!("`{t_word}` is not a time in seconds")))?;
+    if !t_secs.is_finite() || t_secs < 0.0 {
+        return Err(err(format!("time `{t_word}` must be finite and >= 0")));
+    }
+
+    let verb = words
+        .next()
+        .ok_or_else(|| err("expected `key`, `text` or `assert`".to_owned()))?;
+    let rest: Vec<&str> = words.collect();
+
+    // A trailing `xN` repeat count applies to key and text alike.
+    let (rest, repeat) = match rest.split_last() {
+        Some((last, head)) if is_repeat(last) => (head.to_vec(), parse_repeat(last, line)?),
+        _ => (rest, 1),
+    };
+
+    let action = match verb {
+        "key" => {
+            let [spec] = rest[..] else {
+                return Err(err(format!(
+                    "`key` takes one `[mod+]Name` argument, got {}",
+                    rest.len()
+                )));
+            };
+            let (key, modifiers) = parse_key_spec(spec, line)?;
+            Action::Key { key, modifiers }
+        }
+        "text" => {
+            let [literal] = rest[..] else {
+                return Err(err(format!(
+                    "`text` takes one whitespace-free argument, got {}",
+                    rest.len()
+                )));
+            };
+            Action::Text {
+                text: literal.to_owned(),
+            }
+        }
+        "assert" => {
+            let Some((name, args)) = rest.split_first() else {
+                return Err(err("`assert` needs a property name".to_owned()));
+            };
+            Action::Assert {
+                name: (*name).to_owned(),
+                args: args.iter().map(|s| (*s).to_owned()).collect(),
+            }
+        }
+        other => {
+            return Err(err(format!(
+                "`{other}` is not a directive (expected `key`, `text` or `assert`)"
+            )));
+        }
+    };
+
+    Ok(Step {
+        t_secs,
+        repeat,
+        action,
+        line,
+    })
+}
+
+fn is_repeat(word: &str) -> bool {
+    word.strip_prefix('x')
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
+fn parse_repeat(word: &str, line: usize) -> Result<usize, ScriptError> {
+    let n: usize = word[1..].parse().map_err(|_| ScriptError {
+        line,
+        message: format!("`{word}` is not a repeat count"),
+    })?;
+    if n == 0 {
+        return Err(ScriptError {
+            line,
+            message: "a repeat count of 0 does nothing; drop the line instead".to_owned(),
+        });
+    }
+    Ok(n)
+}
+
+/// Parse `shift+ctrl+ArrowUp` into a key and its modifier state.
+///
+/// Modifiers are spelled out rather than punctuated because the app binds
+/// several combinations and `^`/`⌥` shorthand reads badly in a plain-text file.
+/// `command` is deliberately accepted and mapped to egui's platform-dependent
+/// `command` flag, which is Cmd on macOS and Ctrl elsewhere — the same
+/// distinction that keeps the capture keys unmodified.
+fn parse_key_spec(spec: &str, line: usize) -> Result<(egui::Key, egui::Modifiers), ScriptError> {
+    let mut modifiers = egui::Modifiers::default();
+    let mut parts = spec.split('+').peekable();
+    let mut name = None;
+    while let Some(part) = parts.next() {
+        let last = parts.peek().is_none();
+        // A lone `+` key would arrive as an empty part; treat the final part as
+        // the key name whatever it looks like.
+        if last {
+            name = Some(part);
+            break;
+        }
+        match part.to_ascii_lowercase().as_str() {
+            "shift" => modifiers.shift = true,
+            "ctrl" | "control" => modifiers.ctrl = true,
+            "alt" | "option" => modifiers.alt = true,
+            "cmd" | "command" => modifiers.command = true,
+            other => {
+                return Err(ScriptError {
+                    line,
+                    message: format!("`{other}` is not a modifier"),
+                });
+            }
+        }
+    }
+    let name = name.filter(|n| !n.is_empty()).ok_or_else(|| ScriptError {
+        line,
+        message: format!("`{spec}` names no key"),
+    })?;
+    let key = egui::Key::from_name(name).ok_or_else(|| ScriptError {
+        line,
+        message: format!("`{name}` is not an egui key name"),
+    })?;
+    Ok((key, modifiers))
+}

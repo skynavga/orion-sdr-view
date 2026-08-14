@@ -999,15 +999,24 @@ fn the_receiver_supplies_measured_values() {
 
     assert_eq!(inst.carrier_lock.value, Some(true), "should be locked");
     assert_eq!(inst.timing_lock.value, Some(true), "should be locked");
-    // A clean link: the demodulator's own decisions come back error-free.
+    // A sound link: the demodulator's own decisions come back error-free.
     assert_eq!(inst.cber.value, Some(0.0));
     assert_eq!(inst.iber.value, Some(0.0));
-    // MER is EVM's reciprocal and the synthetic link is near-perfect, so this
-    // is a large positive number rather than the simulation's C/N-minus-loss.
+    // MER is EVM's reciprocal, so on a channel whose only impairment is AWGN it
+    // tracks the requested C/N less a fixed implementation loss.  Measured
+    // across 25-55 dB that loss is 2.34-2.41 dB and converging, so the window
+    // below is tight without being brittle.
+    //
+    // Stated as a *relationship* rather than a floor deliberately: the previous
+    // form was `> 40.0`, which was silently calibrated to a 45 dB default and
+    // failed the moment that default moved to 35 for display reasons. Pinning
+    // the loss instead means the assertion still means something at any C/N.
+    let mer = inst.mer_db.value.expect("MER should be measured");
+    let loss = COFDM_DEFAULT_CN_DB - mer;
     assert!(
-        inst.mer_db.value.unwrap() > 40.0,
-        "MER {:?} should reflect the measured EVM",
-        inst.mer_db.value
+        (1.0..=4.0).contains(&loss),
+        "MER {mer:.2} dB is {loss:.2} dB below the {COFDM_DEFAULT_CN_DB:.0} dB C/N; \
+         expected an implementation loss of 1-4 dB"
     );
 }
 

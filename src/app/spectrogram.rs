@@ -236,4 +236,27 @@ impl SpectrogramDisplay {
             super::utils::image_quad(painter, tex, scr, [1.0, split], [0.0, 1.0]);
         }
     }
+
+    /// How many columns have been committed (saturates at `max_cols`).
+    pub fn filled(&self) -> usize {
+        self.filled
+    }
+
+    /// The committed columns in the order [`draw_ring`](Self::draw_ring) paints
+    /// them, left of the pane first — so **newest first**, going back in time
+    /// rightward.
+    ///
+    /// Each column runs top-to-bottom, i.e. high frequency edge to low, matching
+    /// the un-flipped Y axis of the draw.  Columns are strided in `pixels`
+    /// (row-major storage), so each one is gathered into a `Vec` rather than
+    /// borrowed — the counterpart to
+    /// [`WaterfallDisplay::rows_in_display_order`](crate::app::waterfall::WaterfallDisplay::rows_in_display_order),
+    /// and for the same reason: the ring seam is worth asserting without a GPU.
+    pub fn cols_in_display_order(&self) -> impl Iterator<Item = Vec<egui::Color32>> {
+        let (head, cols, rows) = (self.head, self.max_cols, self.freq_rows);
+        (0..self.filled).map(move |i| {
+            let phys = (head + cols - 1 - i) % cols;
+            (0..rows).map(|r| self.pixels[r * cols + phys]).collect()
+        })
+    }
 }

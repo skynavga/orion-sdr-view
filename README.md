@@ -127,15 +127,22 @@ view:
       bandwidth:  1/4    # occupied BW as a fraction of span: 1/8 1/4 1/3 1/2 2/3 3/4 7/8
       shaping:    true   # out-of-band spectral shaping (default true)
       edge_guard: 111    # null carriers per band edge; omit to derive from `bandwidth`
-      include_dc: false  # occupy the DC subcarrier
+      include_dc: false  # occupy the DC subcarrier — see the warning below
       taper:      1/4    # symbol-window roll-off, as a fraction of the guard: off 1/8 1/4 3/8
       mask:       60     # baseband-mask stop-band depth in dB: off 40 60 80
       sig_secs:   10.0   # signal-burst duration (wall-clock seconds)
       gap_secs:   2.0    # silence gap between bursts (wall-clock seconds)
-      cn_db:      45.0   # carrier-to-noise ratio in dB
+      cn_db:      35.0   # carrier-to-noise ratio in dB
 ```
 
 All fields are optional; missing fields fall back to built-in defaults.
+
+**`sources.cofdm.include_dc` is known-broken and has no settings row.** Occupying the DC subcarrier
+does not survive a round trip: the training symbol in orion-sdr 0.0.59 never transmits bin 0, so the
+channel estimate there is noise and the equalizer divides by it. Measured through the receiver, EVM
+goes from −67 dB to **+55 dB** — error power above signal power — and about half the frames fail on
+an otherwise clean link. The defect is upstream, so the toggle was withdrawn rather than patched
+here; the config key still works, deliberately, as the way to reproduce it and to verify the fix.
 
 ### Noise: `cn_db`
 
@@ -156,13 +163,20 @@ what makes a C/N meaningful for a signal that has no bandwidth of its own.
 
 The defaults differ by ~20 dB between sources because their spreading factors do: a 62.5 Hz PSK31
 signal against noise spread over 24 kHz is 25.8 dB, where COFDM's 240 kHz against 1.92 MHz is 9 dB.
-All six reproduce the noise floor the previous `noise_amp: 0.05` default put on screen.
+Five of the six reproduce the noise floor the pre-0.0.23 amplitude default put on screen.
+
+**COFDM is the exception, at 35 dB.** It is set 10 dB noisier on purpose, because the guard, taper
+and mask controls exist to shape the skirt *outside* the occupied band and there has to be a floor
+on screen for that skirt to sit against. It is a display choice, not a link one — every bandwidth
+fraction still decodes with zero frame errors there, against an FEC cliff around 11-14 dB.
 
 Higher is cleaner. There is no "off" — a ratio has no infinite value — but the top of the range
 (70 dB) leaves a floor far below anything the display resolves.
 
-`noise_amp` was **removed in 0.0.23**. A config still carrying it is refused with a message naming
-the replacement rather than silently ignored.
+`noise_amp` was **removed in 0.0.23**, and through 0.0.24 a config still carrying it was refused
+with a message naming the replacement. That window has now run: since 0.0.25 the key is simply
+ignored, like any other unrecognised one. There is no automatic conversion — an old config needs
+`noise_amp` deleted and `cn_db` set.
 
 ### Viewport: `zoom`
 

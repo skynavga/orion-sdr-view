@@ -116,6 +116,38 @@ fn spectrogram_display_defaults_when_absent() {
 }
 
 #[test]
+fn an_unrecognised_key_is_ignored_rather_than_refused() {
+    // The schema's standing policy, and the one thing `ViewConfig`'s doc comment
+    // claims that nothing else checks: every field is `Option<T>` and nothing
+    // sets `deny_unknown_fields`, so a stale or misspelled key loads silently
+    // and takes no effect.
+    //
+    // The trade is deliberate — blanket `deny_unknown_fields` would turn every
+    // typo into a hard startup failure — but it means a *renamed* key needs its
+    // own scaffolding to be noticed, as the 0.0.23 impairment change had for two
+    // releases.  Anything that flips this policy has to delete this test to do
+    // it, which is the point.
+    let yaml = r#"
+view:
+  display:
+    db_min: -80.0
+    nonsense_key: 12
+  sources:
+    cofdm:
+      cn_db: 30.0
+      no_such_key: 0.5
+"#;
+    let mut f = NamedTempFile::new().unwrap();
+    f.write_all(yaml.as_bytes()).unwrap();
+
+    // Via the real loader, which hard-fails on a parse error for an explicit
+    // `--config`: reaching the assertions at all is half the point.
+    let cfg = ViewConfig::load(Some(f.path().to_path_buf()));
+    assert_eq!(cfg.db_min(), -80.0, "the surviving keys must take effect");
+    assert_eq!(cfg.cofdm_cn_db(), 30.0);
+}
+
+#[test]
 fn pan_direction_config() {
     // Default (absent) → "spectrum" (false).
     let cfg = ViewConfig::load(None);

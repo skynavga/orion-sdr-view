@@ -21,6 +21,19 @@ pub struct SourcesConfig {
     pub cofdm: Option<CofdmConfig>,
 }
 
+/// The `view:` block of a config file.
+///
+/// **Unknown keys are ignored.**  Every field here is `Option<T>` and nothing
+/// sets `serde(deny_unknown_fields)`, so a typo — or a key from an older
+/// release — loads silently and takes no effect.  That is a deliberate
+/// trade: blanket `deny_unknown_fields` would turn every unrelated typo into a
+/// hard startup failure, which is a bigger behaviour change than the schema is
+/// worth while it is still pre-alpha and unversioned.
+///
+/// The cost is real, though, and worth remembering the next time a key is
+/// renamed: the 0.0.23 impairment change carried a dedicated rejection field
+/// for two releases precisely so it could not be absorbed in silence.  A rename
+/// that matters needs the same scaffolding again — the schema will not do it.
 #[derive(Debug, Deserialize)]
 pub struct ViewConfig {
     pub display: Option<DisplayConfig>,
@@ -60,99 +73,24 @@ impl ViewConfig {
                 return Self::empty();
             }
         };
-        let cfg = match serde_yaml::from_str::<ConfigFile>(&content) {
+        match serde_yaml::from_str::<ConfigFile>(&content) {
             Ok(cf) => cf.view.unwrap_or_else(Self::empty),
             Err(e) => {
                 eprintln!("orion-sdr-view: error parsing config {:?}: {}", path, e);
                 if hard_fail {
                     std::process::exit(1);
                 }
-                return Self::empty();
+                Self::empty()
             }
-        };
-        let retired = cfg.retired_key_errors();
-        if !retired.is_empty() {
-            for msg in &retired {
-                eprintln!("orion-sdr-view: config {:?}: {}", path, msg);
-            }
-            if hard_fail {
-                std::process::exit(1);
-            }
-            return Self::empty();
         }
-        cfg
     }
 
-    /// Diagnostics for keys a breaking schema change retired, one per
-    /// occurrence.  Empty for a config that carries none.
-    ///
-    /// **This exists because the schema will not reject them for us.**  Every
-    /// field is `Option<T>` and nothing sets `serde(deny_unknown_fields)`, so a
-    /// stale key is simply ignored — the user gets a config that appears to
-    /// load while the setting they wrote is quietly discarded, which is worse
-    /// than either converting it or refusing it.  Blanket
-    /// `deny_unknown_fields` was rejected as the alternative: it would turn
-    /// every unrelated typo into a hard error in the same commit, a bigger
-    /// behaviour change than the one being made.
-    ///
-    /// Retire the fields themselves a release or two after 0.0.23.
-    pub fn retired_key_errors(&self) -> Vec<String> {
-        let Some(sources) = self.sources.as_ref() else {
-            return Vec::new();
-        };
-        let present: [(&str, bool); 6] = [
-            (
-                "test_tone",
-                sources
-                    .test_tone
-                    .as_ref()
-                    .is_some_and(|c| c.noise_amp.is_some()),
-            ),
-            (
-                "cw",
-                sources.cw.as_ref().is_some_and(|c| c.noise_amp.is_some()),
-            ),
-            (
-                "am_dsb",
-                sources
-                    .am_dsb
-                    .as_ref()
-                    .is_some_and(|c| c.noise_amp.is_some()),
-            ),
-            (
-                "psk31",
-                sources
-                    .psk31
-                    .as_ref()
-                    .is_some_and(|c| c.noise_amp.is_some()),
-            ),
-            (
-                "ft8",
-                sources.ft8.as_ref().is_some_and(|c| c.noise_amp.is_some()),
-            ),
-            (
-                "cofdm",
-                sources
-                    .cofdm
-                    .as_ref()
-                    .is_some_and(|c| c.noise_amp.is_some()),
-            ),
-        ];
-        present
-            .iter()
-            .filter(|(_, found)| *found)
-            .map(|(source, _)| {
-                format!(
-                    "sources.{source}.noise_amp was replaced by cn_db in 0.0.23. \
-                     The impairment is now a carrier-to-noise ratio in dB, not an \
-                     absolute amplitude; there is no automatic conversion. Remove \
-                     noise_amp and set cn_db instead."
-                )
-            })
-            .collect()
-    }
-
-    fn empty() -> Self {
+    /// A config with no keys set, so every accessor returns its built-in
+    /// default.  Public because it is what a test wants as a baseline:
+    /// [`load`](Self::load) with no explicit path falls back to `.orionsdr.yaml`
+    /// in the working directory, which would make a test's result depend on
+    /// where it was run from.
+    pub fn empty() -> Self {
         ViewConfig {
             display: None,
             sources: None,

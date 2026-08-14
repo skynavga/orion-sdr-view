@@ -36,7 +36,7 @@ enum Overlay {
 
 // ── ViewApp ───────────────────────────────────────────────────────────────────
 
-pub(crate) struct ViewApp {
+pub struct ViewApp {
     pub(super) pane_visible: [bool; 3],
     // Fractional height per pane — stored even when hidden so proportions are
     // remembered when re-shown. Future resize handles will mutate these values.
@@ -100,6 +100,8 @@ pub(crate) struct ViewApp {
     /// True if the previous frame's sample block was above SIGNAL_THRESHOLD.
     pub(super) last_block_was_signal: bool,
     /// Wall-clock time of the previous frame, for real-time dt calculation.
+    /// Read by the `eframe::App` adapter alone — [`advance`](Self::advance) is
+    /// handed its `dt` rather than deriving one.
     pub(super) last_frame_time: std::time::Instant,
 
     /// Per-frame view-side state for FT8/FT4 (frame counts, pending onset,
@@ -110,7 +112,14 @@ pub(crate) struct ViewApp {
 }
 
 impl ViewApp {
-    pub(crate) fn new(cc: &eframe::CreationContext<'_>, cfg: ViewConfig) -> Self {
+    /// Construct the app against a live [`egui::Context`].
+    ///
+    /// Takes the context rather than an `eframe::CreationContext` because the
+    /// only thing that was ever wanted from the latter is `cc.egui_ctx`, and
+    /// `CreationContext` cannot be built outside eframe — which put the whole
+    /// app out of reach of `tests/`.  The eframe adapter at the bottom of this
+    /// file passes `&cc.egui_ctx`; a test passes `&egui::Context::default()`.
+    pub fn new(ctx: &egui::Context, cfg: ViewConfig) -> Self {
         let font_bytes = include_bytes!("../../assets/fonts/DejaVuSansMono.ttf");
         let mut fonts = egui::FontDefinitions::default();
         fonts.font_data.insert(
@@ -122,7 +131,7 @@ impl ViewApp {
             .entry(egui::FontFamily::Monospace)
             .or_default()
             .insert(0, "DejaVuSansMono".to_owned());
-        cc.egui_ctx.set_fonts(fonts);
+        ctx.set_fonts(fonts);
 
         // Coherence clamp: db_min must be strictly less than db_max
         let db_max = cfg.db_max();
@@ -383,7 +392,10 @@ impl ViewApp {
         self.settings.visible = keep == Overlay::Settings;
     }
 
-    pub(super) fn handle_keys(&mut self, ctx: &egui::Context) {
+    /// Process this pass's keyboard input.  Called from
+    /// [`draw`](Self::draw) in the live app, and directly by a harness that
+    /// does not draw.
+    pub fn handle_keys(&mut self, ctx: &egui::Context) {
         // Settings popover consumes arrow/tab/escape/R keys when visible.
         if self.settings.visible {
             let result = self.settings.handle_keys(ctx);
@@ -658,10 +670,10 @@ impl ViewApp {
                 let left = i.key_pressed(egui::Key::ArrowLeft);
                 let right = i.key_pressed(egui::Key::ArrowRight);
                 if left || right {
-                    // Zoom in from full span first so panning has room.
-                    if self.freq_view.span_hz >= self.freq_view.nyquist {
-                        self.freq_view.step_zoom(1.0);
-                    }
+                    // Zoom in from full span first so panning has room at all.
+                    // How far is a trade against how much of the screen the
+                    // signal fills — see `PAN_AUTO_ZOOM`.
+                    self.freq_view.ensure_pannable();
                     let coarse = self.freq_view.span_hz / 12.0;
                     let step = if i.modifiers.ctrl && i.modifiers.shift {
                         coarse * 0.01 // extra-fine
@@ -883,22 +895,21 @@ impl ViewApp {
             SourceMode::TestTone | SourceMode::Cofdm => {}
         }
     }
-}
 
-// ── eframe::App ───────────────────────────────────────────────────────────────
+    // ── Per-frame work ────────────────────────────────────────────────────────
 
-impl eframe::App for ViewApp {
     /// Per-frame state work: feed samples, run the spectrum/decode pipeline,
-    /// and refresh GPU textures.  Runs before every `ui` and also when the
+    /// and refresh GPU textures.  Runs before every `draw` and also when the
     /// window is hidden (so decode keeps flowing).  Splitting this out from
-    /// `ui` is the eframe 0.34+ idiom; `ctx` is available directly here, so
+    /// drawing is the eframe 0.34+ idiom; `ctx` is available directly here, so
     /// texture uploads need no clone.
-    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Wall-clock delta since last frame.
-        let now = std::time::Instant::now();
-        let dt = now.duration_since(self.last_frame_time).as_secs_f32();
-        self.last_frame_time = now;
-
+    ///
+    /// **`dt` is supplied, not read from the clock.**  Everything downstream —
+    /// `advance_time`, the `dt * fs` sample budget, the waterfall scroll pacing,
+    /// the decode ticker — is already a pure function of it, so moving the one
+    /// `Instant::now()` out to the eframe adapter is what makes a run
+    /// reproducible: the same script and config must produce the same samples.
+    pub fn advance(&mut self, ctx: &egui::Context, dt: f32) {
         // Advance the source's wall-clock timeline before pulling samples, so
         // time-based playback (e.g. COFDM signal/gap phases) is frame-rate
         // independent.  No-op for sources that don't use it.
@@ -1080,7 +1091,12 @@ impl eframe::App for ViewApp {
     /// and central pane stack.  Panels attach to the passed `ui` via
     /// `Panel::show(ui, ..)` (the eframe 0.34+ replacement for opening panels
     /// on the context directly).
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    ///
+    /// Note that key handling runs from here, not from [`advance`](Self::advance)
+    /// — a harness that only advances will process samples and never see a
+    /// keystroke.  Moving it would change its ordering against the settings
+    /// overlay, so the harness calls [`handle_keys`](Self::handle_keys) itself.
+    pub fn draw(&mut self, ui: &mut egui::Ui) {
         self.handle_keys(ui.ctx());
         self.draw_hud(ui);
         if self.decode_bar.is_visible() {
@@ -1102,5 +1118,73 @@ impl eframe::App for ViewApp {
             let mono = self.mono_font_id.clone();
             self.settings.draw(ui, &mono);
         });
+    }
+
+    // ── Read accessors ────────────────────────────────────────────────────────
+    //
+    // The state a test needs to assert on, exposed for reading only.  Kept to
+    // accessors rather than public fields so the app keeps sole ownership of
+    // its invariants — every defect these exist to catch is a *write* ordering
+    // problem, and a test that could write would not reproduce one.
+
+    /// Which source is active.
+    pub fn source_mode(&self) -> SourceMode {
+        self.source_mode
+    }
+
+    /// The settings rows, including the per-source containers reachable through
+    /// the `<S>Settings` typed-accessor traits.
+    pub fn settings(&self) -> &SettingsState {
+        &self.settings
+    }
+
+    /// The shared pan/zoom viewport.
+    pub fn freq_view(&self) -> &FreqView {
+        &self.freq_view
+    }
+
+    /// True while the source tracks the viewport centre (the `L` key).
+    pub fn source_locked(&self) -> bool {
+        self.source_locked
+    }
+
+    /// The live source's sample rate, which varies by source and — for COFDM —
+    /// by config.
+    pub fn source_sample_rate(&self) -> f32 {
+        self.source.sample_rate()
+    }
+
+    /// Pane 3's vertical waterfall, for the CPU-side pixel assertions.
+    pub fn waterfall(&self) -> &WaterfallDisplay {
+        &self.waterfall
+    }
+
+    /// Pane 3's horizontal spectrogram, for the CPU-side pixel assertions.
+    pub fn spectrogram(&self) -> &SpectrogramDisplay {
+        &self.spectrogram
+    }
+}
+
+// ── eframe::App ───────────────────────────────────────────────────────────────
+
+/// The whole of the app's eframe coupling: two methods that read the clock and
+/// discard the `Frame` both of them are handed.
+///
+/// `eframe::Frame` has `pub(crate)` fields and so cannot be constructed outside
+/// eframe; while these were the *only* entry points, that alone put `ViewApp`
+/// out of reach of `tests/`.  Both parameters were already unused, so the
+/// inherent methods above simply do not take them.
+impl eframe::App for ViewApp {
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Wall-clock delta since last frame.  The single call that made the app
+        // non-deterministic, now confined to the adapter.
+        let now = std::time::Instant::now();
+        let dt = now.duration_since(self.last_frame_time).as_secs_f32();
+        self.last_frame_time = now;
+        self.advance(ctx, dt);
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.draw(ui);
     }
 }

@@ -3,5 +3,7 @@
 
 pub mod audio;
 pub mod format;
+#[cfg(feature = "gui")]
+pub mod script;
 pub mod time;
 pub mod timer;

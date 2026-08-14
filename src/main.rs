@@ -1,19 +1,14 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-mod app;
-mod config;
-mod decode;
-mod source;
-#[allow(unused)]
-mod utils;
-mod viewport;
+//! Thin entry point: parse arguments, build the window, hand `ViewApp` to
+//! eframe.  Everything else lives in the library, so `tests/` can reach it.
 
 use clap::Parser;
 use eframe::egui;
 
-use app::{DECODE_BAR_H, ViewApp};
-use config::ViewConfig;
+use orion_sdr_view::app::{DECODE_BAR_H, ViewApp};
+use orion_sdr_view::config::ViewConfig;
 
 #[derive(Parser)]
 #[command(name = "orion-sdr-view", about = "SDR spectrum viewer")]
@@ -37,6 +32,6 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "orion-sdr-view",
         options,
-        Box::new(|cc| Ok(Box::new(ViewApp::new(cc, cfg)))),
+        Box::new(|cc| Ok(Box::new(ViewApp::new(&cc.egui_ctx, cfg)))),
     )
 }

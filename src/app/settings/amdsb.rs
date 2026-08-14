@@ -387,7 +387,7 @@ fn rows_mut(state: &mut super::SettingsState) -> &mut AmDsbRows {
 /// Typed accessors for AM DSB settings.  Implemented for `SettingsState`;
 /// callers `use crate::app::settings::AmDsbSettings` to bring these methods
 /// in scope.
-pub(in crate::app) trait AmDsbSettings {
+pub trait AmDsbSettings {
     fn am_audio_is_custom(&self) -> bool;
     fn am_audio_idx(&self) -> usize;
     fn am_audio_str(&self) -> &str;

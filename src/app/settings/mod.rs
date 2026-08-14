@@ -11,16 +11,13 @@ mod ft8;
 mod psk31;
 mod tone;
 
-pub use common::SettingsState;
+pub use common::{HandleKeysResult, SettingsState};
 
-#[allow(unused_imports)]
-pub use common::HandleKeysResult;
-
-// Per-source typed-accessor traits.  Bin call sites bring them in scope via
+// Per-source typed-accessor traits.  Call sites bring them in scope via
 // `use crate::app::settings::{CwSettings, ...}` (or the `*` umbrella).
-pub(in crate::app) use amdsb::AmDsbSettings;
-pub(in crate::app) use cofdm::CofdmSettings;
-pub(in crate::app) use cw::CwSettings;
-pub(in crate::app) use ft8::Ft8Settings;
-pub(in crate::app) use psk31::Psk31Settings;
-pub(in crate::app) use tone::ToneSettings;
+pub use amdsb::AmDsbSettings;
+pub use cofdm::CofdmSettings;
+pub use cw::CwSettings;
+pub use ft8::Ft8Settings;
+pub use psk31::Psk31Settings;
+pub use tone::ToneSettings;

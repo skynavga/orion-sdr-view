@@ -148,7 +148,6 @@ impl CnNoise {
     }
 
     /// Requested C/N, in dB.
-    #[allow(dead_code)] // used by integration tests, not the binary
     pub fn cn_db(&self) -> f32 {
         self.cn_db
     }
@@ -173,7 +172,6 @@ impl CnNoise {
     }
 
     /// The geometry currently in force.
-    #[allow(dead_code)] // used by integration tests, not the binary
     pub fn reference(&self) -> CnReference {
         self.reference
     }
@@ -305,7 +303,6 @@ pub trait SignalSource {
     /// Over the air this is the natural direction anyway: a tuner delivers
     /// complex IQ, and the real projection is something the *viewer* imposes for
     /// its own display.
-    #[allow(dead_code)] // used by the lib receiver and integration tests, not yet by the binary
     fn last_samples_iq(&self) -> Option<&[num_complex::Complex32]> {
         None
     }
@@ -317,10 +314,10 @@ pub trait SignalSource {
     /// necessary over the air, where nothing declares it, but a workaround for
     /// a synthetic source that has the answer. Inferring it also couples two
     /// unrelated things: the impairment level and the ability to see the burst
-    /// boundary. COFDM's `Noise amp` was capped at 0.50 for exactly that
-    /// reason — gap noise is `noise_amp / sqrt(3)`, so a louder setting climbed
-    /// past the discriminator and gap detection silently stopped, well before
-    /// the noise was high enough to show the FEC cliff.
+    /// boundary. COFDM's old amplitude knob was capped at 0.50 for exactly that
+    /// reason — gap noise was a fixed fraction of it, so a louder setting
+    /// climbed past the discriminator and gap detection silently stopped, well
+    /// before the noise was high enough to show the FEC cliff.
     ///
     /// A source that reports its phase decouples them: the impairment range is
     /// then bounded by the link, which is the only thing it should be bounded
@@ -334,7 +331,6 @@ pub trait SignalSource {
     fn sample_rate(&self) -> f32;
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
     /// Reset playback to the beginning of the first loop cycle.
-    #[allow(dead_code)] // used by integration tests, not the binary
     fn restart(&mut self) {}
 
     /// Advance the source's wall-clock timeline by `dt` seconds.  Called once

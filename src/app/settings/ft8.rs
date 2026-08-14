@@ -416,7 +416,7 @@ fn rows_mut(state: &mut super::SettingsState) -> &mut Ft8Rows {
 /// Typed accessors for FT8/FT4 settings.  Implemented for `SettingsState`;
 /// callers `use crate::app::settings::Ft8Settings` to bring these methods in
 /// scope.
-pub(in crate::app) trait Ft8Settings {
+pub trait Ft8Settings {
     fn ft8_mode_str(&self) -> &str;
     fn ft8_carrier_hz(&self) -> f32;
     fn ft8_gap_secs(&self) -> f32;

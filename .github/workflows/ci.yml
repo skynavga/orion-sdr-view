@@ -37,6 +37,12 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      # `github.run_id` in the key is load-bearing, not noise.  `actions/cache`
+      # skips the save entirely when the primary key hits exactly, so a key of
+      # lockfile alone freezes the cache at whatever the *first* run for that
+      # lockfile happened to build — anything a later step starts compiling is
+      # rebuilt from scratch on every run, forever.  A unique key always saves;
+      # `restore-keys` is what actually finds the previous run's copy.
       - name: Cache cargo
         uses: actions/cache@v4
         with:
@@ -44,8 +50,10 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-check-${{ hashFiles('Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-check-
+          key: ${{ runner.os }}-cargo-check-${{ hashFiles('Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-check-${{ hashFiles('Cargo.lock') }}-
+            ${{ runner.os }}-cargo-check-
 
       - run: cargo fmt --check
       - run: cargo check --no-default-features
@@ -64,11 +72,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Needed by the `gui` test run below; see the note in the check job.
+      - name: Install GUI build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwayland-dev
+
       - name: Install ${{ matrix.toolchain }} toolchain
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.toolchain }}
 
+      # See the note on the check job's cache: the run id is what makes this
+      # save at all.  It matters more here, because this job builds two feature
+      # configurations and the second one's artifacts are ~3 min of work.
       - name: Cache cargo
         uses: actions/cache@v4
         with:
@@ -76,8 +93,19 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-test-${{ matrix.toolchain }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-test-${{ matrix.toolchain }}-
+          key: ${{ runner.os }}-cargo-test-${{ matrix.toolchain }}-${{ hashFiles('Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-test-${{ matrix.toolchain }}-${{ hashFiles('Cargo.lock') }}-
+            ${{ runner.os }}-cargo-test-${{ matrix.toolchain }}-
 
       - name: Run tests
         run: cargo test --no-default-features --release
+
+      # The app layer lives behind `gui`, so the headless `ViewApp` tests
+      # (tests/app.rs, tests/panes.rs, tests/script.rs) are compiled out of the
+      # run above entirely.  Without this step they would never execute in CI —
+      # the same gap that left the GUI uncompiled before 0.0.16.  No display or
+      # GPU is needed: the harness drives `egui::Context` directly and never
+      # opens a window.
+      - name: Run tests (gui)
+        run: cargo test --features gui --release

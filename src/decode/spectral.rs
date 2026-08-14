@@ -13,7 +13,6 @@ use num_complex::Complex32 as C32;
 
 use super::{DecodeResult, SPECTRUM_WINDOW_SAMPLES};
 use crate::source::psk31::INFO_INTERVAL;
-#[allow(unused_imports)] // wb_spectrum_snr_db is re-exported for tests that compare estimators
 pub use orion_sdr::util::{nb_spectrum_snr_db, power_spectrum, spectrum_bw_hz, wb_spectrum_snr_db};
 
 /// Carrier-to-noise ratio (dB) of a wideband signal spanning `occupied_hz`

@@ -116,7 +116,7 @@ fn rows_mut(state: &mut super::SettingsState) -> &mut ToneRows {
 /// Typed accessors for Test Tone settings.  Implemented for `SettingsState`;
 /// callers `use crate::app::settings::ToneSettings` to bring these methods in
 /// scope.
-pub(in crate::app) trait ToneSettings {
+pub trait ToneSettings {
     fn freq_hz(&self) -> f32;
     fn cn_db(&self) -> f32;
     fn amp_max(&self) -> f32;
