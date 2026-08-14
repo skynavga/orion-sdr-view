@@ -49,7 +49,8 @@ use std::fmt::Write as _;
 ///
 /// `Measured` and `Known` both render as authoritative — the operationally
 /// important split is *"came from the signal"* versus *"was asserted"*.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Provenance {
     /// Derived from the received signal.
     Measured,
@@ -69,8 +70,17 @@ pub enum Provenance {
 }
 
 /// A single instrument reading.
-#[derive(Clone, Copy, PartialEq, Debug)]
+///
+/// **`value` and `prov` both survive serialization, deliberately.**  A dump that
+/// flattened this to a bare number would reintroduce the bug the `Option`
+/// exists to prevent: the BER rungs go `None` exactly when the link fails, so
+/// writing that as `0.0` inverts its meaning — a dead link would read as a
+/// perfect one.  `null` and `0.0` must stay distinguishable in the file, and a
+/// simulated placeholder must never be mistaken for a measurement.
+#[derive(Clone, Copy, PartialEq, Debug, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
 pub struct Metric<T> {
+    #[serde(rename = "v")]
     pub value: Option<T>,
     pub prov: Provenance,
 }
@@ -117,7 +127,8 @@ impl<T> Metric<T> {
 /// Generic COFDM has no packet concept — its unit is the frame.  DVB-T is
 /// genuinely packet-oriented (188-byte TS packets under `RS(204,188)`).  Only
 /// the *rate* label carries the unit; the count is always `err`.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ErrorUnit {
     #[default]
     Frame,
@@ -138,7 +149,7 @@ impl ErrorUnit {
 }
 
 /// The full COFDM instrument reading.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct CofdmInstrument {
     // Tuning
     pub center_hz: Metric<f32>,

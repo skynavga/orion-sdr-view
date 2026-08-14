@@ -125,32 +125,37 @@ fn waveform_is_demodulable_with_shaping_on() {
 
 /// Occupying the DC subcarrier must decode like any other carrier.
 ///
-/// **Currently it does not, and the defect is in orion-sdr rather than here.**
-/// `generate_training_symbol_time_domain` (orion-sdr 0.0.59,
-/// `src/sync/ofdm_sync.rs:299`) zeroes bin 0 unconditionally, so the training
-/// symbol never transmits DC even when `CarrierPlan::with_contiguous_data` has
-/// made it a data carrier.  The channel estimate there is then noise, and
-/// `EQUALIZER_FLOOR` divides by it.
+/// **It did not before orion-sdr 0.0.60.**
+/// `generate_training_symbol_time_domain` took the occupied band's half-width,
+/// which cannot express whether bin 0 is live, so it zeroed DC unconditionally
+/// while `CarrierPlan::with_contiguous_data` was handing it out as a data
+/// carrier.  The channel estimate there was noise and the equalizer divided the
+/// payload by it.  0.0.60 passes the carrier plan itself and loads exactly
+/// `CarrierPlan::occupied_bins()`, so the two cannot disagree.
 ///
-/// Written against the *fixed* behaviour and `#[ignore]`d, so it turns green on
-/// the dependency bump that lands the fix rather than needing to be remembered.
+/// This test was written against the *fixed* behaviour and `#[ignore]`d, so the
+/// dependency bump is what turned it green — no one had to remember it.
 ///
-/// Measured on 0.0.59, both halves fail:
-///
-/// | | EVM | frames |
+/// | | 0.0.59 EVM | 0.0.60 EVM |
 /// | --- | --- | --- |
-/// | bare round trip, DC off | -142.4 dB | 4/4 |
-/// | bare round trip, DC on | **-15.4 dB** | 4/4 |
-/// | through the source, DC off | -66.7 dB | 4 decoded, 0 failed |
-/// | through the source, DC on | **+54.8 dB** | 3 decoded, 5 failed |
+/// | bare round trip, DC off | -142.4 dB | -141.8 dB |
+/// | bare round trip, DC on | **-15.4 dB** | -142.1 dB |
+/// | through the source, DC off | -66.7 dB | -66.7 dB |
+/// | through the source, DC on | **+54.8 dB** | -66.1 dB |
 ///
-/// `sqrt(1/33)` is -15.2 dB, so the bare figure is exactly one carrier of 33
-/// completely wrong — the DC one — with the other 32 perfect.  A DC offset in
-/// the transmitted baseband was the obvious explanation and is *not* the cause:
-/// measured at -37 dB relative to total RMS, some 22 dB below a single
-/// carrier's amplitude.
+/// Occupying DC now costs nothing measurable — it is one more carrier, which is
+/// the whole claim.  Anything near -142 dB is the numerical floor, so the small
+/// movements in that row are round-off and not a result.
+///
+/// `sqrt(1/33)` is -15.2 dB, so the old bare figure was exactly one carrier of
+/// 33 completely wrong — the DC one — with the other 32 perfect.  That is what
+/// identified it.  A DC offset in the transmitted baseband was the obvious
+/// explanation and was *not* the cause: measured at -37 dB relative to total
+/// RMS, some 22 dB below a single carrier's amplitude.  The positive EVM was a
+/// second defect, since fixed alongside: `EQUALIZER_FLOOR` clamped a null and
+/// divided anyway, turning the one bin carrying no information into a gain of
+/// up to 1e6.  It now erases.
 #[test]
-#[ignore = "orion-sdr defect: an occupied DC subcarrier does not demodulate"]
 fn occupying_dc_survives_a_round_trip() {
     let fraction = CofdmBwFraction::OneQuarter;
     // `include_dc` only means anything with shaping on: `CofdmShaping::effective`

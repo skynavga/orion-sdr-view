@@ -4,7 +4,7 @@
 use orion_sdr::modulate::{Bpsk31Mod, Qpsk31Mod};
 use orion_sdr::util::PSK31_BW_HZ;
 
-use crate::source::{CnNoise, CnReference, MAX_SIG_SECS, NoiseDomain, SignalSource, mean_power};
+use crate::source::{CnNoise, CnReference, NoiseDomain, SignalSource, mean_power};
 
 // ── PSK31 HUD helpers ────────────────────────────────────────────────────────
 
@@ -188,10 +188,11 @@ impl SignalSource for Psk31Source {
     }
 
     fn next_samples(&mut self, n: usize) -> Vec<f32> {
-        let max_sig_samples = (MAX_SIG_SECS * self.mod_rate) as usize;
-        // Truncate the effective playback length so the signal burst never
-        // exceeds MAX_SIG_SECS (keeps the decode-bar timer within bounds).
-        let effective_len = self.samples.len().min(max_sig_samples);
+        // The whole rendered message plays.  It used to be truncated at
+        // `MAX_SIG_SECS` so the decode-bar timer's fixed-width field could not
+        // overflow — a display bound silently cutting a transmission short.
+        // The timer marks the overflow now instead.
+        let effective_len = self.samples.len();
         let mut out = Vec::with_capacity(n);
         let mut i = 0;
         while i < n {

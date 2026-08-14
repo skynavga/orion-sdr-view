@@ -1,0 +1,14 @@
+# Measure a COFDM link at the default 35 dB C/N.
+#
+# Cycles to COFDM and then leaves it alone: the measurement is of the waveform,
+# not of the interaction.  Every `instrument` record in the dump carries the full
+# reading the `X` panel shows, each field with its provenance.
+#
+#   orion-sdr-view --headless --script scripts/cofdm-link.txt --dump run.jsonl
+#
+# Add `dump run.jsonl` here instead if you would rather the recipe name its own
+# output.
+
+duration 20
+
+0.00 key I x5      # Test Tone -> CW -> AM DSB -> PSK31 -> FT8 -> COFDM

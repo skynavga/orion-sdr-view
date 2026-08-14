@@ -7,7 +7,7 @@ use std::path::Path;
 use orion_sdr::core::AudioToIqChain;
 use orion_sdr::modulate::AmDsbMod;
 
-use crate::source::{CnNoise, CnReference, MAX_SIG_SECS, NoiseDomain, SignalSource};
+use crate::source::{CnNoise, CnReference, NoiseDomain, SignalSource};
 
 // ── BuiltinAudio ─────────────────────────────────────────────────────────────
 
@@ -293,9 +293,10 @@ impl SignalSource for AmDsbSource {
     }
 
     fn next_samples(&mut self, n: usize) -> Vec<f32> {
-        // Cap total signal samples per burst so the decode-bar timer cannot
-        // overflow the fixed-width "sig NN.NN" display.
-        let max_sig_samples = (MAX_SIG_SECS * self.mod_rate) as usize;
+        // The burst runs for `msg_repeat` playthroughs of the audio.  It used to
+        // be cut short at `MAX_SIG_SECS` as well, so the decode-bar timer's
+        // fixed-width field could not overflow; the timer marks the overflow now
+        // instead, so a long file plays as configured.
         let mut out = Vec::with_capacity(n);
         let mut audio_chunk: Vec<f32> = Vec::with_capacity(n);
         let mut i = 0;
@@ -321,7 +322,6 @@ impl SignalSource for AmDsbSource {
                 // the gap to.  The bin-side display shows "no signal" in
                 // this state to make it visible to the user.
                 audio_chunk.clear();
-                let has_audio = !self.audio.is_empty();
                 while i < n && self.gap_remaining == 0 {
                     let (s, wrapped) = self.read_audio_sample();
                     audio_chunk.push(s);
@@ -333,12 +333,6 @@ impl SignalSource for AmDsbSource {
                             self.play_count = 0;
                             self.gap_remaining = self.gap_samples;
                         }
-                    }
-                    if has_audio && self.sig_samples >= max_sig_samples && self.gap_remaining == 0 {
-                        // Hit signal-duration cap — truncate burst and enter gap.
-                        self.play_count = 0;
-                        self.audio_pos = 0.0;
-                        self.gap_remaining = self.gap_samples;
                     }
                 }
                 // Modulate the keyed chunk; use real part to preserve carrier position

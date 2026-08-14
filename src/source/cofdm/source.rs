@@ -8,7 +8,9 @@ use orion_sdr::modulate::{ConstellationOrder, McsTable, OfdmConfig, OfdmFrameMod
 use orion_sdr::multicarrier::{CarrierPlan, TxLowpass};
 use orion_sdr::sync::OfdmPreamble;
 
-use crate::source::{CnNoise, CnReference, MAX_SIG_SECS, NoiseDomain, SignalSource, mean_power_c};
+use crate::source::{
+    CnNoise, CnReference, NoiseDomain, SignalSource, is_continuous_sig, mean_power_c,
+};
 
 // ── COFDM constants ───────────────────────────────────────────────────────────
 //
@@ -956,10 +958,14 @@ impl SignalSource for CofdmSource {
     /// when it reaches the current phase's duration.  Frame-rate independent.
     fn advance_time(&mut self, dt_secs: f32) {
         self.phase_secs += dt_secs;
-        // Clamp the signal phase so a runaway can't overflow the decode-bar
-        // timer's fixed-width display.
+        // A continuous burst never flips: the phase timer keeps counting and the
+        // decode-bar marks the overflow rather than the source cutting the
+        // signal short.  See `CONTINUOUS_SIG_SECS`.
+        if self.in_signal && is_continuous_sig(self.sig_secs) {
+            return;
+        }
         let limit = if self.in_signal {
-            self.sig_secs.min(MAX_SIG_SECS)
+            self.sig_secs
         } else {
             self.gap_secs
         };

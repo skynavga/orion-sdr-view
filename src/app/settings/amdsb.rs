@@ -40,6 +40,7 @@ impl AmDsbRows {
                     max: 23_900.0,
                     unit: " Hz",
                     coarse: None,
+                    max_label: None,
                 }),
                 Row::Num(NumField {
                     label: "Mod index",
@@ -50,6 +51,7 @@ impl AmDsbRows {
                     max: 2.0,
                     unit: "",
                     coarse: None,
+                    max_label: None,
                 }),
                 Row::Num(NumField {
                     label: "Gap",
@@ -60,6 +62,7 @@ impl AmDsbRows {
                     max: 99.99,
                     unit: " s",
                     coarse: None,
+                    max_label: None,
                 }),
                 Row::Num(NumField {
                     label: "C/N",
@@ -70,6 +73,7 @@ impl AmDsbRows {
                     max: MAX_CN_DB,
                     unit: " dB",
                     coarse: None,
+                    max_label: None,
                 }),
                 Row::Text(TextField {
                     label: "Audio source",
@@ -86,6 +90,7 @@ impl AmDsbRows {
                     max: 20.0,
                     unit: "×",
                     coarse: None,
+                    max_label: None,
                 }),
             ],
             pending_wav: None,

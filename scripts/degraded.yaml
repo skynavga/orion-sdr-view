@@ -1,0 +1,10 @@
+# A COFDM link too weak to decode, for scripts/cofdm-degraded.txt.
+#
+# 5 dB is below the FEC cliff at every bandwidth fraction: no frame gets through,
+# so the BER rungs report `null` rather than a rate.  That is the distinction the
+# dump's JSON Lines format exists to preserve — a dead link must not read as a
+# perfect one.
+view:
+  sources:
+    cofdm:
+      cn_db: 5.0

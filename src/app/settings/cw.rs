@@ -43,6 +43,7 @@ impl CwRows {
                     max: 30.0,
                     unit: "",
                     coarse: None,
+                    max_label: None,
                 }),
                 Row::Num(NumField {
                     label: "Jitter",
@@ -53,6 +54,7 @@ impl CwRows {
                     max: 30.0,
                     unit: " %",
                     coarse: None,
+                    max_label: None,
                 }),
                 Row::Num(NumField {
                     label: "Dash weight",
@@ -63,6 +65,7 @@ impl CwRows {
                     max: 3.5,
                     unit: "",
                     coarse: None,
+                    max_label: None,
                 }),
                 Row::Num(NumField {
                     label: "Char space",
@@ -73,6 +76,7 @@ impl CwRows {
                     max: 4.0,
                     unit: " u",
                     coarse: None,
+                    max_label: None,
                 }),
                 Row::Num(NumField {
                     label: "Word space",
@@ -83,6 +87,7 @@ impl CwRows {
                     max: 9.0,
                     unit: " u",
                     coarse: None,
+                    max_label: None,
                 }),
                 Row::Num(NumField {
                     label: "Rise",
@@ -93,6 +98,7 @@ impl CwRows {
                     max: 20.0,
                     unit: " ms",
                     coarse: None,
+                    max_label: None,
                 }),
                 Row::Num(NumField {
                     label: "Fall",
@@ -103,6 +109,7 @@ impl CwRows {
                     max: 20.0,
                     unit: " ms",
                     coarse: None,
+                    max_label: None,
                 }),
                 Row::Toggle(ToggleField {
                     label: "Message",
@@ -131,6 +138,7 @@ impl CwRows {
                     max: 20.0,
                     unit: "\u{00d7}",
                     coarse: None,
+                    max_label: None,
                 }),
                 Row::Num(NumField {
                     label: "Carrier",
@@ -141,6 +149,7 @@ impl CwRows {
                     max: 22000.0,
                     unit: " Hz",
                     coarse: None,
+                    max_label: None,
                 }),
                 Row::Num(NumField {
                     label: "Gap",
@@ -151,6 +160,7 @@ impl CwRows {
                     max: 99.99,
                     unit: " s",
                     coarse: None,
+                    max_label: None,
                 }),
                 Row::Num(NumField {
                     label: "C/N",
@@ -161,6 +171,7 @@ impl CwRows {
                     max: MAX_CN_DB,
                     unit: " dB",
                     coarse: None,
+                    max_label: None,
                 }),
             ],
             pending_msg: None,

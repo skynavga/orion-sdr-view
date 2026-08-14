@@ -11,8 +11,8 @@ pub mod psk31;
 pub mod tone;
 
 pub use common::{
-    CnNoise, CnReference, MAX_CN_DB, MAX_SIG_SECS, MIN_CN_DB, NoiseDomain, SignalSource,
-    keyed_carrier_power, mean_power, mean_power_c,
+    CONTINUOUS_SIG_SECS, CnNoise, CnReference, MAX_CN_DB, MAX_SIG_SECS, MIN_CN_DB, NoiseDomain,
+    SignalSource, is_continuous_sig, keyed_carrier_power, mean_power, mean_power_c,
 };
 
 pub use amdsb::{AmDsbSource, BuiltinAudio, load_builtin};

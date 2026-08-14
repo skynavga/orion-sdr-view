@@ -43,6 +43,7 @@ impl Psk31Rows {
                     max: 22000.0,
                     unit: " Hz",
                     coarse: None,
+                    max_label: None,
                 }),
                 Row::Num(NumField {
                     label: "Gap",
@@ -53,6 +54,7 @@ impl Psk31Rows {
                     max: 99.99,
                     unit: " s",
                     coarse: None,
+                    max_label: None,
                 }),
                 Row::Num(NumField {
                     label: "C/N",
@@ -63,6 +65,7 @@ impl Psk31Rows {
                     max: MAX_CN_DB,
                     unit: " dB",
                     coarse: None,
+                    max_label: None,
                 }),
                 Row::Toggle(ToggleField {
                     label: "Message",
@@ -91,6 +94,7 @@ impl Psk31Rows {
                     max: 20.0,
                     unit: "×",
                     coarse: None,
+                    max_label: None,
                 }),
             ],
             pending_msg: None,

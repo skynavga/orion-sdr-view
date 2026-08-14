@@ -6,9 +6,7 @@ use orion_sdr::codec::MorseEncoder;
 use orion_sdr::core::Block;
 use orion_sdr::modulate::CwKeyedMod;
 
-use crate::source::{
-    CnNoise, CnReference, MAX_SIG_SECS, NoiseDomain, SignalSource, keyed_carrier_power,
-};
+use crate::source::{CnNoise, CnReference, NoiseDomain, SignalSource, keyed_carrier_power};
 
 // ── CW HUD helpers ───────────────────────────────────────────────────────────
 
@@ -288,8 +286,9 @@ impl SignalSource for CwSource {
     }
 
     fn next_samples(&mut self, n: usize) -> Vec<f32> {
-        let max_sig_samples = (MAX_SIG_SECS * self.mod_rate) as usize;
-        let effective_len = self.samples.len().min(max_sig_samples);
+        // The whole keyed message plays; see the note in `psk31::source` on why
+        // it is no longer truncated at `MAX_SIG_SECS`.
+        let effective_len = self.samples.len();
         let mut out = Vec::with_capacity(n);
         let mut i = 0;
         while i < n {

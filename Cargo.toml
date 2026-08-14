@@ -11,6 +11,7 @@ categories = ["visualization", "science", "multimedia"]
 include = [
     "src/**/*",
     "assets/**/*",
+    "scripts/**/*",
     "tests/**/*",
     "Cargo.toml",
     "README.md",
@@ -42,11 +43,16 @@ eframe = { version = "0.35", default-features = false, features = [
 egui = { version = "0.35", optional = true }
 num-complex = "0.4"
 rustfft = "6"
-orion-sdr = "0.0.59"
+orion-sdr = "0.0.60"
 hound = "3"
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
+# The replay driver's dump format.  JSON Lines rather than CSV because every
+# instrument reading is an `Option`: a CSV column cannot hold `null` without a
+# sentinel, and any sentinel reintroduces the "absent reading rendered as zero"
+# bug the `Option` exists to prevent.
+serde_json = "1"
 
 [dev-dependencies]
 tempfile = "3"

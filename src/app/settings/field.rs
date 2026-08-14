@@ -19,6 +19,14 @@ pub(super) struct NumField {
     /// throughout.  Lets a field nudge finely at low values and coarsely at
     /// high ones (e.g. 0.5 s below 10 s, 1 s at/above).
     pub coarse: Option<CoarseStep>,
+    /// Word shown in place of the number at `max`, for a field whose top of
+    /// range means something other than "the largest number".
+    ///
+    /// The alternative — a separate toggle row for "continuous" — would put two
+    /// controls on one quantity, so the row and the toggle could disagree and
+    /// one of them would have to win.  A sentinel at the top of the range keeps
+    /// it a single value, reachable with one more press of the same key.
+    pub max_label: Option<&'static str>,
 }
 
 /// A coarser step that applies once the field's value reaches `threshold`.
@@ -235,12 +243,11 @@ pub(super) struct RowDrawCtx<'a> {
 
 /// Draw a numeric row value.
 pub(super) fn draw_num(ctx: &RowDrawCtx, f: &NumField, x: f32, y: f32, row_h: f32, focused: bool) {
-    let val_str = if f.step < 0.1 {
-        format!("{:.2}{}", f.value, f.unit)
-    } else if f.step < 1.0 {
-        format!("{:.1}{}", f.value, f.unit)
-    } else {
-        format!("{:.0}{}", f.value, f.unit)
+    let val_str = match f.max_label {
+        Some(word) if f.value >= f.max => word.to_owned(),
+        _ if f.step < 0.1 => format!("{:.2}{}", f.value, f.unit),
+        _ if f.step < 1.0 => format!("{:.1}{}", f.value, f.unit),
+        _ => format!("{:.0}{}", f.value, f.unit),
     };
     ctx.painter.text(
         egui::pos2(x, y + row_h / 2.0),

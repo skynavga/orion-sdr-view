@@ -14,11 +14,13 @@ use super::spectrum::{RingBuffer, SpectrumProcessor};
 use super::waterfall::WaterfallDisplay;
 use crate::config::ViewConfig;
 use crate::decode::{
-    DecodeChunk, DecodeConfig, DecodeResult, DecodeTicker, DecodeWorker, SIGNAL_THRESHOLD,
+    DecodeChunk, DecodeConfig, DecodeResult, DecodeState, DecodeTicker, DecodeWorker,
+    SIGNAL_THRESHOLD,
 };
 use crate::source::SignalSource;
 use crate::source::tone::TestSignalGen;
 use crate::source::tone::TestToneSource;
+use crate::utils::time::Clock;
 use crate::utils::timer::LoopTimer;
 
 use super::{
@@ -96,6 +98,9 @@ pub struct ViewApp {
     /// Monotonic counter stamped on each `DecodeChunk`; see its `seq` field.
     decode_seq: u64,
     pub(super) decode_rx: mpsc::Receiver<DecodeResult>,
+    /// Present when decoding runs on this thread rather than a worker; see
+    /// [`InlineDecoder`].
+    inline_decode: Option<InlineDecoder>,
     pub(super) decode_ticker: DecodeTicker,
     /// True if the previous frame's sample block was above SIGNAL_THRESHOLD.
     pub(super) last_block_was_signal: bool,
@@ -109,6 +114,40 @@ pub struct ViewApp {
     pub(super) ft8_view: crate::source::ft8::Ft8ViewState,
     /// Display timestamps offset from UTC by this many minutes (0 = UTC).
     pub(super) time_zone_offset_min: i32,
+    /// Where the burst and frame timestamps come from.  [`Clock::System`]
+    /// interactively; [`Clock::Scripted`] under the replay driver, so a run's
+    /// decoded text repeats exactly.
+    pub(super) clock: Clock,
+    /// Samples the source has produced since startup.
+    ///
+    /// The honest measure of how much *signal* a run covered, which scripted
+    /// time is not: the per-frame budget is `dt * fs` clamped to
+    /// [`MAX_SAMPLES_PER_FRAME`], and at COFDM's 1.92 MHz that clamp binds.
+    samples_consumed: u64,
+}
+
+/// Decoding on the caller's thread instead of a worker.
+///
+/// Holds the worker's two halves — the chunk receiver and the result sender —
+/// plus the state that would otherwise live in [`DecodeWorker::run`]'s frame.
+/// [`ViewApp::advance`] sends a chunk and immediately pumps it through, so no
+/// chunk is ever in flight across a frame boundary and none can be dropped.
+///
+/// **This is what makes a dump a measurement of the link.** On the worker
+/// thread both channels `try_send`, which silently discards under pressure —
+/// correct for a real-time display that must not stall, and wrong for a
+/// measurement, where the resulting frame errors would be charged to a
+/// perfectly good signal.
+struct InlineDecoder {
+    state: DecodeState,
+    chunks: mpsc::Receiver<DecodeChunk>,
+    results: mpsc::SyncSender<DecodeResult>,
+    /// Every result this frame, in the order the ticker saw them.
+    ///
+    /// A tap rather than a second consumer: the dump and the `X` panel read the
+    /// *same* stream, so the two cannot disagree about what the receiver
+    /// reported.  A separate projection would be a second thing to keep in step.
+    tapped: Vec<DecodeResult>,
 }
 
 impl ViewApp {
@@ -120,6 +159,26 @@ impl ViewApp {
     /// app out of reach of `tests/`.  The eframe adapter at the bottom of this
     /// file passes `&cc.egui_ctx`; a test passes `&egui::Context::default()`.
     pub fn new(ctx: &egui::Context, cfg: ViewConfig) -> Self {
+        Self::build(ctx, cfg, Clock::System, false)
+    }
+
+    /// Construct for a **reproducible** run: decode inline on this thread, and
+    /// stamp timestamps from a scripted clock rather than the system one.
+    ///
+    /// Both departures exist for the same reason.  A worker thread makes result
+    /// ordering depend on the scheduler and drops chunks under pressure; the
+    /// system clock puts the time of day into decoded text.  Either one alone is
+    /// enough to make two runs of the same script differ.
+    ///
+    /// The interactive app must keep both — a display that stalls on a slow
+    /// decode is worse than one that skips a block, and a burst stamped
+    /// 2026-01-01 would be a lie on screen.  So this is a second constructor
+    /// rather than a change to [`new`](Self::new).
+    pub fn new_replay(ctx: &egui::Context, cfg: ViewConfig) -> Self {
+        Self::build(ctx, cfg, Clock::scripted(), true)
+    }
+
+    fn build(ctx: &egui::Context, cfg: ViewConfig, clock: Clock, inline_decode: bool) -> Self {
         let font_bytes = include_bytes!("../../assets/fonts/DejaVuSansMono.ttf");
         let mut fonts = egui::FontDefinitions::default();
         fonts.font_data.insert(
@@ -143,16 +202,29 @@ impl ViewApp {
             SAMPLE_RATE,
         )));
 
-        // Decode thread setup.
+        // Decode setup.
         let decode_config = Arc::new(Mutex::new(DecodeConfig::new(SAMPLE_RATE)));
         // Capacity 256: at 60 fps each block is ~16 ms; 256 slots ≈ 4 s of buffer,
         // enough to absorb a slow psk31_sync pass without dropping gap blocks.
         let (decode_tx, sample_rx) = mpsc::sync_channel::<DecodeChunk>(256);
-        let (result_tx, decode_rx) = mpsc::sync_channel::<DecodeResult>(16);
-        {
+        // The result channel is generously sized when decoding inline: a single
+        // chunk can emit several results, and the whole point of the inline path
+        // is that nothing is discarded.  The threaded path keeps 16, which is a
+        // deliberate back-pressure limit rather than an estimate.
+        let (result_tx, decode_rx) =
+            mpsc::sync_channel::<DecodeResult>(if inline_decode { 4096 } else { 16 });
+        let inline_decode = if inline_decode {
+            Some(InlineDecoder {
+                state: DecodeState::new(),
+                chunks: sample_rx,
+                results: result_tx,
+                tapped: Vec::new(),
+            })
+        } else {
             let worker_cfg = Arc::clone(&decode_config);
             std::thread::spawn(move || DecodeWorker::new(worker_cfg, sample_rx, result_tx).run());
-        }
+            None
+        };
 
         let mut app = Self {
             decode_seq: 0,
@@ -202,12 +274,15 @@ impl ViewApp {
             decode_config,
             decode_tx,
             decode_rx,
+            inline_decode,
             decode_ticker: DecodeTicker::new(),
             last_block_was_signal: false,
             last_frame_time: std::time::Instant::now(),
 
             ft8_view: crate::source::ft8::Ft8ViewState::new(),
             time_zone_offset_min: 0,
+            clock,
+            samples_consumed: 0,
         };
         app.time_zone_offset_min = cfg.time_zone_offset_min();
         // Precedence rule, step 1 of 3: the configured zoom applies at startup.
@@ -914,6 +989,9 @@ impl ViewApp {
         // time-based playback (e.g. COFDM signal/gap phases) is frame-rate
         // independent.  No-op for sources that don't use it.
         self.source.advance_time(dt);
+        // A scripted clock advances on the same `dt`, so a timestamp stamped
+        // into decoded text is a function of scripted time alone.
+        self.clock.advance(dt);
 
         // Pace sample consumption to wall-clock: pull `dt * fs` samples this
         // frame (clamped) rather than a fixed count.  This makes every source's
@@ -926,6 +1004,7 @@ impl ViewApp {
 
         // Feed new samples and process spectrum before drawing.
         let samples = self.source.next_samples(n);
+        self.samples_consumed = self.samples_consumed.wrapping_add(samples.len() as u64);
         // Both representations of this block travel together — see
         // `DecodeChunk`. `last_samples_iq` returns the complex counterpart of
         // the block just emitted, so the decoder and the display cannot end up
@@ -937,6 +1016,10 @@ impl ViewApp {
             iq: self.source.last_samples_iq().map(<[_]>::to_vec),
             signal: self.source.signal_phase(),
         });
+        // Decode it now, if this is a replay run: the chunk goes in and its
+        // results come back out before anything else touches the frame, so
+        // ordering is exact and nothing can be dropped in between.
+        self.pump_inline_decode();
         for s in &samples {
             self.ring_buf.push(*s);
         }
@@ -970,15 +1053,15 @@ impl ViewApp {
             let was_signal = self.last_block_was_signal;
             if block_is_signal && !was_signal {
                 // Rising edge: capture onset time for timestamp.
-                self.ft8_view.on_signal_rising_edge();
+                self.ft8_view.on_signal_rising_edge(self.clock.now());
             }
         }
         if is_burst_text_mode && self.loop_timer.signal_onset {
             let delim = super::source::format_burst_open_delimiter(
-                std::time::SystemTime::now(),
+                self.clock.now(),
                 self.time_zone_offset_min,
             );
-            self.decode_ticker.push_result(DecodeResult::Text(delim));
+            self.push_decode_result(DecodeResult::Text(delim));
         }
         self.last_block_was_signal = block_is_signal;
 
@@ -994,8 +1077,7 @@ impl ViewApp {
                         self.ft8_view.on_failed_frame();
                     }
                 }
-                self.decode_ticker
-                    .push_result(DecodeResult::Gap { decoded });
+                self.push_decode_result(DecodeResult::Gap { decoded });
             } else if is_ft8_mode {
                 // For FT8/FT4: wrap the decoded frame text as
                 // "|| HH:MM:SS.fff | <text> ||" so the leading/trailing "||"
@@ -1010,16 +1092,16 @@ impl ViewApp {
                 } else {
                     result
                 };
-                self.decode_ticker.push_result(result);
+                self.push_decode_result(result);
             } else {
-                self.decode_ticker.push_result(result);
+                self.push_decode_result(result);
             }
         }
 
         // CW / PSK31 closing delimiter: inject after draining all decode
         // results so the last characters appear before the "||" separator.
         if is_burst_text_mode && self.loop_timer.gap_onset {
-            self.decode_ticker.push_result(DecodeResult::Text(
+            self.push_decode_result(DecodeResult::Text(
                 super::source::BURST_CLOSE_DELIMITER.to_owned(),
             ));
         }
@@ -1030,8 +1112,7 @@ impl ViewApp {
             // spurious Gap events during CW keying gaps.  Gap clears last_info
             // (so Di shows "waiting for signal") and sets in_gap=true (so Dt
             // injects spaces at the scroll rate).
-            self.decode_ticker
-                .push_result(DecodeResult::Gap { decoded: false });
+            self.push_decode_result(DecodeResult::Gap { decoded: false });
         }
         self.decode_ticker.tick(dt);
 
@@ -1081,6 +1162,13 @@ impl ViewApp {
         // Persistence is a 2D histogram that changes everywhere each frame, so
         // it re-uploads the whole (small, 513×100) texture.  Measured flat at
         // ~5.75 ms/frame, which sustains a high frame rate without throttling.
+        //
+        // **Gating this out of a replay run was tried and reverted.**  The
+        // 5.75 ms is the cost with a live GPU; headless there is no device, so
+        // `update_texture` only stages a `ColorImage` into egui's texture
+        // manager for `end_pass` to discard.  Measured over a 7200-frame run:
+        // 36.59 s with the uploads against 36.43 s without — noise.  Not worth a
+        // second code path through the per-frame work.
         self.persistence.update_texture(ctx);
 
         // Drive the loop at display rate regardless of interaction.
@@ -1162,6 +1250,78 @@ impl ViewApp {
     /// Pane 3's horizontal spectrogram, for the CPU-side pixel assertions.
     pub fn spectrogram(&self) -> &SpectrogramDisplay {
         &self.spectrogram
+    }
+
+    /// The decode ticker — the Di/Dt bar's text, last `Info` and last
+    /// instrument reading.  This is what the replay driver dumps, so the dump
+    /// and the panel are reading the same values by construction.
+    pub fn decode_ticker(&self) -> &DecodeTicker {
+        &self.decode_ticker
+    }
+
+    /// Chunks the inline decoder's sequence counter says never arrived.
+    ///
+    /// Zero is the invariant of a replay run and the check that says a dump
+    /// measured the link rather than the harness.  `None` when decoding on a
+    /// worker thread, where dropping under pressure is the intended behaviour
+    /// and the count would only invite a meaningless assertion.
+    pub fn dropped_chunks(&self) -> Option<u64> {
+        self.inline_decode.as_ref().map(|d| d.state.dropped())
+    }
+
+    /// The clock timestamps are stamped from.
+    pub fn clock(&self) -> Clock {
+        self.clock
+    }
+
+    /// Samples the source has produced since startup.  See
+    /// [`samples_consumed`](Self::samples_consumed).
+    pub fn samples_consumed(&self) -> u64 {
+        self.samples_consumed
+    }
+
+    /// Take this frame's decode results, in the order the ticker saw them.
+    ///
+    /// Empty unless the app was built by [`new_replay`](Self::new_replay) —
+    /// there is nothing to tap on the threaded path, where the results have
+    /// already been consumed by the time anything could ask.
+    pub fn take_replay_results(&mut self) -> Vec<DecodeResult> {
+        match self.inline_decode.as_mut() {
+            Some(inline) => std::mem::take(&mut inline.tapped),
+            None => Vec::new(),
+        }
+    }
+
+    /// Hand a result to the ticker, tapping it for the replay dump on the way.
+    ///
+    /// **Every path to the ticker goes through here, and that is the point.**
+    /// Tapping the decode channel instead would miss the three results the app
+    /// itself synthesizes — CW and PSK31's burst-open and burst-close
+    /// delimiters, and the loop timer's own gap — and would record FT8's frame
+    /// text unformatted, since the timestamp wrapping happens on this side.  A
+    /// dump that agrees with the panel has to read what the panel reads.
+    fn push_decode_result(&mut self, result: DecodeResult) {
+        if let Some(inline) = self.inline_decode.as_mut() {
+            inline.tapped.push(result.clone());
+        }
+        self.decode_ticker.push_result(result);
+    }
+
+    /// Run the inline decoder over every chunk waiting for it.
+    ///
+    /// A no-op unless the app was built by [`new_replay`](Self::new_replay).
+    /// The borrow dance is deliberate: `process` takes `&mut self.state` while
+    /// the config lives behind the app's `Arc<Mutex<..>>`, so the config is
+    /// snapshotted first — the same order the worker thread uses, which is what
+    /// keeps a mid-script settings change behaving identically on both paths.
+    fn pump_inline_decode(&mut self) {
+        let Some(inline) = self.inline_decode.as_mut() else {
+            return;
+        };
+        let cfg = self.decode_config.lock().unwrap().clone();
+        while let Ok(chunk) = inline.chunks.try_recv() {
+            inline.state.process(&chunk, &cfg, &inline.results);
+        }
     }
 }
 

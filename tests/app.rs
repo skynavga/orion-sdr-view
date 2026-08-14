@@ -284,7 +284,95 @@ fn a_source_switch_rebounds_the_zoom_row_to_the_new_nyquist() {
     );
 }
 
-// ── E. Determinism ──────────────────────────────────────────────────────────
+// ── E. The `Include DC` row ─────────────────────────────────────────────────
+
+#[test]
+fn the_include_dc_row_is_reachable_and_reaches_the_source() {
+    // The row was withdrawn in 0.0.25 because an occupied DC subcarrier did not
+    // demodulate, and restored in 0.0.26 on orion-sdr 0.0.60.  A withdrawn row
+    // leaves no trace in the settings state, so nothing but a navigation test
+    // can tell "restored" from "still hidden": the toggle is the fifth visible
+    // source row only while shaping is on, and `nudge` on the wrong index would
+    // silently move the taper instead.
+    //
+    // `occupying_dc_survives_a_round_trip` in `tests/cofdm_rx.rs` is the other
+    // half — that the waveform this produces actually decodes.
+    let mut h = Harness::with_defaults();
+    h.select_source(SourceMode::Cofdm);
+    assert!(
+        h.app.settings().cofdm_shaping().enabled,
+        "shaping defaults on, which is what makes the row visible"
+    );
+    assert!(
+        !h.app.settings().cofdm_shaping().include_dc,
+        "off by default"
+    );
+
+    // Open the overlay and walk down to it.  The Source tab's first navigable
+    // row is the source *selector*, not the first of the source's own rows, so
+    // Include DC is the sixth stop: Source, Center, Bandwidth, Shaping,
+    // Edge guard, Include DC.
+    h.key(egui::Key::S);
+    h.key_n(egui::Key::ArrowDown, 6);
+    h.key(egui::Key::ArrowRight);
+    assert!(
+        h.app.settings().cofdm_shaping().include_dc,
+        "the fifth visible row should be Include DC, and nudging it should occupy DC"
+    );
+
+    // Everything else must have stayed put, which is what says the walk landed
+    // on the right row rather than on a neighbour that happens to be a toggle.
+    let s = h.app.settings().cofdm_shaping();
+    let d = orion_sdr_view::source::CofdmShaping::default_for(h.app.settings().cofdm_bw_fraction());
+    assert_eq!(
+        (s.taper, s.mask, s.edge_guard),
+        (d.taper, d.mask, d.edge_guard)
+    );
+
+    // And the source is rebuilt from it: with DC occupied the plan carries one
+    // more data carrier than without.
+    h.idle(5);
+    let with_dc = orion_sdr_view::source::cofdm_data_carriers(s.edge_guard, true);
+    let without = orion_sdr_view::source::cofdm_data_carriers(s.edge_guard, false);
+    assert_eq!(
+        with_dc,
+        without + 1,
+        "occupying DC should add exactly one carrier"
+    );
+}
+
+#[test]
+fn the_include_dc_row_hides_with_shaping_off() {
+    // `CofdmShaping::effective` returns `derived()` — which never occupies DC —
+    // whenever shaping is off, so a visible row there would be a control that
+    // does nothing.  This is the same reason edge guard, taper and mask hide.
+    let mut h = Harness::with_defaults();
+    h.select_source(SourceMode::Cofdm);
+    h.key(egui::Key::S);
+
+    // Source, Center, Bandwidth, Shaping — turn shaping off.
+    h.key_n(egui::Key::ArrowDown, 4);
+    h.key(egui::Key::ArrowLeft);
+    assert!(!h.app.settings().cofdm_shaping().enabled);
+
+    // The list has now lost four rows, so the sixth stop is Gap rather than
+    // Include DC.  Nudging it must move the gap and leave DC alone — which is
+    // what says the shaping group went away wholesale rather than partly.
+    let gap = h.app.settings().cofdm_gap_secs();
+    h.key_n(egui::Key::ArrowDown, 2);
+    h.key(egui::Key::ArrowRight);
+    assert_ne!(
+        h.app.settings().cofdm_gap_secs(),
+        gap,
+        "the sixth row should be Gap once the shaping group is hidden"
+    );
+    assert!(
+        !h.app.settings().cofdm_shaping().include_dc,
+        "with shaping off there is no reachable Include DC row"
+    );
+}
+
+// ── F. Determinism ──────────────────────────────────────────────────────────
 
 #[test]
 fn a_fixed_dt_gives_the_same_run_twice() {
@@ -352,4 +440,82 @@ fn every_source_survives_being_driven() {
             mode.label()
         );
     }
+}
+
+// ── G. A continuous burst ───────────────────────────────────────────────────
+
+#[test]
+fn the_signal_row_reaches_cont_and_hides_the_gap() {
+    // `cont` is one press past the top of the finite range, which is the whole
+    // reason it is a sentinel rather than a bigger maximum: at a second per
+    // press, no usefully long burst is reachable by nudging.
+    use orion_sdr_view::source::{CONTINUOUS_SIG_SECS, is_continuous_sig};
+
+    let mut h = Harness::with_defaults();
+    h.select_source(SourceMode::Cofdm);
+    assert!(!is_continuous_sig(h.app.settings().cofdm_sig_secs()));
+
+    // Source, Center, Bandwidth, Shaping, Edge guard, Include DC, Taper, Mask,
+    // Signal — the ninth stop with shaping on.
+    h.key(egui::Key::S);
+    h.key_n(egui::Key::ArrowDown, 9);
+    // Walk to the top: 0.5 s steps to 10 s, then 1 s steps, then the sentinel.
+    h.key_n(egui::Key::ArrowRight, 120);
+    assert_eq!(h.app.settings().cofdm_sig_secs(), CONTINUOUS_SIG_SECS);
+    assert!(is_continuous_sig(h.app.settings().cofdm_sig_secs()));
+
+    // Gap is now hidden, so the next row down is C/N rather than Gap.  Nudging
+    // it must move the C/N — which is what says the row list actually shrank.
+    let cn = h.app.settings().cofdm_cn_db();
+    h.key(egui::Key::ArrowDown);
+    h.key(egui::Key::ArrowRight);
+    assert_ne!(
+        h.app.settings().cofdm_cn_db(),
+        cn,
+        "with Gap hidden, the row after Signal should be C/N"
+    );
+
+    // One press back off the sentinel returns to a finite burst, and Gap with it.
+    h.key(egui::Key::ArrowUp);
+    h.key(egui::Key::ArrowLeft);
+    assert!(!is_continuous_sig(h.app.settings().cofdm_sig_secs()));
+    let gap = h.app.settings().cofdm_gap_secs();
+    h.key(egui::Key::ArrowDown);
+    h.key(egui::Key::ArrowRight);
+    assert_ne!(
+        h.app.settings().cofdm_gap_secs(),
+        gap,
+        "Gap should be reachable again once the burst is finite"
+    );
+}
+
+#[test]
+fn a_continuous_burst_never_gaps() {
+    // The behaviour the sentinel exists for, and the one the link-budget harness
+    // depends on: a gap resets the receiver and restarts its frame accounting,
+    // so a measurement that ran past the burst would silently report only its
+    // tail.
+    let mut h = Harness::from_yaml(
+        "
+view:
+  sources:
+    cofdm:
+      sig_secs: 1.0e9
+",
+    );
+    h.select_source(SourceMode::Cofdm);
+    assert!(
+        orion_sdr_view::source::is_continuous_sig(h.app.settings().cofdm_sig_secs()),
+        "a large configured sig_secs should mean continuous, not a clamped 99.99"
+    );
+
+    // Well past both the old 99.99 s clamp and the default 10 s burst.
+    for _ in 0..(120.0 / Harness::DT) as usize {
+        h.frame(Vec::new(), egui::Modifiers::default());
+    }
+    assert!(
+        h.app.decode_ticker().last_instrument.is_some(),
+        "a continuous burst should still be transmitting after 120 s; a gap \
+         would have cleared the instrument"
+    );
 }

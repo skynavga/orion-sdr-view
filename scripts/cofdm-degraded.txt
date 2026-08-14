@@ -1,0 +1,16 @@
+# A COFDM link below the FEC cliff.  Needs scripts/degraded.yaml:
+#
+#   orion-sdr-view --headless --config scripts/degraded.yaml \
+#     --script scripts/cofdm-degraded.txt --dump run.jsonl
+#
+# What to look for in the dump: `cber`, `iber` and `mer_db` all carry
+#   {"v": null, "prov": "unavailable"}
+# rather than a zero.  Nothing decoded, so there was nothing to measure — which
+# is a different statement from "the error rate was zero", and the reason a CSV
+# column would have been the wrong choice here.  Note the provenance too: the
+# reading is absent because no provider could supply it, not because a receiver
+# looked and found nothing.
+
+duration 20
+
+0.00 key I x5

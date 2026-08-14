@@ -1,0 +1,20 @@
+# Zoom, lock and pan — a UI reproduction recipe rather than a measurement.
+#
+# `assert` directives are the point of this one.  The driver parses them, so a
+# typo is still an error, and then ignores them; the test harness in `tests/`
+# executes them.  One format, two readers: drop this file into a test and it
+# becomes a regression test unchanged.
+#
+# The first `->` press auto-zooms, because panning at full span is a no-op by
+# construction: the centre clamp range collapses to a point.
+
+duration 8
+
+0.00 key I x5              # -> COFDM
+1.00 key ArrowUp x3        # zoom in
+2.00 assert source 5
+2.00 key L                 # lock the band to the viewport centre
+2.50 assert locked 1
+3.00 key ArrowRight x4     # pan up-band; the band follows
+4.00 key shift+ArrowRight  # fine pan, 10% of coarse
+5.00 key Z                 # re-centre, keeping the zoom

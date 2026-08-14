@@ -35,6 +35,7 @@ impl DisplayRows {
                     max: -1.0,
                     unit: " dB",
                     coarse: None,
+                    max_label: None,
                 }),
                 Row::Num(NumField {
                     label: "dB max",
@@ -45,6 +46,7 @@ impl DisplayRows {
                     max: 0.0,
                     unit: " dB",
                     coarse: None,
+                    max_label: None,
                 }),
                 Row::Num(NumField {
                     label: "Zoom",
@@ -62,6 +64,7 @@ impl DisplayRows {
                     max: crate::app::SAMPLE_RATE / 2.0 / crate::viewport::MIN_SPAN_HZ,
                     unit: "x",
                     coarse: None,
+                    max_label: None,
                 }),
                 Row::Num(NumField {
                     label: "Spec time",
@@ -72,6 +75,7 @@ impl DisplayRows {
                     max: 120.0,
                     unit: " s",
                     coarse: None,
+                    max_label: None,
                 }),
                 Row::Toggle(ToggleField {
                     label: "Pan",

@@ -12,6 +12,15 @@
 pub mod app;
 pub mod config;
 pub mod decode;
+/// The headless replay driver: run a script with no window, no renderer and no
+/// GPU, and emit the measurement stream as JSON Lines.
+///
+/// Behind `gui` for the same reason [`app`] is — it drives `ViewApp` through
+/// complete egui passes.  The feature is coarser than this mode needs (it pulls
+/// in eframe, which nothing here touches), which is worth remembering if that
+/// dependency ever becomes awkward.
+#[cfg(feature = "gui")]
+pub mod replay;
 pub mod source;
 pub mod utils;
 pub mod viewport;

@@ -108,10 +108,23 @@ impl LoopTimer {
         }
     }
 
-    /// Formatted string: "sig 12.34s loop 007" or "gap 02.00s loop 007".
+    /// Formatted string: `"sig 12.34 s loop 007"`, or `"sig 99.99+s loop 001"`
+    /// once the phase has run past what the field can show.
+    ///
+    /// **The marker slot is always present** — a space when the timer has not
+    /// overflowed — so the field width never changes and the right-aligned HUD
+    /// cannot reflow.  Same convention as a wrapped error count's `000042+`,
+    /// and for the same reason: `99.99` and `99.99+` are very different
+    /// readings, and clamping without saying so under-reports silently.
+    ///
+    /// This is what lets a burst outlast the display.  Sources used to truncate
+    /// themselves at [`MAX_SIG_SECS`](crate::source::MAX_SIG_SECS) so this
+    /// string could not grow; the bound belongs here, not in the signal.
     pub fn label(&self) -> String {
         let kind = if self.in_signal { "sig" } else { "gap" };
-        let secs = self.phase_secs.min(99.99);
-        format!("{kind} {secs:05.2}s loop {:03}", self.loop_count)
+        let over = self.phase_secs > crate::source::MAX_SIG_SECS;
+        let secs = self.phase_secs.min(crate::source::MAX_SIG_SECS);
+        let mark = if over { '+' } else { ' ' };
+        format!("{kind} {secs:05.2}{mark}s loop {:03}", self.loop_count)
     }
 }
