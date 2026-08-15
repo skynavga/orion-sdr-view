@@ -5,8 +5,9 @@
 # executes them.  One format, two readers: drop this file into a test and it
 # becomes a regression test unchanged.
 #
-# The first `->` press auto-zooms, because panning at full span is a no-op by
-# construction: the centre clamp range collapses to a point.
+# The zoom here is for the lock, not for the pan: a *locked* pan is held inside
+# the band, and at full span that leaves it nowhere to go.  An unlocked pan
+# needs no such preparation — see `overscan.txt`.
 
 duration 8
 

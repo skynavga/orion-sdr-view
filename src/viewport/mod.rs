@@ -3,4 +3,4 @@
 
 mod common;
 
-pub use common::{FreqView, MIN_SPAN_HZ, PAN_AUTO_ZOOM};
+pub use common::{FreqView, MAX_OVERSCAN_FRAC, MIN_SPAN_HZ, PanLimit};

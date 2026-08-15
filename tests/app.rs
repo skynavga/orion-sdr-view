@@ -20,7 +20,7 @@ mod common;
 use common::harness::Harness;
 use orion_sdr_view::app::SourceMode;
 use orion_sdr_view::app::settings::{CofdmSettings, Psk31Settings};
-use orion_sdr_view::viewport::{FreqView, PAN_AUTO_ZOOM};
+use orion_sdr_view::viewport::FreqView;
 
 // ── A. `L` on COFDM ─────────────────────────────────────────────────────────
 
@@ -33,9 +33,11 @@ fn the_lock_key_retunes_the_cofdm_band() {
     h.select_source(SourceMode::Cofdm);
     let before = h.app.settings().cofdm_center_hz();
 
-    // Zoom in first: at full span `pan` is a no-op by construction (the centre
-    // clamp range collapses to a point), so a lock test that skipped this would
-    // pass against a broken `L` as readily as a working one.
+    // Zoom in first.  A *locked* pan is band-limited, and at full span that is a
+    // no-op by construction — the centre clamp range collapses to a point — so a
+    // lock test that skipped this would pass against a broken `L` as readily as
+    // a working one.  (An unlocked pan does move at full span; it is allowed to
+    // leave the band, which is the whole difference.)
     h.key_n(egui::Key::ArrowUp, 4);
     h.key(egui::Key::L);
     assert!(h.app.source_locked(), "L should engage the lock");
@@ -227,11 +229,12 @@ fn the_zoom_row_follows_the_keyboard() {
 }
 
 #[test]
-fn a_pan_from_full_span_auto_zooms_and_says_so() {
-    // The ←/→ handler has to zoom off full span or the key is inert, and the
-    // `Zoom` row has to learn about it — an auto-zoom the row did not see would
-    // be pushed straight back to 1.0 the next time the settings overlay opened,
-    // silently undoing the pan.
+fn a_pan_from_full_span_moves_without_zooming() {
+    // The handler used to zoom in on the first ←/→ press, because the old pan
+    // was inert at full span and an inert key reads as broken.  That auto-zoom
+    // was an unwinnable trade — it magnified the signal to buy pan range — and
+    // overscan removes the need for it: at full span the whole band now slides
+    // sideways.  So the press pans, and the `Zoom` row stays where it was.
     let mut h = Harness::with_defaults();
     h.select_source(SourceMode::Cofdm);
     assert_eq!(
@@ -244,18 +247,53 @@ fn a_pan_from_full_span_auto_zooms_and_says_so() {
     h.key(egui::Key::ArrowRight);
     assert_eq!(
         h.app.freq_view().zoom_ratio(),
-        PAN_AUTO_ZOOM,
-        "the auto-zoom should land on the chosen ratio, not a step_zoom accident"
+        1.0,
+        "panning must no longer zoom to make room for itself"
     );
     assert_ne!(
         h.app.freq_view().center_hz,
         before,
-        "the same press should also pan"
+        "the press should pan even at full span"
     );
     assert_eq!(
         h.app.settings().zoom_ratio(),
         h.app.freq_view().zoom_ratio(),
-        "the Zoom row must follow the auto-zoom"
+        "the Zoom row must still track the viewport"
+    );
+}
+
+#[test]
+fn engaging_the_lock_pulls_a_panned_out_view_back_into_the_band() {
+    // `L` writes the viewport centre into the active source's carrier row, and
+    // that row clamps to the source's own range.  Engaging it while panned into
+    // empty space would pin the row at its bound while the view stayed out
+    // there, so the marker and the band would drift apart with nothing on screen
+    // to say why.  The lock re-seats the view instead.
+    let mut h = Harness::with_defaults();
+    h.select_source(SourceMode::Cofdm);
+    let nyquist = h.app.freq_view().nyquist;
+
+    h.key_n(egui::Key::ArrowRight, 40); // out past the top edge
+    assert!(
+        h.app.freq_view().hi() > nyquist,
+        "expected to be panned off the band, hi = {}",
+        h.app.freq_view().hi()
+    );
+
+    h.key(egui::Key::L);
+    assert!(
+        h.app.freq_view().hi() <= nyquist && h.app.freq_view().lo() >= 0.0,
+        "the lock left the window off the band: [{}, {}]",
+        h.app.freq_view().lo(),
+        h.app.freq_view().hi()
+    );
+
+    // And it stays inside from then on, however hard the arrows are held.
+    h.key_n(egui::Key::ArrowRight, 40);
+    assert!(
+        h.app.freq_view().hi() <= nyquist,
+        "a locked pan left the band: hi = {}",
+        h.app.freq_view().hi()
     );
 }
 

@@ -1,0 +1,44 @@
+# Panning past the band edge, with a still at each stop.
+#
+# The viewport may travel past either end of 0..Nyquist, stopping when the band
+# edge reaches screen centre.  This walks that rule and captures what it looks
+# like, so a change to the pan arithmetic can be compared rather than argued
+# about.  Stills land in ./capture (the default, and git-ignored); pass
+# `--capture DIR` to put them somewhere else.
+#
+# Two cautions on comparing the images.  They are reproducible on one machine
+# but *not* across architectures — `rustfft` dispatches AVX on x86-64 and Neon
+# on AArch64, so the spectrum differs in its last bits and every pixel
+# downstream inherits it.  And what is worth looking at is the empty region: it
+# must be dim, with a band-edge line and no trace, because the failure mode is a
+# texture that repeats its edge column out there and looks like real spectrum.
+#
+# The `assert` lines are the machine-checkable half.  The driver parses and
+# ignores them; the harness in `tests/` executes them.
+
+duration 10
+
+0.00 source COFDM
+1.00 key ArrowUp x4          # 3.0x — a third of the band on screen
+1.50 assert zoom 3
+1.50 assert center_hz 480000
+2.00 still in-band           # the ordinary case: band across the whole pane
+
+3.00 key ArrowLeft x14       # part way off the low edge
+3.50 assert center_hz 106666.67 1
+4.00 still overscan-partial  # the one to look at: dimmed empty region on the
+                             # left, band-edge line where the spectrum stops
+
+5.00 key ArrowLeft x30       # drive on into the bound; it clamps
+5.50 assert center_hz 0      # band edge exactly at screen centre, and no further
+6.00 still overscan-full     # at full deflection the edge sits under the primary
+                             # marker, which is why the partial stop is above
+
+7.00 key Z                   # recentre, keeping the zoom
+7.50 assert center_hz 480000
+
+8.00 key L                   # engage the lock...
+8.20 assert locked 1
+8.40 key ArrowLeft x30       # ...and the pan stops at the band edge instead
+8.60 assert center_hz 160000 # span/2: the whole window still inside the band
+9.00 still locked-at-edge

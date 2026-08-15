@@ -3,6 +3,8 @@
 
 use eframe::egui;
 
+use super::OFF_BAND_SOLID;
+
 /// Maps a dB value to a waterfall color (thermal palette).
 /// Same palette as the vertical waterfall for visual consistency.
 fn db_to_color(db: f32, db_min: f32, db_max: f32) -> egui::Color32 {
@@ -140,8 +142,14 @@ impl SpectrogramDisplay {
         let col = self.head;
 
         // Map row index → frequency.  Row 0 = hi edge, row (rows-1) = lo edge.
-        let lo = (center_hz - delta_hz).max(0.0);
-        let hi = (center_hz + delta_hz).min(nyquist);
+        //
+        // **The window is not clamped to the band.**  It used to be, which under
+        // a viewport that can pan past a band edge would silently compress the
+        // whole spectrum into the pane instead of letting it scroll off: the
+        // rows would keep covering `0..nyquist` while the axis labels beside them
+        // said otherwise.  Rows past an edge get painted as off-band below.
+        let lo = center_hz - delta_hz;
+        let hi = center_hz + delta_hz;
         let span = (hi - lo).max(1.0);
         // Fractional bin position for a frequency.  When the window spans more
         // FFT bins than the pane has rows, each row covers a *range* of bins,
@@ -157,6 +165,16 @@ impl SpectrogramDisplay {
             let t_lo = (r as f32 + 0.5).min((rows - 1) as f32) / (rows - 1).max(1) as f32;
             let hz_hi_r = hi - t_hi * span;
             let hz_lo_r = hi - t_lo * span;
+            // A row wholly outside the band has no bin to sample.  Clamping it
+            // onto the edge bin — which is what the bin clamp below would do —
+            // would smear the outermost column across the empty region as a
+            // smooth, entirely fabricated continuation of the spectrum.  Paint
+            // it as off-band instead.  Rows that straddle an edge still cover
+            // real band and are sampled normally.
+            if hz_hi_r < 0.0 || hz_lo_r > nyquist {
+                self.pixels[r * cols + col] = OFF_BAND_SOLID;
+                continue;
+            }
             let b0 = hz_to_binf(hz_lo_r).clamp(0.0, max_bin);
             let b1 = hz_to_binf(hz_hi_r).clamp(0.0, max_bin);
             let (lo_b, hi_b) = (b0.floor() as usize, b1.ceil() as usize);

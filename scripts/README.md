@@ -25,6 +25,7 @@ want the measurement stream.  Anything on the command line overrides the script.
 | `cw-decode.txt` | CW text decode, with the scripted clock's burst timestamps |
 | `cofdm-continuous.txt` | A link that never gaps, for a long measurement |
 | `viewport.txt` | Zoom, lock and pan — a UI reproduction recipe rather than a measurement |
+| `overscan.txt` | Pan past the band edge and back, with a `still` at each stop |
 
 Two of these need a *config* setting rather than a script one, so each comes
 with a matching YAML file — `degraded.yaml` and `continuous.yaml`:
