@@ -49,8 +49,11 @@ pub struct Harness {
     /// Viewport commands from the most recent pass.  The app's only outward
     /// channel for a capture request, and observable without a renderer.
     viewport_commands: Vec<egui::ViewportCommand>,
-    /// Where a `pane` directive writes.  Defaults to the app's own setting.
+    /// Where a `pane` or `still` directive writes.  Defaults to the app's own
+    /// setting.
     pub capture_dir: std::path::PathBuf,
+    /// Textures accumulated for the rasterizer, across frames.
+    textures: orion_sdr_view::capture::Textures,
 }
 
 impl Harness {
@@ -69,6 +72,7 @@ impl Harness {
             frames: 0,
             viewport_commands: Vec::new(),
             capture_dir,
+            textures: orion_sdr_view::capture::Textures::default(),
         }
     }
 
@@ -114,6 +118,10 @@ impl Harness {
         self.app.advance(&self.ctx, Self::DT);
         self.app.handle_keys(&self.ctx);
         let out = self.ctx.end_pass();
+        // Texture uploads are incremental and mostly happen once, so they are
+        // accumulated every frame rather than only when capturing — see the
+        // driver's `step_once`.
+        self.textures.apply(&out.textures_delta);
         // Keep the viewport commands this pass produced.  They are the app's
         // only outward channel for a screenshot request, and a bare
         // `egui::Context` is enough to observe them — which is what makes the
@@ -230,6 +238,41 @@ impl Harness {
         );
     }
 
+    /// Draw the UI, rasterize it, and write it as a still.
+    ///
+    /// The harness's counterpart to the driver's `still` handling, so a script
+    /// means the same thing in both readers.
+    pub fn capture_still_now(
+        &mut self,
+        dir: &std::path::Path,
+        label: Option<&str>,
+    ) -> std::io::Result<std::path::PathBuf> {
+        let (w, h) = orion_sdr_view::replay::DEFAULT_SIZE;
+        let scale = orion_sdr_view::replay::DEFAULT_SCALE;
+        self.ctx.begin_pass(egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(w, h),
+            )),
+            ..Default::default()
+        });
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w, h));
+        let mut ui = egui::Ui::new(
+            self.ctx.clone(),
+            egui::Id::new("harness_capture"),
+            egui::UiBuilder::new().max_rect(rect),
+        );
+        self.app.draw_ui(&mut ui);
+        let out = self.ctx.end_pass();
+        self.textures.apply(&out.textures_delta);
+        let primitives = self.ctx.tessellate(out.shapes, scale);
+        let size = ((w * scale).round() as u32, (h * scale).round() as u32);
+        let raster = orion_sdr_view::capture::rasterize(&primitives, &self.textures, size, scale);
+        self.frames += 1;
+        self.app
+            .write_still_raster(dir, label, raster.width, raster.height, &raster.rgba)
+    }
+
     /// Replay a script, executing its `assert` directives.
     ///
     /// Panics naming the offending source line, so a failure points at the
@@ -248,6 +291,11 @@ impl Harness {
                 Action::Source { mode } => self.select_source(*mode),
                 // Executed, not ignored: a pane's pixels are CPU-side, so the
                 // harness can write one exactly as the driver does.
+                Action::Still { label } => {
+                    let dir = self.capture_dir.clone();
+                    self.capture_still_now(&dir, label.as_deref())
+                        .unwrap_or_else(|e| panic!("line {}: {e}", step.line));
+                }
                 Action::Pane { pane, label } => {
                     let dir = self.capture_dir.clone();
                     self.app

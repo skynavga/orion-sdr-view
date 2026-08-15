@@ -743,3 +743,159 @@ fn a_pane_with_no_pixels_yet_writes_nothing_and_says_so() {
     assert_eq!(wrote, None);
     assert_eq!(std::fs::read_dir(dir.path()).expect("read_dir").count(), 0);
 }
+
+// ── K. Headless stills, rasterized on the CPU ───────────────────────────────
+
+/// A script that reaches a steady COFDM display, then captures.
+const STILL_SCRIPT: &str = "
+size 640x480
+
+0.00 source COFDM
+0.50 key D
+1.50 still
+";
+
+fn run_still(dir: &Path, script: &str) -> Vec<std::path::PathBuf> {
+    let opts = orion_sdr_view::replay::RunOptions {
+        script: Some(script.to_owned()),
+        duration: Some(2.0),
+        capture: Some(dir.to_path_buf()),
+        ..Default::default()
+    };
+    orion_sdr_view::replay::run_into(
+        orion_sdr_view::config::ViewConfig::empty(),
+        &opts,
+        std::io::sink(),
+    )
+    .expect("the run should succeed")
+    .captures
+}
+
+#[test]
+fn the_same_script_produces_the_same_image() {
+    // **The property the whole rasterizer exists for.** A GPU render cannot
+    // carry it — fill rules and filtering vary by vendor and driver — and
+    // without it a capture is no use as a test fixture, because a failure could
+    // not be told from a different machine.
+    let (a, b) = (
+        tempfile::tempdir().expect("tempdir"),
+        tempfile::tempdir().expect("tempdir"),
+    );
+    let pa = run_still(a.path(), STILL_SCRIPT);
+    let pb = run_still(b.path(), STILL_SCRIPT);
+    assert_eq!(pa.len(), 1, "one still");
+    assert_eq!(pb.len(), 1);
+
+    let (ba, bb) = (
+        std::fs::read(&pa[0]).expect("read"),
+        std::fs::read(&pb[0]).expect("read"),
+    );
+    assert!(!ba.is_empty());
+    assert_eq!(
+        ba,
+        bb,
+        "two runs of one script produced different images ({} vs {} bytes)",
+        ba.len(),
+        bb.len()
+    );
+    // ...and the name is reproducible too, since it comes from the scripted
+    // clock rather than the wall clock.
+    assert_eq!(pa[0].file_name(), pb[0].file_name());
+}
+
+#[test]
+fn a_still_is_the_size_the_script_asked_for() {
+    // Not egui's 10000 x 10000 fallback, which would be a 400 MB image.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let paths = run_still(dir.path(), STILL_SCRIPT);
+    let decoder = png::Decoder::new(std::io::BufReader::new(
+        std::fs::File::open(&paths[0]).expect("open"),
+    ));
+    let info = decoder.read_info().expect("info");
+    assert_eq!((info.info().width, info.info().height), (640, 480));
+}
+
+#[test]
+fn a_still_actually_contains_the_window_rather_than_a_blank_frame() {
+    // The failure this guards against is *plausible*: a mesh whose texture was
+    // never uploaded simply does not draw, so a missing font atlas yields an
+    // almost-empty image rather than an error — and egui draws solid shapes
+    // from a white texel in that same atlas, so nearly everything vanishes at
+    // once.  Distinct colours is the cheapest assertion that the frame is real.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let paths = run_still(dir.path(), STILL_SCRIPT);
+    let decoder = png::Decoder::new(std::io::BufReader::new(
+        std::fs::File::open(&paths[0]).expect("open"),
+    ));
+    let mut reader = decoder.read_info().expect("info");
+    let mut buf = vec![0; reader.output_buffer_size().expect("size")];
+    let info = reader.next_frame(&mut buf).expect("decode");
+
+    let distinct: std::collections::HashSet<[u8; 4]> = buf[..info.buffer_size()]
+        .chunks_exact(4)
+        .map(|p| [p[0], p[1], p[2], p[3]])
+        .collect();
+    assert!(
+        distinct.len() > 100,
+        "only {} distinct colours — the frame is probably mostly unrendered",
+        distinct.len()
+    );
+    // Every pixel opaque: the window has no transparency, and an alpha hole
+    // would read as a rendering bug.
+    assert!(
+        buf[..info.buffer_size()]
+            .chunks_exact(4)
+            .all(|p| p[3] == 255),
+        "a still should be fully opaque"
+    );
+}
+
+#[test]
+fn a_script_without_a_still_is_unaffected_by_the_capture_path() {
+    // The zero-cost claim, made checkable: with no `still` the driver builds no
+    // capturer, so it never draws and never tessellates.  If that ever changed,
+    // the dump would be the first thing to notice.
+    let plain = "size 640x480\n0.00 source CW\n";
+    let opts = |script: &str| orion_sdr_view::replay::RunOptions {
+        script: Some(script.to_owned()),
+        duration: Some(1.0),
+        ..Default::default()
+    };
+    let (mut a, mut b) = (Vec::new(), Vec::new());
+    orion_sdr_view::replay::run_into(
+        orion_sdr_view::config::ViewConfig::empty(),
+        &opts(plain),
+        &mut a,
+    )
+    .expect("run");
+    orion_sdr_view::replay::run_into(
+        orion_sdr_view::config::ViewConfig::empty(),
+        &opts(plain),
+        &mut b,
+    )
+    .expect("run");
+    assert_eq!(a, b);
+    assert!(
+        !a.is_empty(),
+        "the run should still have measured something"
+    );
+}
+
+#[test]
+fn a_still_carries_its_label_into_the_filename_and_sidecar() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let paths = run_still(
+        dir.path(),
+        "size 640x480\n0.00 source COFDM\n1.50 still band_edge\n",
+    );
+    let name = paths[0].file_name().unwrap_or_default().to_string_lossy();
+    assert!(name.ends_with("-band_edge.png"), "{name}");
+
+    let meta: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(sidecar_path(&paths[0])).expect("sidecar"))
+            .expect("json");
+    assert_eq!(meta["kind"], "still");
+    assert_eq!(meta["label"], "band_edge");
+    assert_eq!(meta["source"], "COFDM");
+    assert_eq!(meta["width"], 640);
+}

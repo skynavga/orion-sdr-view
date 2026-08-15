@@ -34,6 +34,7 @@ dump     run.jsonl
 | `key <[mod+]Name>` | Press and release one key within a single pass. Modifiers are spelled out: `shift+`, `ctrl+`, `alt+`, `cmd+` |
 | `source <name>` | Select a source by name, case- and punctuation-insensitively |
 | `text <literal>` | Deliver a text event — the only way to reach the marker, help and dB-reference bindings |
+| `still [label]` | Capture the whole window to the capture directory |
 | `pane <name> [label]` | Write one pane's raster to the capture directory |
 | `assert <name> [args]` | A property for the *test harness* to check; the replay driver parses it and ignores it |
 
@@ -129,6 +130,44 @@ whole run at the end.
 A file genuinely called `-` is still reachable as `./-`, which is the escape hatch the same
 convention offers everywhere else. Only the whole path counts: `runs/-`, `dash-` and `-.jsonl` are
 ordinary files.
+
+## Capturing the window
+
+`still` captures everything the viewer draws — HUD, spectrum, panes, decode bar and overlays — with
+no window, no renderer and no GPU:
+
+```text
+capture ./shots
+size 1200x828
+duration 8
+
+0.00 source COFDM
+1.00 key D
+5.00 still cofdm
+```
+
+**The frame is rasterized on the CPU**, and that is a deliberate choice over rendering it on a GPU.
+A GPU render cannot promise the same bytes twice — fill rules and texture filtering vary by vendor
+and driver version — and a capture that cannot be reproduced is no use as a test fixture, because a
+difference could not be told from a different machine. Two runs of one script produce
+**byte-identical PNGs**, which a test pins.
+
+What makes that cheap to guarantee is what egui already does. Its preferred framebuffer is *not*
+sRGB, so the fragment stage is the whole of `vertex_colour × texture_sample` with no colour-space
+conversion — no `powf`, and therefore no libm transcendental whose result can differ between x86
+and ARM. Anti-aliasing is already carried in the geometry, since epaint feathers edges by emitting
+extra triangles, and MSAA is off; so coverage is one sample per pixel centre. Every operation is
+`+`, `-`, `*`, `/` or a comparison: IEEE-correctly-rounded, and identical everywhere.
+
+### It costs nothing unless a script asks for it
+
+A run whose script contains no `still` **never draws and never tessellates**. The decision is made
+once, before the loop, from the parsed script; without one the driver builds no rasterizer at all
+and behaves exactly as it did before the feature existed. A test compares the dumps of two such
+runs to keep it that way.
+
+Drawn frames are the expensive ones, so capture at moments rather than continuously. There is no
+video path here for that reason.
 
 ## Capturing a pane
 

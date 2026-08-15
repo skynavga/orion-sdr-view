@@ -108,6 +108,16 @@ pub enum Action {
     /// away the source is, which is the part a script cannot know and the part
     /// that goes stale.
     Source { mode: SourceMode },
+    /// Capture the whole window to the capture directory.
+    ///
+    /// Unlike [`Pane`](Self::Pane), this is everything the viewer draws — HUD,
+    /// decode bar, overlays and all — which means the frame has to be *drawn*,
+    /// and drawn frames are the only expensive ones in a headless run.  A
+    /// script that never asks for one pays nothing.
+    Still {
+        /// Appended to the filename, so a script taking several is readable.
+        label: Option<String>,
+    },
     /// Write one pane's raster to the capture directory.
     ///
     /// **Not a screenshot.**  The waterfall, spectrogram and persistence panes
@@ -176,8 +186,8 @@ impl Action {
             // needs is the reader's business, not the event's.
             Self::Source { .. } => key_events(egui::Key::I, egui::Modifiers::default()),
             Self::Text { text } => vec![egui::Event::Text(text.clone())],
-            // Neither delivers input: one writes a file, the other is checked.
-            Self::Pane { .. } | Self::Assert { .. } => Vec::new(),
+            // None delivers input: two write a file, the third is checked.
+            Self::Still { .. } | Self::Pane { .. } | Self::Assert { .. } => Vec::new(),
         }
     }
 
@@ -526,9 +536,9 @@ fn parse_step(text: &str, line: usize) -> Result<Step, ScriptError> {
         return Err(err(format!("time `{t_word}` must be finite and >= 0")));
     }
 
-    let verb = words
-        .next()
-        .ok_or_else(|| err("expected `key`, `source`, `pane`, `text` or `assert`".to_owned()))?;
+    let verb = words.next().ok_or_else(|| {
+        err("expected `key`, `source`, `still`, `pane`, `text` or `assert`".to_owned())
+    })?;
     let rest: Vec<&str> = words.collect();
 
     // A trailing `xN` repeat count applies to key and text alike.
@@ -573,6 +583,18 @@ fn parse_step(text: &str, line: usize) -> Result<Step, ScriptError> {
                 ))
             })?;
             Action::Source { mode }
+        }
+        "still" => {
+            if repeat != 1 {
+                return Err(err(
+                    "`still` takes no repeat count; capturing the same frame twice \
+                     would only overwrite it"
+                        .to_owned(),
+                ));
+            }
+            Action::Still {
+                label: parse_label(&rest, line)?,
+            }
         }
         "pane" => {
             if repeat != 1 {
@@ -622,7 +644,7 @@ fn parse_step(text: &str, line: usize) -> Result<Step, ScriptError> {
         other => {
             return Err(err(format!(
                 "`{other}` is not a directive \
-                 (expected `key`, `source`, `pane`, `text` or `assert`)"
+                 (expected `key`, `source`, `still`, `pane`, `text` or `assert`)"
             )));
         }
     };

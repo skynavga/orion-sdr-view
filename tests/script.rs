@@ -499,3 +499,36 @@ fn a_label_that_would_not_survive_a_filesystem_is_refused() {
         );
     }
 }
+
+#[test]
+fn a_still_directive_captures_the_whole_window() {
+    // Distinct from `pane`, which writes one pane's own raster: a still is
+    // everything the viewer draws, so the frame has to be drawn for it.
+    let s = Script::parse("0.0 still\n").expect("parses");
+    assert_eq!(s.steps[0].action, Action::Still { label: None });
+    assert!(s.steps[0].action.events().is_empty(), "it writes a file");
+
+    let s = Script::parse("0.0 still band_edge\n").expect("parses");
+    assert_eq!(
+        s.steps[0].action,
+        Action::Still {
+            label: Some("band_edge".to_owned())
+        }
+    );
+}
+
+#[test]
+fn a_bad_still_directive_names_itself() {
+    for (src, needle) in [
+        ("0.0 still two words", "one whitespace-free word"),
+        ("0.0 still a/b", "only letters, digits"),
+        ("0.0 still x2", "takes no repeat count"),
+    ] {
+        let e = Script::parse(src).expect_err(&format!("`{src}` should not parse"));
+        assert!(
+            e.message.contains(needle),
+            "`{src}` gave `{}`, expected `{needle}`",
+            e.message
+        );
+    }
+}
