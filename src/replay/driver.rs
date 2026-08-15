@@ -107,6 +107,24 @@ impl std::error::Error for RunError {}
 /// decoding, not a proportion of the script.
 pub const DEFAULT_TAIL_SECS: f32 = 1.0;
 
+/// The logical window size a headless pass lays out in, when nothing says
+/// otherwise.
+///
+/// **A headless pass supplies no `screen_rect` unless one is set**, and egui's
+/// fallback is 10000 x 10000 at scale 1 — measured, not guessed.  Nothing
+/// consults the layout while the driver only advances and handles keys, so this
+/// changes no existing behaviour; it matters the moment anything *draws*, where
+/// the fallback would put every layout-dependent path at a width no window has
+/// and make a capture 400 MB.
+///
+/// The interactive window's size, so a scripted reproduction lays out the way a
+/// user's does.
+pub const DEFAULT_SIZE: (f32, f32) = (1200.0, 800.0 + crate::app::DECODE_BAR_H);
+
+/// Pixels per point, when nothing says otherwise.  1.0 rather than the 2.0 a
+/// Retina display reports, so a run's output does not depend on the machine.
+pub const DEFAULT_SCALE: f32 = 1.0;
+
 /// The dump path that means **standard output** rather than a file.
 ///
 /// The same spelling `curl -o -`, `tar -f -` and `sort -o -` use, so a reader
@@ -150,6 +168,10 @@ pub struct RunOptions {
     /// 1/60 s to match the interactive app, which is what makes a scripted
     /// reproduction and a hand-driven one comparable.
     pub dt: f32,
+    /// Logical window size.  **Overrides the script's own `size`.**
+    pub size: Option<(f32, f32)>,
+    /// Pixels per point.  **Overrides the script's own `scale`.**
+    pub scale: Option<f32>,
 }
 
 impl Default for RunOptions {
@@ -158,6 +180,8 @@ impl Default for RunOptions {
             script: None,
             duration: None,
             dt: 1.0 / 60.0,
+            size: None,
+            scale: None,
         }
     }
 }
@@ -299,6 +323,17 @@ fn drive<W: Write>(
     // loop also waits on the step iterator.  So this can cut a script short or
     // extend it into its steady state.  With nothing named at all, the run ends
     // a fixed margin past the last step; see `DEFAULT_TAIL_SECS`.
+    // Command line over script over default, the same precedence as `duration`.
+    let (w, h) = opts
+        .size
+        .or_else(|| script.and_then(|s| s.settings.size))
+        .unwrap_or(DEFAULT_SIZE);
+    let scale = opts
+        .scale
+        .or_else(|| script.and_then(|s| s.settings.scale))
+        .unwrap_or(DEFAULT_SCALE);
+    let viewport = (w, h, scale);
+
     let script_end = script
         .and_then(|s| s.steps.last())
         .map_or(0.0, |s| s.t_secs);
@@ -381,7 +416,7 @@ fn drive<W: Write>(
             None => (Vec::new(), egui::Modifiers::default()),
         };
 
-        samples += step_once(&ctx, &mut app, opts.dt, events, modifiers);
+        samples += step_once(&ctx, &mut app, opts.dt, events, modifiers, viewport);
         frames += 1;
         let t = frames as f32 * opts.dt;
 
@@ -424,19 +459,41 @@ fn step_once(
     dt: f32,
     events: Vec<egui::Event>,
     modifiers: egui::Modifiers,
+    viewport: (f32, f32, f32),
 ) -> u64 {
     let before = app.samples_consumed();
-    ctx.begin_pass(egui::RawInput {
-        events,
-        modifiers,
-        ..Default::default()
-    });
+    ctx.begin_pass(raw_input(events, modifiers, viewport));
     app.advance(ctx, dt);
     // `handle_keys` runs from `draw`, not `advance`; a driver that only advances
     // would process samples and never see a keystroke.
     app.handle_keys(ctx);
     let _ = ctx.end_pass();
     app.samples_consumed() - before
+}
+
+/// The pass's raw input, at a stated size and scale.
+///
+/// `screen_rect` and `native_pixels_per_point` are set explicitly because a
+/// headless pass has no window to report them.  See [`DEFAULT_SIZE`].
+fn raw_input(
+    events: Vec<egui::Event>,
+    modifiers: egui::Modifiers,
+    (w, h, scale): (f32, f32, f32),
+) -> egui::RawInput {
+    let mut raw = egui::RawInput {
+        events,
+        modifiers,
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(w, h),
+        )),
+        ..Default::default()
+    };
+    // The scale lives on the viewport, not beside `screen_rect`: egui reads it
+    // as `raw_input.viewport().native_pixels_per_point`.
+    let id = raw.viewport_id;
+    raw.viewports.entry(id).or_default().native_pixels_per_point = Some(scale);
+    raw
 }
 
 /// Write whatever this frame produced.

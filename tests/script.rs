@@ -375,3 +375,60 @@ fn a_script_with_no_settings_carries_none() {
     assert_eq!(s.settings, ScriptSettings::default());
     assert_eq!(s.settings.dump, None, "no dump named, no dump written");
 }
+
+// ── Viewport size and scale ─────────────────────────────────────────────────
+
+#[test]
+fn a_script_can_state_the_size_and_scale_it_lays_out_at() {
+    // A headless pass supplies no `screen_rect` unless something sets one, and
+    // egui's fallback is 10000 x 10000 — a size no window has, and one that
+    // would make a capture 400 MB.
+    let s = Script::parse("size 1600x900\nscale 2\n0.0 key Q\n").expect("parses");
+    assert_eq!(s.settings.size, Some((1600.0, 900.0)));
+    assert_eq!(s.settings.scale, Some(2.0));
+    assert_eq!(s.steps.len(), 1, "a setting is not a step");
+}
+
+#[test]
+fn a_size_is_written_the_way_every_other_tool_writes_one() {
+    for (spec, want) in [
+        ("1200x828", (1200.0, 828.0)),
+        ("1200X828", (1200.0, 828.0)),
+        ("640x480", (640.0, 480.0)),
+    ] {
+        let s = Script::parse(&format!("size {spec}\n0.0 key Q\n")).expect("parses");
+        assert_eq!(s.settings.size, Some(want), "{spec}");
+    }
+}
+
+#[test]
+fn a_bad_size_or_scale_names_itself() {
+    // Bounded at both ends.  The upper bound is the point of the setting: the
+    // 10000 x 10000 fallback is what it exists to replace, so accepting it back
+    // through the front door would be absurd.
+    for (src, needle) in [
+        ("size 1200\n", "not a size"),
+        ("size axb\n", "not a size"),
+        ("size 10000x10000\n", "not a size"),
+        ("size 4x4\n", "not a size"),
+        ("scale nope\n", "not a scale factor"),
+        ("scale 0\n", "between 0.1 and 8.0"),
+        ("scale 99\n", "between 0.1 and 8.0"),
+        ("size 800x600\nsize 640x480\n", "more than once"),
+        ("scale 1\nscale 2\n", "more than once"),
+    ] {
+        let e = Script::parse(src).expect_err(&format!("`{src}` should not parse"));
+        assert!(
+            e.message.contains(needle),
+            "`{src}` gave `{}`, expected `{needle}`",
+            e.message
+        );
+    }
+}
+
+#[test]
+fn a_script_with_no_viewport_settings_carries_none() {
+    let s = Script::parse("0.0 key Q\n").expect("parses");
+    assert_eq!(s.settings.size, None);
+    assert_eq!(s.settings.scale, None);
+}

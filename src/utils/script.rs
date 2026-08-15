@@ -221,6 +221,15 @@ pub struct ScriptSettings {
     pub dump: Option<PathBuf>,
     /// How long to run, in scripted seconds.
     pub duration: Option<f32>,
+    /// Logical window size, in points.
+    ///
+    /// A headless pass supplies no `screen_rect` unless something sets one, and
+    /// egui's fallback is 10000 x 10000 — a size no window has.  Nothing
+    /// consults the layout while the driver only advances and handles keys, but
+    /// anything that *draws* needs a real one.
+    pub size: Option<(f32, f32)>,
+    /// Pixels per point.  2.0 is a Retina-class display.
+    pub scale: Option<f32>,
 }
 
 /// A parsed script: run settings plus steps in ascending time order.
@@ -290,6 +299,8 @@ enum Line {
 enum Setting {
     Dump(PathBuf),
     Duration(f32),
+    Size(f32, f32),
+    Scale(f32),
 }
 
 impl Setting {
@@ -316,6 +327,18 @@ impl Setting {
                 }
                 settings.duration = Some(d);
             }
+            Setting::Size(w, h) => {
+                if settings.size.is_some() {
+                    return Err(dup("size"));
+                }
+                settings.size = Some((w, h));
+            }
+            Setting::Scale(s) => {
+                if settings.scale.is_some() {
+                    return Err(dup("scale"));
+                }
+                settings.scale = Some(s);
+            }
         }
         Ok(())
     }
@@ -326,7 +349,7 @@ impl Setting {
 /// Dispatching on the *first word* rather than on "does it parse as a number"
 /// is deliberate: a mistyped time like `0.O5 key Q` still reports "not a time in
 /// seconds" instead of "not a directive", so no existing diagnostic gets worse.
-const SETTING_VERBS: [&str; 2] = ["dump", "duration"];
+const SETTING_VERBS: [&str; 4] = ["dump", "duration", "scale", "size"];
 
 fn parse_line(text: &str, line: usize) -> Result<Line, ScriptError> {
     let first = text.split_whitespace().next().unwrap_or_default();
@@ -360,8 +383,39 @@ fn parse_setting(text: &str, line: usize) -> Result<Setting, ScriptError> {
             }
             Ok(Setting::Duration(secs))
         }
+        "size" => parse_size(arg)
+            .map(|(w, h)| Setting::Size(w, h))
+            .ok_or_else(|| {
+                err(format!(
+                    "`{arg}` is not a size; write it as WIDTHxHEIGHT in points, e.g. 1200x828"
+                ))
+            }),
+        "scale" => {
+            let s: f32 = arg
+                .parse()
+                .map_err(|_| err(format!("`{arg}` is not a scale factor")))?;
+            if !s.is_finite() || !(0.1..=8.0).contains(&s) {
+                return Err(err(format!("scale `{arg}` must be between 0.1 and 8.0")));
+            }
+            Ok(Setting::Scale(s))
+        }
         other => Err(err(format!("`{other}` is not a run setting"))),
     }
+}
+
+/// Parse `WIDTHxHEIGHT` in points.
+///
+/// `x` rather than a comma or a space: it is how every other tool spells a
+/// window size, and it keeps the value a single whitespace-free argument like
+/// every other setting's.
+fn parse_size(s: &str) -> Option<(f32, f32)> {
+    let (w, h) = s.split_once(['x', 'X'])?;
+    let (w, h): (f32, f32) = (w.trim().parse().ok()?, h.trim().parse().ok()?);
+    // An upper bound as well as a lower one: the whole reason this setting
+    // exists is that egui's 10000 x 10000 fallback is not a window, and a
+    // capture at that size would be 400 MB.
+    let ok = |v: f32| v.is_finite() && (16.0..=8192.0).contains(&v);
+    (ok(w) && ok(h)).then_some((w, h))
 }
 
 fn parse_step(text: &str, line: usize) -> Result<Step, ScriptError> {

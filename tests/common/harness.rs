@@ -90,11 +90,23 @@ impl Harness {
 
     /// One complete pass: deliver `events`, advance by `DT`, run key handling.
     pub fn frame(&mut self, events: Vec<egui::Event>, modifiers: egui::Modifiers) {
-        self.ctx.begin_pass(egui::RawInput {
+        // A real window size, not egui's 10000 x 10000 fallback for a pass that
+        // supplies none.  Matches the driver's `DEFAULT_SIZE`, so a script
+        // replayed here and by the driver lays out identically.
+        let (w, h) = orion_sdr_view::replay::DEFAULT_SIZE;
+        let mut raw = egui::RawInput {
             events,
             modifiers,
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(w, h),
+            )),
             ..Default::default()
-        });
+        };
+        let id = raw.viewport_id;
+        raw.viewports.entry(id).or_default().native_pixels_per_point =
+            Some(orion_sdr_view::replay::DEFAULT_SCALE);
+        self.ctx.begin_pass(raw);
         self.app.advance(&self.ctx, Self::DT);
         self.app.handle_keys(&self.ctx);
         let out = self.ctx.end_pass();

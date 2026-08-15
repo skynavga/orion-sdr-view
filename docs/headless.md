@@ -70,7 +70,14 @@ not free, since it flushes the decode pipeline and restarts the burst.
 
 ## Run settings, and what overrides what
 
-`duration` and `dump` take no time column, because they configure the run rather than happen during
+| Setting | Meaning |
+| --- | --- |
+| `duration <secs>` | How long to run |
+| `dump <path>` | Where the measurement stream goes; `-` is stdout |
+| `size <W>x<H>` | Logical window size, in points |
+| `scale <n>` | Pixels per point; `2` is a Retina-class display |
+
+They take no time column, because they configure the run rather than happen during
 it. They let a script be a complete recipe — what to press, how long for, and where the answer goes
 — instead of a file that needs a remembered command line beside it.
 
@@ -86,6 +93,17 @@ With neither naming a value:
 - **no dump** → nothing is written. The run is still worth doing: it fails on a panic, an
   unparsable script or a dropped chunk just the same. A dump of `-` writes to stdout instead; see
   [below](#dumping-to-stdout).
+
+### Size and scale
+
+A headless pass has no window, so it supplies no `screen_rect` — and egui's fallback for one that
+does not is **10000 x 10000 at scale 1**, a size no window has. The driver therefore states one:
+1200 x 828 at scale 1, the interactive window's own size, so a scripted reproduction lays out the
+way a user's session does.
+
+Nothing consults the layout while a run only advances the DSP and handles keys, so this changes no
+measurement — pinned by a test that runs the same script at two sizes and compares the dumps. It
+matters to anything that *draws*.
 
 `--duration` may also be shorter than the script. Every step still runs — the loop waits on the
 script as well as the clock — so cutting a run short cannot silently skip the actions that were
