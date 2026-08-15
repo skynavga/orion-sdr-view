@@ -118,6 +118,20 @@ impl Textures {
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
     }
+
+    /// Every texture held, for a consumer that needs the whole set rather than
+    /// one frame's delta — the GPU oracle, which must be given the font atlas
+    /// even though it was uploaded long before the frame being compared.
+    pub fn iter(&self) -> impl Iterator<Item = (&TextureId, &Texture)> {
+        self.map.iter()
+    }
+
+    /// A copy of the whole set.
+    pub fn clone_set(&self) -> Self {
+        Self {
+            map: self.map.clone(),
+        }
+    }
 }
 
 /// What a rasterized frame produced.
@@ -225,6 +239,24 @@ fn edge(a: (f32, f32), b: (f32, f32), c: (f32, f32)) -> f32 {
     (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0)
 }
 
+/// Whether the directed edge `a -> b` is a *top* or *left* edge of a
+/// positively-wound triangle, in screen coordinates with y increasing downward.
+///
+/// **This is what stops a shared edge being drawn twice.** Two triangles of a
+/// quad meet along its diagonal, and any pixel centre lying exactly on that
+/// diagonal is inside *both* by a plain `>= 0` test. Drawing it twice is
+/// invisible for opaque geometry and very visible for translucent geometry —
+/// and egui's anti-aliasing is made of translucent triangles, so without this
+/// every feathered edge in the frame would blend twice and seam.
+///
+/// A top edge is horizontal with the interior below it, which for positive
+/// winding means it runs left to right. A left edge has the interior to its
+/// right, which means it runs upward.
+fn is_top_left(a: (f32, f32), b: (f32, f32)) -> bool {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    (dy == 0.0 && dx > 0.0) || dy < 0.0
+}
+
 fn draw_triangle(
     canvas: &mut [[u8; 4]],
     stride: usize,
@@ -233,14 +265,22 @@ fn draw_triangle(
     clip: &ClipRect,
     ppp: f32,
 ) {
-    let p: [(f32, f32); 3] = [
+    let mut p: [(f32, f32); 3] = [
         (v[0].pos.x * ppp, v[0].pos.y * ppp),
         (v[1].pos.x * ppp, v[1].pos.y * ppp),
         (v[2].pos.x * ppp, v[2].pos.y * ppp),
     ];
-    let area = edge(p[0], p[1], p[2]);
+    let mut v = v;
+    let mut area = edge(p[0], p[1], p[2]);
     if area == 0.0 {
         return; // degenerate: no coverage
+    }
+    // egui emits both windings.  Normalizing to positive lets the fill rule
+    // below be stated once, in the orientation it is derived for.
+    if area < 0.0 {
+        p.swap(1, 2);
+        v.swap(1, 2);
+        area = -area;
     }
 
     // Bounding box, clamped to the clip rect.
@@ -253,6 +293,11 @@ fn draw_triangle(
     }
 
     let inv_area = 1.0 / area;
+    let top_left = [
+        is_top_left(p[1], p[2]),
+        is_top_left(p[2], p[0]),
+        is_top_left(p[0], p[1]),
+    ];
     let cols: [[f32; 4]; 3] = [unpack(v[0].color), unpack(v[1].color), unpack(v[2].color)];
     let uvs: [(f32, f32); 3] = [
         (v[0].uv.x, v[0].uv.y),
@@ -265,14 +310,16 @@ fn draw_triangle(
             // A single sample at the pixel centre: MSAA is off, and epaint's
             // feathering already carries the anti-aliasing as geometry.
             let s = (x as f32 + 0.5, y as f32 + 0.5);
-            let w0 = edge(p[1], p[2], s) * inv_area;
-            let w1 = edge(p[2], p[0], s) * inv_area;
-            let w2 = edge(p[0], p[1], s) * inv_area;
-            // Normalized weights are all non-negative inside the triangle for
-            // either winding, since `inv_area` carries the sign.
-            if w0 < 0.0 || w1 < 0.0 || w2 < 0.0 {
+            let e0 = edge(p[1], p[2], s);
+            let e1 = edge(p[2], p[0], s);
+            let e2 = edge(p[0], p[1], s);
+            // Top-left fill rule: a pixel exactly on an edge belongs to the
+            // triangle only if that edge is a top or left one, so two triangles
+            // sharing an edge cover it exactly once between them.
+            if !(inside(e0, top_left[0]) && inside(e1, top_left[1]) && inside(e2, top_left[2])) {
                 continue;
             }
+            let (w0, w1, w2) = (e0 * inv_area, e1 * inv_area, e2 * inv_area);
 
             let u = w0 * uvs[0].0 + w1 * uvs[1].0 + w2 * uvs[2].0;
             let vv = w0 * uvs[0].1 + w1 * uvs[1].1 + w2 * uvs[2].1;
@@ -290,6 +337,11 @@ fn draw_triangle(
             *dst = blend(src, *dst);
         }
     }
+}
+
+/// Whether an edge value counts as inside, given the edge's top-left status.
+fn inside(e: f32, top_left: bool) -> bool {
+    if top_left { e >= 0.0 } else { e > 0.0 }
 }
 
 /// Premultiplied source-over, matching the pipeline's blend state:

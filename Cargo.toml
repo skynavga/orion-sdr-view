@@ -61,3 +61,10 @@ png = "0.18"
 
 [dev-dependencies]
 tempfile = "3"
+# The GPU oracle in `tests/raster_oracle.rs`, which renders the same primitives
+# through the real pipeline and compares them against the CPU rasterizer.  Dev
+# dependencies rather than real ones: nothing ships with this, and both crates
+# are already in the tree via eframe, so it costs no extra compilation.
+wgpu = "29"
+egui-wgpu = "0.35"
+pollster = "0.4"

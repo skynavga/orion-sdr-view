@@ -1987,15 +1987,18 @@ dependencies = [
  "clap",
  "eframe",
  "egui",
+ "egui-wgpu",
  "hound",
  "num-complex",
  "orion-sdr",
  "png",
+ "pollster",
  "rustfft",
  "serde",
  "serde_json",
  "serde_yaml",
  "tempfile",
+ "wgpu",
 ]
 
 [[package]]

@@ -273,6 +273,59 @@ impl Harness {
             .write_still_raster(dir, label, raster.width, raster.height, &raster.rgba)
     }
 
+    /// Draw one frame and return its tessellated primitives, this frame's
+    /// texture deltas, and the accumulated texture set.
+    ///
+    /// The seam the GPU oracle compares across: both renderers are handed
+    /// exactly these primitives, so any difference between their images is a
+    /// difference between the renderers rather than between the frames.
+    pub fn frame_primitives(
+        &mut self,
+        size: (f32, f32),
+    ) -> (
+        Vec<egui::epaint::ClippedPrimitive>,
+        egui::TexturesDelta,
+        orion_sdr_view::capture::Textures,
+    ) {
+        let (w, h) = size;
+        self.ctx.begin_pass(egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(w, h),
+            )),
+            ..Default::default()
+        });
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w, h));
+        let mut ui = egui::Ui::new(
+            self.ctx.clone(),
+            egui::Id::new("oracle_frame"),
+            egui::UiBuilder::new().max_rect(rect),
+        );
+        self.app.draw_ui(&mut ui);
+        let out = self.ctx.end_pass();
+        self.textures.apply(&out.textures_delta);
+        self.frames += 1;
+        let primitives = self.ctx.tessellate(out.shapes, 1.0);
+        // The accumulated set is cloned out because the GPU needs *every*
+        // texture, not only this frame's patch — the font atlas was uploaded
+        // long before the frame that draws with it.
+        let mut all = egui::TexturesDelta::default();
+        for (id, tex) in self.textures.iter() {
+            all.set.push((
+                *id,
+                egui::epaint::ImageDelta::full(
+                    egui::epaint::ImageData::Color(std::sync::Arc::new(egui::ColorImage {
+                        size: [tex.width, tex.height],
+                        pixels: tex.pixels.clone(),
+                        source_size: egui::vec2(tex.width as f32, tex.height as f32),
+                    })),
+                    egui::TextureOptions::LINEAR,
+                ),
+            ));
+        }
+        (primitives, all, self.textures.clone_set())
+    }
+
     /// Replay a script, executing its `assert` directives.
     ///
     /// Panics naming the offending source line, so a failure points at the

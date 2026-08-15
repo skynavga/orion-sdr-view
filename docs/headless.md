@@ -159,6 +159,18 @@ and ARM. Anti-aliasing is already carried in the geometry, since epaint feathers
 extra triangles, and MSAA is off; so coverage is one sample per pixel centre. Every operation is
 `+`, `-`, `*`, `/` or a comparison: IEEE-correctly-rounded, and identical everywhere.
 
+The CPU renderer is checked against the real GPU pipeline by
+`tests/raster_oracle.rs`, which renders the same primitives through `egui-wgpu` offscreen: on a
+full COFDM window, 1.2% of pixels differ at all with a worst channel delta of 2 of 255 — edge
+coverage on feathered text, and no systematic error.
+
+**Reproducible across runs, not across architectures.** Two runs on one machine give identical
+bytes. Two *different* machines may not, and the rasterizer is not why: `rustfft` dispatches to AVX
+on x86-64 and Neon on AArch64, so the spectrum itself differs in its last bits and every pixel
+downstream inherits that. A committed golden image of a captured frame will therefore fail when
+the architecture changes. Compare within one architecture, or assert on regions and statistics
+rather than whole images.
+
 ### It costs nothing unless a script asks for it
 
 A run whose script contains no `still` **never draws and never tessellates**. The decision is made
