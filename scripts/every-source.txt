@@ -5,14 +5,15 @@
 # COFDM), `info` and `text` records show what each one decodes, and `gap` records
 # mark the silences between bursts.
 #
-# The repeat counts are frames, not events: `key_pressed` is a per-pass boolean,
-# so five presses inside one pass would register as one.
+# Each stop is named rather than counted.  A file that walks the whole list is
+# exactly the one a new or reordered source would break, and it would break
+# quietly: `key I` still parses and still runs, just onto a different source.
 
 duration 40
 
-0.00  key I        # -> CW
-6.00  key I        # -> AM DSB
-12.00 key I        # -> PSK31
-18.00 key I        # -> FT8
-24.00 key I        # -> COFDM
-30.00 key I        # -> Test Tone (wraps)
+0.00  source CW
+6.00  source AM DSB
+12.00 source PSK31
+18.00 source FT8
+24.00 source COFDM
+30.00 source Test Tone   # one more press: COFDM is last, so `I` wraps to the first

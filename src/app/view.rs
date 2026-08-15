@@ -6,12 +6,14 @@ use std::sync::{Arc, Mutex};
 
 use eframe::egui;
 
+use super::capture::CaptureController;
 use super::freqview::{FreqMarker, FreqView};
 use super::persistence::PersistenceRenderer;
 use super::settings::{AmDsbSettings, CwSettings, Psk31Settings, SettingsState, ToneSettings};
 use super::spectrogram::SpectrogramDisplay;
 use super::spectrum::{RingBuffer, SpectrumProcessor};
 use super::waterfall::WaterfallDisplay;
+use crate::capture::{CaptureTag, SceneInfo};
 use crate::config::ViewConfig;
 use crate::decode::{
     DecodeChunk, DecodeConfig, DecodeResult, DecodeState, DecodeTicker, DecodeWorker,
@@ -124,6 +126,19 @@ pub struct ViewApp {
     /// time is not: the per-frame budget is `dt * fs` clamped to
     /// [`MAX_SAMPLES_PER_FRAME`], and at COFDM's 1.92 MHz that clamp binds.
     samples_consumed: u64,
+    /// Messages for the user that must not be drawn into the window, since
+    /// anything drawn there lands in the capture.  Emitted on stderr, drained
+    /// each frame.
+    pub(super) notices: Vec<(crate::utils::term::Level, String)>,
+    /// Still and video capture.  See [`CaptureController`].
+    pub(super) capture: CaptureController,
+    /// The recording indicator last written to the window title.
+    ///
+    /// **The indicator goes in the title, not the HUD**, because the readback
+    /// covers the client area alone: anything drawn into the window would be
+    /// captured, and a recording badge burnt into every frame is exactly what a
+    /// capture must not contain.
+    title_shows_rec: bool,
 }
 
 /// Decoding on the caller's thread instead of a worker.
@@ -283,6 +298,14 @@ impl ViewApp {
             time_zone_offset_min: 0,
             clock,
             samples_consumed: 0,
+            notices: Vec::new(),
+            capture: CaptureController::new(
+                cfg.capture_dir(),
+                cfg.capture_fps(),
+                cfg.capture_format(),
+                cfg.capture_overlays(),
+            ),
+            title_shows_rec: false,
         };
         app.time_zone_offset_min = cfg.time_zone_offset_min();
         // Precedence rule, step 1 of 3: the configured zoom applies at startup.
@@ -406,6 +429,170 @@ impl ViewApp {
         self.sync_settings();
     }
 
+    // ── Capture ───────────────────────────────────────────────────────────────
+
+    /// What the viewer is showing, for a capture's metadata sidecar.
+    ///
+    /// The *displayed* state rather than internals: a PNG says nothing about
+    /// which source made it, at what rate, over what span, or against what dB
+    /// scale, and without those the picture cannot be read.
+    pub(super) fn scene_info(&self) -> SceneInfo {
+        SceneInfo {
+            source: self.source_mode.label().to_owned(),
+            fs_hz: self.source.sample_rate(),
+            center_hz: self.freq_view.center_hz,
+            span_hz: self.freq_view.span_hz,
+            db_min: self.settings.db_min(),
+            db_max: self.settings.db_max(),
+            overlays: self.capture.draw_overlays(),
+        }
+    }
+
+    /// Override where captures are written, e.g. from `--capture <dir>`.
+    pub fn set_capture_dir(&mut self, dir: std::path::PathBuf) {
+        self.capture.set_dir(dir);
+    }
+
+    /// Where captures are being written.
+    pub fn capture_dir(&self) -> &std::path::Path {
+        self.capture.dir()
+    }
+
+    /// Whether a recording is running.
+    pub fn is_recording(&self) -> bool {
+        self.capture.is_recording()
+    }
+
+    /// `F` — capture one still.
+    ///
+    /// **One implementation, called from both key paths**, the same shape as
+    /// [`cycle_source_mode`](Self::cycle_source_mode).  Capturing *with* an
+    /// overlay up is a first-class use — a still of the settings or instrument
+    /// panel is what documentation wants — so a binding that worked in only one
+    /// state would be the `M` defect again.
+    pub(super) fn capture_still(&mut self, ctx: &egui::Context) {
+        let tag = self.capture.request_still(self.clock.now());
+        ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::new(tag)));
+    }
+
+    /// `V` — start or stop recording.
+    ///
+    /// In both key paths for a stronger reason than `F`: a stop press the
+    /// settings overlay swallowed would leave no way to stop recording without
+    /// first closing the panel.
+    pub(super) fn toggle_capture_recording(&mut self, ctx: &egui::Context) {
+        let scene = self.scene_info();
+        let started = self
+            .capture
+            .toggle_recording(scene, self.time_zone_offset_min);
+        if started {
+            self.warn_if_capture_would_mislead();
+        }
+        self.sync_recording_title(ctx);
+    }
+
+    /// Take every screenshot that came back this pass and dispatch it.
+    ///
+    /// The image arrives as an `egui::Event` in the pass's input, one or more
+    /// frames after the request — `egui-wgpu` copies to a staging buffer and
+    /// maps it asynchronously, so the render thread never stalls on the
+    /// readback.  Matching is by the `seq` on the returned tag rather than by
+    /// arrival order, so an image cannot be attributed to the wrong request.
+    fn receive_captures(&mut self, ctx: &egui::Context) {
+        let shots: Vec<(CaptureTag, u32, u32, Vec<u8>)> = ctx.input(|i| {
+            i.events
+                .iter()
+                .filter_map(|e| match e {
+                    egui::Event::Screenshot {
+                        user_data, image, ..
+                    } => {
+                        let tag = user_data.data.as_ref()?.downcast_ref::<CaptureTag>()?;
+                        Some((
+                            *tag,
+                            image.width() as u32,
+                            image.height() as u32,
+                            image.as_raw().to_vec(),
+                        ))
+                    }
+                    _ => None,
+                })
+                .collect()
+        });
+        if shots.is_empty() {
+            return;
+        }
+        let scene = self.scene_info();
+        for (tag, w, h, rgba) in shots {
+            self.capture
+                .on_image(tag, w, h, rgba, scene.clone(), self.time_zone_offset_min);
+        }
+        self.drain_capture_notices(ctx);
+    }
+
+    /// Ask for this frame's image, if a recording is running.
+    fn request_recording_frame(&mut self, ctx: &egui::Context) {
+        if let Some(tag) = self.capture.request_recording_frame(self.clock.now()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::new(tag)));
+        }
+    }
+
+    /// Emit queued messages on stderr and re-sync the title.
+    ///
+    /// **On stderr rather than on screen.** A notice drawn into the window would
+    /// be captured — a recording whose frames carry "recording started" is not
+    /// the artifact anyone asked for.
+    pub(super) fn drain_capture_notices(&mut self, ctx: &egui::Context) {
+        let mut notices = self.capture.take_notices();
+        notices.append(&mut self.notices);
+        for (level, msg) in notices {
+            eprintln!("{}", crate::utils::term::notice(level, &msg));
+        }
+        // A recording can stop itself — a resize, or an encoder that died — so
+        // the title has to follow the state rather than the keypress.
+        self.sync_recording_title(ctx);
+    }
+
+    /// Warn when the active source's sample budget is clamped.
+    ///
+    /// **A recording of COFDM is not a recording of real time.** The per-frame
+    /// budget is `dt * fs` clamped to [`MAX_SAMPLES_PER_FRAME`]; at 1.92 MHz
+    /// that clamp binds hard, so the spectrum advances at a fraction of the rate
+    /// the burst timer believes.  Slowing the frame rate to record makes it
+    /// worse — and puts it in an artifact someone will later read as truth.
+    fn warn_if_capture_would_mislead(&mut self) {
+        let budget = (1.0 / 60.0 * self.source.sample_rate()) as usize;
+        if budget > MAX_SAMPLES_PER_FRAME {
+            let pct = 100.0 * MAX_SAMPLES_PER_FRAME as f32 / budget as f32;
+            self.notices.push((
+                crate::utils::term::Level::Warn,
+                format!(
+                    "capture: {} consumes only {pct:.0}% of real time per frame (the \
+                     {MAX_SAMPLES_PER_FRAME}-sample clamp binds), so the recording will \
+                     not play back at the rate the burst timer shows",
+                    self.source_mode.label()
+                ),
+            ));
+        }
+    }
+
+    /// Put `REC` in the window title while recording, and take it out after.
+    ///
+    /// Sent only on a change, since a viewport command every frame would be
+    /// pure churn.
+    fn sync_recording_title(&mut self, ctx: &egui::Context) {
+        let recording = self.capture.is_recording();
+        if recording == self.title_shows_rec {
+            return;
+        }
+        self.title_shows_rec = recording;
+        let title = if recording {
+            "orion-sdr-view  \u{25cf} REC"
+        } else {
+            "orion-sdr-view"
+        };
+        ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.to_owned()));
+    }
+
     /// Switch the active source to `mode`, constructing a new source box.
     pub(super) fn switch_source(&mut self, mode: SourceMode) {
         self.source_mode = mode;
@@ -522,6 +709,8 @@ impl ViewApp {
                 let mut cycle_audio = false;
                 let mut show_instrument = false;
                 let mut show_help = false;
+                let mut capture_still = false;
+                let mut toggle_recording = false;
                 ctx.input(|i| {
                     if i.key_pressed(egui::Key::X) {
                         show_instrument = true;
@@ -541,7 +730,23 @@ impl ViewApp {
                     if i.key_pressed(egui::Key::N) {
                         cycle_audio = true;
                     }
+                    if i.key_pressed(egui::Key::F) {
+                        capture_still = true;
+                    }
+                    if i.key_pressed(egui::Key::V) {
+                        toggle_recording = true;
+                    }
                 });
+                // Before the overlay-swapping early returns below: a capture
+                // *of* an overlay is the point, and a `V` that the settings
+                // panel swallowed would leave no way to stop recording without
+                // first closing the panel.
+                if capture_still {
+                    self.capture_still(ctx);
+                }
+                if toggle_recording {
+                    self.toggle_capture_recording(ctx);
+                }
                 // Swapping overlays, so the same exclusion the main handler
                 // applies: showing one closes the others, settings included.
                 if show_instrument {
@@ -576,6 +781,8 @@ impl ViewApp {
         let mut cycle_mode = false;
         let mut cycle_audio = false;
         let mut toggle_lock = false;
+        let mut capture_still = false;
+        let mut toggle_recording = false;
         // Frequency pan/zoom deltas to apply after the closure.
         let mut pan_delta: f32 = 0.0;
         let mut zoom_delta: f32 = 0.0; // added to zoom ratio; +0.5 coarse, +0.1 fine
@@ -602,6 +809,12 @@ impl ViewApp {
             }
             if i.key_pressed(egui::Key::I) {
                 toggle_source = true;
+            }
+            if i.key_pressed(egui::Key::F) {
+                capture_still = true;
+            }
+            if i.key_pressed(egui::Key::V) {
+                toggle_recording = true;
             }
             if i.key_pressed(egui::Key::C) {
                 // Toggle cycling on the persistent generator AND the active
@@ -901,6 +1114,12 @@ impl ViewApp {
             self.settings.set_db_max(self.db_max);
         }
 
+        if capture_still {
+            self.capture_still(ctx);
+        }
+        if toggle_recording {
+            self.toggle_capture_recording(ctx);
+        }
         if toggle_source {
             self.switch_source(self.source_mode.next());
             self.lock_source_to_center();
@@ -992,6 +1211,13 @@ impl ViewApp {
         // A scripted clock advances on the same `dt`, so a timestamp stamped
         // into decoded text is a function of scripted time alone.
         self.clock.advance(dt);
+
+        // Capture is state work, not drawing: an arriving image is handed to a
+        // writer thread and a new request is issued.  Both belong here, and the
+        // request must be issued *after* the clock advance, since the tag names
+        // the instant the frame it will produce depicts.
+        self.receive_captures(ctx);
+        self.request_recording_frame(ctx);
 
         // Pace sample consumption to wall-clock: pull `dt * fs` samples this
         // frame (clamped) rather than a fixed count.  This makes every source's
@@ -1195,16 +1421,25 @@ impl ViewApp {
                     self.draw_decode_bar(ui.painter_at(rect), rect);
                 });
         }
+        // `capture.overlays: false` suppresses them for the frames being
+        // captured.  **A frame cannot be rendered twice**, so "capture without
+        // overlays" necessarily means not drawing them at all this frame — the
+        // live window loses them too.  For a still that is one frame's flicker;
+        // for a recording it holds throughout, which is usually what a clean
+        // demo wants anyway.
+        let overlays = self.capture.draw_overlays();
         egui::CentralPanel::default().show(ui, |ui| {
             self.draw_panes(ui);
-            if self.show_help {
+            if self.show_help && overlays {
                 self.draw_help_overlay(ui);
             }
-            if self.show_instrument {
+            if self.show_instrument && overlays {
                 self.draw_instrument_overlay(ui);
             }
-            let mono = self.mono_font_id.clone();
-            self.settings.draw(ui, &mono);
+            if overlays {
+                let mono = self.mono_font_id.clone();
+                self.settings.draw(ui, &mono);
+            }
         });
     }
 

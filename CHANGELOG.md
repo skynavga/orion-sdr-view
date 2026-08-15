@@ -9,6 +9,57 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.27] - 2026-08-15
+
+### Added
+
+- **Image and video capture.** `F` captures a still, `V` starts and stops a
+  recording. Both read back the rendered surface, which is the window's client
+  area, so macOS decorations are excluded by construction — no cropping, no
+  scale-factor arithmetic, and no Screen Recording permission prompt. The
+  readback is asynchronous, so the render thread never stalls on it.
+- **A metadata sidecar beside every capture.** A PNG alone says nothing about
+  which source produced it, at what sample rate, over what span, or against what
+  dB scale, and a capture outlives the session that made it. Stills get a
+  `.json`; recordings get a manifest carrying frame counts as well.
+- **`--capture <DIR>`**, overriding `capture.dir`. Interactive only: it is
+  refused with `--headless`, which has no surface to read back.
+- **A `view.capture` config block** — `dir`, `overlays`, `fps` and `format`, all
+  optional and additive. Captures default to `./capture`, beside the project
+  rather than in `$HOME`.
+- **A `source <name>` script directive.** It presses `I` exactly as `key I`
+  does, with the count worked out at run time, so from a default start
+  `source COFDM` and `key I x5` produce identical runs. What it removes is the
+  count, which encodes a *distance* from wherever the app already is — adding or
+  reordering a source retargets every such line, and does it quietly, since the
+  line still parses and still runs. Names fold case and punctuation, so
+  `AM DSB`, `AM-DSB` and `amdsb` are one source.
+- **A dump path of `-` means stdout**, the `curl -o -` convention, in both
+  `--dump` and a script's own `dump`. Nothing else in a headless run writes
+  there, so the stream pipes into `jq` unfiltered.
+- **`docs/`** — the README's eight topics split into `commands`,
+  `configuration`, `impairment`, `viewport`, `cofdm`, `capture`, `headless`,
+  `shortcuts` and a viewer acronym glossary. The README is now Features,
+  Requirements, Screen Shots, Documentation and License.
+
+### Changed
+
+- **`assert source` takes a name rather than an index.** An index is a position
+  in `SourceMode::ALL`, so adding or reordering a source changed what the line
+  asserted without changing the line — and it carried on passing, against a
+  source nobody asked about.
+- **Capture notices carry severity and colour** — bold yellow for a warning,
+  bold red for a failure, with glyphs that differ in shape as well as colour so
+  severity survives a log or a monochrome terminal. Styling is dropped when
+  stderr is not a terminal, and `NO_COLOR` is honoured.
+- **A recording that lost frames reports as a warning**, not a confirmation.
+  Frames superseded by the target rate, refused by a full queue, and lost from
+  the sequence are counted separately, because they mean different things.
+
+### Fixed
+
+- The README claimed orion-sdr 0.0.56 against the 0.0.60 in `Cargo.toml`.
+
 ## [0.0.26] - 2026-08-14
 
 ### Added

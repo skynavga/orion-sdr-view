@@ -15,4 +15,4 @@
 
 duration 60
 
-0.00 key I x5
+0.00 source COFDM

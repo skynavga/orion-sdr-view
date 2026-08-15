@@ -54,7 +54,7 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use crate::app::ViewApp;
+use crate::app::{SourceMode, ViewApp};
 use crate::config::ViewConfig;
 use crate::decode::DecodeResult;
 use crate::utils::script::{Action, Script};
@@ -106,6 +106,21 @@ impl std::error::Error for RunError {}
 /// margin rather than a fraction because what it buys is a fixed amount of
 /// decoding, not a proportion of the script.
 pub const DEFAULT_TAIL_SECS: f32 = 1.0;
+
+/// The dump path that means **standard output** rather than a file.
+///
+/// The same spelling `curl -o -`, `tar -f -` and `sort -o -` use, so a reader
+/// who has met one has met this.  A literal file called `-` stays reachable as
+/// `./-`, which is the escape hatch those tools offer too.
+pub const STDOUT_PATH: &str = "-";
+
+/// Whether a dump path names standard output.
+///
+/// Compared against the whole path, not a suffix: `./-`, `runs/-` and `dash-`
+/// are all ordinary files.
+pub fn is_stdout(path: &Path) -> bool {
+    path.as_os_str() == STDOUT_PATH
+}
 
 /// What a replay run reports back.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -184,6 +199,10 @@ pub fn run_into<W: Write>(
 /// that is still a useful smoke test: a run that panics, fails to parse or drops
 /// a chunk fails just the same.  With neither naming a duration the run ends
 /// [`DEFAULT_TAIL_SECS`] past the last step.
+///
+/// A dump path of [`STDOUT_PATH`] writes to standard output.  Resolved here, at
+/// the one point the flag and the script's own `dump` have already merged, so
+/// the two cannot disagree about what `-` means.
 pub fn run_file(
     cfg: ViewConfig,
     script_path: Option<&Path>,
@@ -213,6 +232,17 @@ pub fn run_file(
         ..Default::default()
     };
     match dump_path {
+        // Deliberately *not* wrapped in a `BufWriter`: `Stdout` is line
+        // buffered, so `--dump - | jq` gets a record at a time instead of a
+        // block at the end.  Nothing else in a headless run writes to stdout —
+        // the summary and every diagnostic go to stderr — so the two streams
+        // cannot interleave and the dump stays machine-readable.
+        Some(path) if is_stdout(&path) => {
+            run_into(cfg, &opts, std::io::stdout().lock()).map_err(|e| match e {
+                RunError::Io(_, io) => RunError::Io(PathBuf::from("<stdout>"), io),
+                other => other,
+            })
+        }
         Some(path) => {
             let file = std::fs::File::create(&path).map_err(|e| RunError::Io(path.clone(), e))?;
             run_into(cfg, &opts, std::io::BufWriter::new(file)).map_err(|e| match e {
@@ -318,8 +348,25 @@ fn drive<W: Write>(
                 // ignored: executing assertions is the test harness's job.
                 // One format, two readers.  See `utils::script`.
                 Action::Assert { .. } => continue,
+                // `source NAME` presses `I` until that source is active, so its
+                // bound is the number of sources rather than the step's repeat
+                // — which the parser refuses on this directive anyway.
+                Action::Source { .. } => {
+                    pending = Some((step.action.clone(), SourceMode::ALL.len()));
+                }
                 action => pending = Some((action.clone(), step.repeat.max(1))),
             }
+        }
+
+        // Stop pressing as soon as the named source is active.  Checked at the
+        // top of the frame because `handle_keys` runs inside the pass: a press
+        // delivered in frame N is visible here in frame N+1.  The `left`
+        // counter below is only a backstop — `SourceMode::next` cycles every
+        // source, so this always fires first.
+        if let Some((Action::Source { mode }, _)) = &pending
+            && app.source_mode() == *mode
+        {
+            pending = None;
         }
 
         let (events, modifiers) = match &mut pending {

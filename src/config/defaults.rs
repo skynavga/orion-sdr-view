@@ -27,4 +27,20 @@ impl Defaults {
     /// 1.92 MHz, where a span in Hz would need re-clamping per source and would
     /// mean something different on each.
     pub const ZOOM: f32 = 1.0;
+
+    /// Where captures are written, relative to the working directory.
+    ///
+    /// Beside the project rather than in `$HOME`: captures are usually taken
+    /// *of* something being worked on, so they belong next to it and are easy
+    /// to add to a `.gitignore`.  `~/` is still expanded if configured that
+    /// way.  The directory is created on first use rather than at startup, so a
+    /// session that never captures leaves no trace.
+    pub const CAPTURE_DIR: &'static str = "./capture";
+    /// Overlays appear in a capture by default: a still of the settings or
+    /// instrument panel is exactly what documentation wants, and they are in
+    /// the render target already.
+    pub const CAPTURE_OVERLAYS: bool = true;
+    /// Video frame rate.  30 rather than the display's 60 because the readback
+    /// is ~16 MB a frame at 2x scale, and 60 fps of that is ~950 MB/s.
+    pub const CAPTURE_FPS: u32 = 30;
 }

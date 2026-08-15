@@ -382,11 +382,11 @@ fn a_fixed_dt_gives_the_same_run_twice() {
     // pixels rather than a scalar checks the whole chain — source, impairment,
     // FFT, dB mapping and the scroll pacing — in one assertion.
     const SCRIPT: &str = "
-0.00   key I x5      # to COFDM
+0.00   source COFDM
 0.10   key ArrowUp x3
 0.20   key L
 0.30   key ArrowRight x4
-0.40   assert source 5
+0.40   assert source COFDM
 0.40   assert locked 1
 ";
     let run = || {
@@ -440,6 +440,34 @@ fn every_source_survives_being_driven() {
             mode.label()
         );
     }
+}
+
+#[test]
+fn a_script_names_the_source_it_selects_and_the_source_it_asserts() {
+    // Both halves of the same argument: an index is a position in
+    // `SourceMode::ALL`, so `key I x5` and `assert source 5` would each keep
+    // running — and keep passing — against a different source the moment one is
+    // added or reordered.  Names cannot drift that way, and the two sides fold
+    // spelling identically, so a script may write either as it likes.
+    for &mode in SourceMode::ALL {
+        let mut h = Harness::with_defaults();
+        h.run_script(&format!(
+            "0.00 source {label}\n0.10 assert source {label}\n",
+            label = mode.label()
+        ));
+        assert_eq!(h.app.source_mode(), mode);
+    }
+    // Spelling is folded on both sides, and independently.
+    let mut h = Harness::with_defaults();
+    h.run_script("0.00 source am-dsb\n0.10 assert source AM_DSB\n");
+    assert_eq!(h.app.source_mode(), SourceMode::AmDsb);
+}
+
+#[test]
+#[should_panic(expected = "source is COFDM, expected CW")]
+fn a_source_assertion_that_is_wrong_says_which_source_it_found() {
+    let mut h = Harness::with_defaults();
+    h.run_script("0.00 source COFDM\n0.10 assert source CW\n");
 }
 
 // ── G. A continuous burst ───────────────────────────────────────────────────

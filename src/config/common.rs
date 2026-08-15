@@ -3,6 +3,7 @@
 
 use serde::Deserialize;
 
+use super::capture::CaptureConfig;
 use super::display::DisplayConfig;
 use crate::source::amdsb::AmDsbConfig;
 use crate::source::cofdm::CofdmConfig;
@@ -38,6 +39,7 @@ pub struct SourcesConfig {
 pub struct ViewConfig {
     pub display: Option<DisplayConfig>,
     pub sources: Option<SourcesConfig>,
+    pub capture: Option<CaptureConfig>,
 }
 
 // Private top-level wrapper matching `view:` key
@@ -94,6 +96,7 @@ impl ViewConfig {
         ViewConfig {
             display: None,
             sources: None,
+            capture: None,
         }
     }
 }

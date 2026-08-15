@@ -10,9 +10,9 @@
 
 duration 8
 
-0.00 key I x5              # -> COFDM
+0.00 source COFDM
 1.00 key ArrowUp x3        # zoom in
-2.00 assert source 5
+2.00 assert source COFDM
 2.00 key L                 # lock the band to the viewport centre
 2.50 assert locked 1
 3.00 key ArrowRight x4     # pan up-band; the band follows

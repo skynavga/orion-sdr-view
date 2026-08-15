@@ -27,8 +27,8 @@ struct Cli {
     #[arg(long, value_name = "FILE")]
     script: Option<std::path::PathBuf>,
 
-    /// Write the measurement stream to FILE as JSON Lines; overrides the
-    /// script's own `dump`
+    /// Write the measurement stream to FILE as JSON Lines, or to stdout for
+    /// `-`; overrides the script's own `dump`
     ///
     /// Deliberately does *not* imply --headless: dumping from an interactive
     /// session is a reasonable future want, but it would not be reproducible and
@@ -40,6 +40,14 @@ struct Cli {
     /// script's own `duration`
     #[arg(long, value_name = "SECS")]
     duration: Option<f32>,
+
+    /// Directory for captured stills and recordings; overrides `capture.dir`
+    ///
+    /// Interactive only.  Capture reads back the rendered surface, and a
+    /// headless run has no renderer to read back from — see the check in
+    /// `main`.
+    #[arg(long, value_name = "DIR")]
+    capture: Option<std::path::PathBuf>,
 }
 
 fn main() -> eframe::Result<()> {
@@ -47,6 +55,16 @@ fn main() -> eframe::Result<()> {
     let cfg = ViewConfig::load(cli.config.clone());
 
     if cli.headless {
+        // Refused rather than ignored.  `F` and `V` capture by reading back the
+        // rendered surface, and a headless run has no surface — so accepting
+        // the flag there would promise an artifact that never appears, which is
+        // worse than not offering it.
+        if cli.capture.is_some() {
+            eprintln!(
+                "orion-sdr-view: --capture needs a renderer and cannot be used with --headless"
+            );
+            std::process::exit(2);
+        }
         return run_headless(cfg, &cli);
     }
     if cli.script.is_some() || cli.dump.is_some() || cli.duration.is_some() {
@@ -54,6 +72,7 @@ fn main() -> eframe::Result<()> {
         std::process::exit(2);
     }
 
+    let capture_dir = cli.capture.clone();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("orion-sdr-view")
@@ -64,7 +83,13 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "orion-sdr-view",
         options,
-        Box::new(|cc| Ok(Box::new(ViewApp::new(&cc.egui_ctx, cfg)))),
+        Box::new(move |cc| {
+            let mut app = ViewApp::new(&cc.egui_ctx, cfg);
+            if let Some(dir) = capture_dir {
+                app.set_capture_dir(dir);
+            }
+            Ok(Box::new(app))
+        }),
     )
 }
 

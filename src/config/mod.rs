@@ -1,10 +1,12 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+mod capture;
 mod common;
 mod defaults;
 mod display;
 
+pub use capture::{CaptureConfig, CaptureFormat, expand_tilde};
 pub use common::ViewConfig;
 
 pub use common::SourcesConfig;

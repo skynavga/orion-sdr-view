@@ -20,9 +20,13 @@
 
 mod common;
 
+use std::path::Path;
+
 use common::harness::config_from_yaml;
 use orion_sdr_view::config::ViewConfig;
-use orion_sdr_view::replay::{DEFAULT_TAIL_SECS, RunError, RunOptions, run_file, run_into};
+use orion_sdr_view::replay::{
+    DEFAULT_TAIL_SECS, RunError, RunOptions, STDOUT_PATH, is_stdout, run_file, run_into,
+};
 
 /// Long enough for COFDM to emit several frames' worth of instrument readings,
 /// short enough to keep the suite quick.
@@ -490,6 +494,44 @@ fn a_scripts_own_dump_is_written() {
 }
 
 #[test]
+fn a_dash_names_stdout_and_a_path_ending_in_one_does_not() {
+    // The `curl -o -` convention, and the reason it needs a whole-path
+    // comparison: `dash-` and `runs/-` are ordinary files, and `./-` is the
+    // escape hatch for a file genuinely called `-`.
+    assert!(is_stdout(Path::new(STDOUT_PATH)));
+    assert!(is_stdout(Path::new("-")));
+    for ordinary in ["./-", "runs/-", "dash-", "-.jsonl", "", "--"] {
+        assert!(
+            !is_stdout(Path::new(ordinary)),
+            "`{ordinary}` should be an ordinary path"
+        );
+    }
+}
+
+#[test]
+fn dumping_to_stdout_writes_no_file_called_dash() {
+    // The failure this guards against is concrete: before `-` was interpreted,
+    // `--dump -` did exactly what it said and left a file named `-` in the
+    // working directory, which is then awkward to remove by accident-proof
+    // means.  The dump itself goes to the test harness's stdout.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let script = dir.path().join("demo.txt");
+    std::fs::write(&script, format!("dump {STDOUT_PATH}\n0.00 key Q\n")).expect("write");
+
+    let summary = run_file(ViewConfig::empty(), Some(&script), None, Some(0.05)).expect("run");
+    assert!(summary.records > 0, "the run should have emitted records");
+    assert_eq!(
+        std::fs::read_dir(dir.path()).expect("read_dir").count(),
+        1,
+        "only the script should exist; `-` must not have become a file"
+    );
+    assert!(
+        !Path::new(STDOUT_PATH).exists(),
+        "a file named `-` was created in the working directory"
+    );
+}
+
+#[test]
 fn the_command_line_dump_overrides_the_scripts() {
     let dir = tempfile::tempdir().expect("tempdir");
     let script = dir.path().join("demo.txt");
@@ -557,8 +599,8 @@ fn assert_directives_are_parsed_and_then_ignored() {
     // script is still an error — and then do nothing with them, because
     // executing assertions is `tests/`' job and a `--check` mode would only
     // duplicate what the harness already does better.
-    let with = "0.00 key I x5\n0.50 assert source 5\n0.50 assert center_hz 480000\n";
-    let without = "0.00 key I x5\n";
+    let with = "0.00 source COFDM\n0.50 assert source COFDM\n0.50 assert center_hz 480000\n";
+    let without = "0.00 source COFDM\n";
     let (a, _) = run(Some(with), ViewConfig::empty(), Some(1.0));
     let (b, _) = run(Some(without), ViewConfig::empty(), Some(1.0));
 
@@ -595,6 +637,89 @@ fn a_repeat_count_advances_one_source_per_frame() {
             (gap - 1.0 / 60.0).abs() < 1e-4,
             "expected consecutive frames, got a gap of {gap} s"
         );
+    }
+}
+
+#[test]
+fn naming_a_source_is_the_same_run_as_counting_the_presses() {
+    // `source COFDM` is not a shortcut past the UI: it presses `I` exactly as
+    // `key I x5` does, so from the default start the two runs agree record for
+    // record.  That equivalence is the licence to replace the counts — the
+    // directive changes how a script is *written*, not what it measures.
+    let (named, _) = run(Some("0.00 source COFDM\n"), ViewConfig::empty(), Some(1.0));
+    let (counted, _) = run(Some("0.00 key I x5\n"), ViewConfig::empty(), Some(1.0));
+    // Everything but the header, which carries the differing script digest.
+    let (a, b) = (records(&named), records(&counted));
+    assert_eq!(a[1..], b[1..]);
+}
+
+#[test]
+fn a_name_reaches_its_source_from_wherever_the_run_already_is() {
+    // The failure a name removes: a count encodes the *distance* to a source,
+    // so it is wrong the moment the app starts somewhere else — and wrong
+    // silently, since the line still parses and still runs.  Here the second
+    // directive is four presses from CW and the third is two back, neither of
+    // which the script says.
+    let (bytes, _) = run(
+        Some("0.00 source CW\n0.50 source COFDM\n1.00 source AM-DSB\n"),
+        ViewConfig::empty(),
+        Some(1.5),
+    );
+    let rs = records(&bytes);
+    let labels: Vec<&str> = of_kind(&rs, "source")
+        .iter()
+        .map(|r| r["source"].as_str().unwrap_or_default())
+        .collect();
+    // Every intermediate source is passed through, because `I` is what does the
+    // moving; only the destinations were named.
+    assert_eq!(
+        labels,
+        vec![
+            "CW", // named
+            "AM DSB",
+            "PSK31",
+            "FT8",
+            "COFDM", // named
+            "Test Tone",
+            "CW",
+            "AM DSB", // named, wrapping round
+        ]
+    );
+}
+
+#[test]
+fn naming_the_active_source_costs_nothing() {
+    // Re-selecting is not free — `switch_source` resets playback, flushing the
+    // decode pipeline and restarting the burst — so a script that names the
+    // source it is already on must do nothing at all rather than take a lap.
+    let script = "0.00 source Test Tone\n";
+    let (bytes, _) = run(Some(script), ViewConfig::empty(), Some(0.5));
+    let (plain, _) = run(None, ViewConfig::empty(), Some(0.5));
+    let (a, b) = (records(&bytes), records(&plain));
+    assert!(
+        of_kind(&a, "source").is_empty(),
+        "no switch should be recorded"
+    );
+    assert_eq!(a[1..], b[1..], "the run should match an unscripted one");
+}
+
+#[test]
+fn an_unknown_source_name_stops_the_run_before_it_starts() {
+    // Fatal rather than a warning-and-skip: a skipped `source` leaves the run
+    // measuring whichever source happened to be active, and the dump it writes
+    // is indistinguishable from a correct one.  Refusing to start is the only
+    // outcome that cannot be mistaken for a measurement.
+    let opts = RunOptions {
+        script: Some("0.0 source COFDM\n0.5 source COFDMM\n".to_owned()),
+        duration: Some(1.0),
+        ..Default::default()
+    };
+    match run_into(ViewConfig::empty(), &opts, std::io::sink()) {
+        Err(RunError::Script(e)) => {
+            assert_eq!(e.line, 2);
+            assert!(e.message.contains("is not a source"), "{}", e.message);
+        }
+        other => panic!("expected a script error, got {other:?}"),
     }
 }
 
