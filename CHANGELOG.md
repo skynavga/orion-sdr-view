@@ -9,6 +9,55 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.28] - 2026-08-15
+
+### Added
+
+- **Headless capture.** A `still [label]` directive captures everything the
+  viewer draws from a replay run, and `pane <name> [label]` writes one pane's
+  own raster. Both work with no window, no renderer and no GPU. `capture <dir>`
+  joins `dump` and `duration` as a run setting, with `--capture` as its
+  override; that flag is no longer refused with `--headless`.
+- **A CPU rasterizer for egui's tessellated output**, which is what makes a
+  headless still possible at all. Chosen over an offscreen GPU render because a
+  GPU cannot promise the same bytes twice — fill rules and filtering vary by
+  vendor and driver — and a capture that cannot be reproduced is no use as a
+  test fixture. Two runs of one script now produce byte-identical PNGs.
+- **`size WxH` and `scale N` run settings.** A headless pass supplies no
+  `screen_rect`, and egui's fallback is 10000 x 10000 at scale 1 — a size no
+  window has, and one that would make a capture 400 MB. The default is the
+  interactive window's own 1200 x 828, so a scripted reproduction lays out the
+  way a session does.
+- **A committed reference image and a GPU oracle**, covering the two ways a
+  second renderer goes wrong. `tests/reference/rasterizer.png` is generated on
+  one architecture and compared on another, which is the cross-architecture
+  check; `tests/raster_oracle.rs` renders the same primitives through
+  `egui-wgpu`'s own shader offscreen and compares. The oracle needs a GPU, so it
+  is `#[ignore]`d, and its dependencies are dev-only.
+
+### Fixed
+
+- **Shared triangle edges blended twice.** A pixel centre lying exactly on a
+  quad's diagonal was inside both of its triangles, which is invisible for
+  opaque geometry and wrong for translucent — and egui's anti-aliasing is made
+  of translucent triangles, so every feathered edge in a frame would have
+  seamed. Fixed with the top-left fill rule.
+- **A capture was missing almost everything it should have drawn.** Texture
+  deltas were collected only on capture frames, so the rasterizer never received
+  the font atlas — and because egui draws *solid* shapes from a white texel in
+  that same atlas, nearly the whole frame silently failed to render rather than
+  raising an error. Deltas now accumulate every frame, a missing texture is
+  reported, and a test asserts the frame is not mostly blank.
+- **`draw` handled keys twice when called by the driver.** It calls
+  `handle_keys` itself, and the replay driver already had; a drawn frame would
+  therefore have toggled every binding on it twice.
+
+### Measured
+
+- The CPU rasterizer against the real GPU pipeline, on a full COFDM window:
+  **1.2% of pixels differ at all, worst channel delta 2 of 255** — edge coverage
+  on feathered text, with no systematic error.
+
 ## [0.0.27] - 2026-08-15
 
 ### Added
