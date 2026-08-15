@@ -48,6 +48,17 @@
 | `Ctrl+←/→` | Move active marker (coarse) |
 | `Alt+←/→` | Move active marker (one FFT bin) |
 
+## Capture
+
+| Key | Action |
+| --- | --- |
+| `F` | Capture a still to the capture directory |
+| `V` | Start / stop recording |
+
+Both work with an overlay up — a still of the settings or instrument panel is a first-class use, and
+a `V` the settings panel swallowed would leave no way to stop recording. See
+[capture.md](capture.md).
+
 ## Overlays
 
 | Key | Action |

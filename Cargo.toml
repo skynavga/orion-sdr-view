@@ -53,6 +53,11 @@ serde_yaml = "0.9"
 # sentinel, and any sentinel reintroduces the "absent reading rendered as zero"
 # bug the `Option` exists to prevent.
 serde_json = "1"
+# Still capture.  A real deflate encoder rather than a hand-rolled stored-block
+# PNG: a 2400x1656 readback is 15.9 MB raw, and every screenshot arriving at
+# that size would make the feature unpleasant to use.  Small and pure Rust —
+# the same judgement as piping video to ffmpeg rather than linking a codec.
+png = "0.18"
 
 [dev-dependencies]
 tempfile = "3"

@@ -46,6 +46,9 @@ pub struct Harness {
     pub ctx: egui::Context,
     pub app: ViewApp,
     frames: usize,
+    /// Viewport commands from the most recent pass.  The app's only outward
+    /// channel for a capture request, and observable without a renderer.
+    viewport_commands: Vec<egui::ViewportCommand>,
 }
 
 impl Harness {
@@ -61,6 +64,7 @@ impl Harness {
             ctx,
             app,
             frames: 0,
+            viewport_commands: Vec::new(),
         }
     }
 
@@ -93,8 +97,67 @@ impl Harness {
         });
         self.app.advance(&self.ctx, Self::DT);
         self.app.handle_keys(&self.ctx);
-        let _ = self.ctx.end_pass();
+        let out = self.ctx.end_pass();
+        // Keep the viewport commands this pass produced.  They are the app's
+        // only outward channel for a screenshot request, and a bare
+        // `egui::Context` is enough to observe them — which is what makes the
+        // capture path testable with no window, renderer or GPU.
+        self.viewport_commands = out
+            .viewport_output
+            .into_values()
+            .flat_map(|v| v.commands)
+            .collect();
         self.frames += 1;
+    }
+
+    /// The viewport commands the last pass emitted.
+    pub fn viewport_commands(&self) -> &[egui::ViewportCommand] {
+        &self.viewport_commands
+    }
+
+    /// The capture tags requested during the last pass.
+    pub fn screenshot_tags(&self) -> Vec<orion_sdr_view::capture::CaptureTag> {
+        self.viewport_commands
+            .iter()
+            .filter_map(|c| match c {
+                egui::ViewportCommand::Screenshot(user_data) => user_data
+                    .data
+                    .as_ref()?
+                    .downcast_ref::<orion_sdr_view::capture::CaptureTag>()
+                    .copied(),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The window title the last pass asked for, if it asked.
+    pub fn requested_title(&self) -> Option<String> {
+        self.viewport_commands.iter().rev().find_map(|c| match c {
+            egui::ViewportCommand::Title(t) => Some(t.clone()),
+            _ => None,
+        })
+    }
+
+    /// Deliver a screenshot reply, as eframe's wgpu integration would.
+    ///
+    /// The real readback pushes `Event::Screenshot` into the *next* pass's raw
+    /// input; this is that, with a synthetic image of `colour`.
+    pub fn deliver_screenshot(
+        &mut self,
+        tag: orion_sdr_view::capture::CaptureTag,
+        width: usize,
+        height: usize,
+        colour: egui::Color32,
+    ) {
+        let image = egui::ColorImage::new([width, height], vec![colour; width * height]);
+        self.frame(
+            vec![egui::Event::Screenshot {
+                viewport_id: egui::ViewportId::ROOT,
+                user_data: egui::UserData::new(tag),
+                image: std::sync::Arc::new(image),
+            }],
+            egui::Modifiers::default(),
+        );
     }
 
     /// `n` frames with no input.

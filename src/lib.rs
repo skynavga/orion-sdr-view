@@ -10,6 +10,12 @@
 /// scripted run reproducible.
 #[cfg(feature = "gui")]
 pub mod app;
+/// Image and video capture: PNG stills and recorded video, with the metadata
+/// that makes an artifact interpretable after the session that made it.
+///
+/// Independent of the render stack — frames arrive as plain RGBA — so the
+/// resampling, encoding and accounting are all testable without a GPU.
+pub mod capture;
 pub mod config;
 pub mod decode;
 /// The headless replay driver: run a script with no window, no renderer and no

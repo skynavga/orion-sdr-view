@@ -73,6 +73,11 @@ view:
       sig_secs:   10.0   # signal-burst duration (wall-clock seconds); >= 100 means continuous
       gap_secs:   2.0    # silence gap between bursts (wall-clock seconds)
       cn_db:      35.0   # carrier-to-noise ratio in dB
+  capture:
+    dir:      "./capture"  # output directory, relative to CWD; `~/` expands
+    overlays: true         # include help / settings / instrument overlays
+    fps:      30           # video frame rate
+    format:   mp4          # mp4 (ffmpeg) or png (frame sequence)
 ```
 
 All fields are optional; missing fields fall back to built-in defaults. An unrecognised key is
@@ -84,3 +89,4 @@ ignored rather than refused.
 - **`display.zoom`** — [viewport.md](viewport.md)
 - **`sources.cofdm.*`** — [cofdm.md](cofdm.md), which covers band placement, burst timing and
   the three spectral-shaping levers
+- **`capture.*`** — [capture.md](capture.md)

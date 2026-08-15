@@ -22,8 +22,9 @@ which this one deliberately does not duplicate in depth.
 | BER | Bit Error Rate | Fraction of bits decoded wrongly; see `CBER`/`IBER` for which stage's output is meant |
 | BPSK | Binary Phase-Shift Keying | 1 bit/symbol; PSK31's BPSK31 mode, and COFDM's header modulation |
 | BW | Bandwidth | Di bar field. **Authoritative** for what COFDM actually transmits — the `Bandwidth` fraction is only a label once `Edge guard` overrides it |
-| CBER | Channel Bit Error Rate | Pre-FEC: measured at the inner decoder's *input*. First rung of the error ladder |
 | C/N | Carrier-to-Noise ratio | Every source's impairment knob (`cn_db`), in dB. A ratio rather than an absolute noise amplitude, which is what makes `fs_hz` safe to configure |
+| CBER | Channel Bit Error Rate | Pre-FEC: measured at the inner decoder's *input*. First rung of the error ladder |
+| CFR | Constant Frame Rate | Every frame the same duration apart. ffmpeg's rawvideo demuxer assumes it, so a recording is resampled onto fixed slots rather than carrying timestamps. See [capture.md](capture.md) |
 | COFDM | Coded OFDM | The wideband source: framed, concatenated-FEC OFDM at 1.92 MHz. See [cofdm.md](cofdm.md) |
 | CP | Cyclic Prefix | `cp_len` = 32 here. The guard samples a receiver discards, and the budget the taper and mask share |
 | CR | Code Rate | The **inner** FEC's rate, on the instrumentation panel. The outer block code is a separate stage |
@@ -47,6 +48,7 @@ which this one deliberately does not duplicate in depth.
 | HUD | Heads-Up Display | The text overlaid on the spectrum pane. Field widths are fixed throughout, so a value gaining a digit cannot reflow its neighbours |
 | IBER | Inner-decoder Bit Error Rate | BER at the inner decoder's *output*, before the outer code. Second rung of the ladder |
 | IQ | In-phase / Quadrature | Complex baseband. COFDM is the only complex-valued source; the other five are real |
+| ISO 8601 | (date and time format) | How a capture is named. **Basic** format in filenames (`20260816T112233.456Z`), **extended** in metadata (`2026-08-16T11:22:33.456Z`); mixing the two in one representation is not conformant |
 | JSONL | JSON Lines | The dump format: one JSON object per line. Chosen over CSV because a column cannot hold `null` without a sentinel. See [headless.md](headless.md) |
 | LDPC | Low-Density Parity-Check | One of the inner FEC families COFDM's `CR` and `FEC` lock may refer to |
 | LO | Local Oscillator | Receiver frequency reference. Its leakage lands on DC, which is why `include_dc` defaults off |
@@ -55,9 +57,11 @@ which this one deliberately does not duplicate in depth.
 | OFDM | Orthogonal Frequency-Division Multiplexing | The waveform under COFDM's frame layer |
 | OVL | Overload | HUD indicator; raised against the source's own full scale, not against 1.0 |
 | PER | Packet Error Rate | What `FER` is called under a packet-oriented profile |
+| PNG | Portable Network Graphics | Still capture format, and the no-dependency alternative to mp4 for recordings |
 | PSK31 | Phase-Shift Keying, 31 baud | 31.25 baud keyboard-to-keyboard mode; BPSK31 and QPSK31 variants |
 | QPSK | Quadrature Phase-Shift Keying | 2 bits/symbol; PSK31's QPSK31 mode |
 | RF | Radio Frequency | Upconverted (non-baseband) signal; `rf_hz` places a modulated band |
+| RGBA | Red, Green, Blue, Alpha | The 8-bit-per-channel pixel layout a capture reads back and pipes to the encoder |
 | RMS | Root Mean Square | Per-block level. What the loop timer compares against a threshold to call signal vs. gap |
 | SDR | Software-Defined Radio | — |
 | SHA-256 | Secure Hash Algorithm, 256-bit | The script digest in a dump's header record, so a dump names the script that produced it |

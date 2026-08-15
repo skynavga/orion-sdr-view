@@ -27,6 +27,8 @@ and waterfall from a configurable signal source.
 - **Frequency markers** — primary center marker plus two bracket markers (A/B) with label display
 - **Settings popover** — live adjustment of display range, source parameters, and signal properties
 - **YAML configuration** — startup defaults via `--config <file>` or `.orionsdr.yaml` in CWD
+- **Image and video capture** — `F` for a still, `V` to record; window decorations excluded by
+  construction, an ISO 8601 name, and a JSON sidecar describing the source, span and dB scale
 - **Headless replay** — run with no window, renderer or GPU from a timed key script, and write the
   measurement stream as JSON Lines; the same script produces the same bytes
 
@@ -67,6 +69,7 @@ without a windowing system, e.g. on headless CI runners.
 - [Impairment](docs/impairment.md) — `cn_db`, and why the impairment is a ratio rather than an amplitude
 - [Viewport](docs/viewport.md) — `display.zoom`, and what overrides it
 - [COFDM](docs/cofdm.md) — band placement, burst timing, spectral shaping, and the instrumentation panel
+- [Capture](docs/capture.md) — `F` stills and `V` recordings, their metadata, and what a recording of COFDM is not
 - [Headless replay](docs/headless.md) — the script format, the measurement dump, and what makes a run reproducible
 - [Keyboard shortcuts](docs/shortcuts.md) — every binding, and how a script reaches it
 - [Acronym glossary](docs/acronyms.md) — expansions for the acronyms used on screen and in these docs
