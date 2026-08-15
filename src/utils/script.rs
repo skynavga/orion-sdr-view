@@ -108,9 +108,58 @@ pub enum Action {
     /// away the source is, which is the part a script cannot know and the part
     /// that goes stale.
     Source { mode: SourceMode },
+    /// Write one pane's raster to the capture directory.
+    ///
+    /// **Not a screenshot.**  The waterfall, spectrogram and persistence panes
+    /// each keep their pixels CPU-side, so this needs no renderer and no GPU —
+    /// it is the DSP's own output, without the HUD, the spectrum plot or any
+    /// chrome around it.  A cheaper and more directly assertable thing than a
+    /// picture of the window, and a different question.
+    Pane {
+        pane: Pane,
+        /// Appended to the filename, so a script taking several is readable.
+        label: Option<String>,
+    },
     /// A property for the *test harness* to check.  The replay driver parses it
     /// — so a typo is still an error — and then ignores it.
     Assert { name: String, args: Vec<String> },
+}
+
+/// A pane that keeps a CPU-side raster.
+///
+/// The spectrum pane is absent deliberately: it is a line plot drawn straight to
+/// a painter, with no pixel buffer to hand over.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pane {
+    Waterfall,
+    Spectrogram,
+    Persistence,
+}
+
+impl Pane {
+    pub const ALL: &'static [Pane] = &[Pane::Waterfall, Pane::Spectrogram, Pane::Persistence];
+
+    /// The name a script writes, and the suffix a filename carries.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Waterfall => "waterfall",
+            Self::Spectrogram => "spectrogram",
+            Self::Persistence => "persistence",
+        }
+    }
+
+    /// Resolve a name written in a script, folded like a source name.
+    pub fn by_name(s: &str) -> Option<Self> {
+        let want = fold_name(s);
+        (!want.is_empty())
+            .then(|| {
+                Self::ALL
+                    .iter()
+                    .copied()
+                    .find(|p| fold_name(p.name()) == want)
+            })
+            .flatten()
+    }
 }
 
 impl Action {
@@ -127,7 +176,8 @@ impl Action {
             // needs is the reader's business, not the event's.
             Self::Source { .. } => key_events(egui::Key::I, egui::Modifiers::default()),
             Self::Text { text } => vec![egui::Event::Text(text.clone())],
-            Self::Assert { .. } => Vec::new(),
+            // Neither delivers input: one writes a file, the other is checked.
+            Self::Pane { .. } | Self::Assert { .. } => Vec::new(),
         }
     }
 
@@ -143,6 +193,39 @@ impl Action {
             _ => egui::Modifiers::default(),
         }
     }
+}
+
+/// Parse an optional trailing label, which becomes part of a filename.
+///
+/// Restricted to what survives a filesystem and a shell unquoted: ASCII letters,
+/// digits, `-` and `_`.  A label that needed quoting would make the very
+/// artifact it names awkward to handle, and a rejected label is a parse error
+/// rather than a silently mangled filename.
+fn parse_label(rest: &[&str], line: usize) -> Result<Option<String>, ScriptError> {
+    let [label] = rest[..] else {
+        if rest.is_empty() {
+            return Ok(None);
+        }
+        return Err(ScriptError {
+            line,
+            message: format!(
+                "a label is one whitespace-free word, got {} — try `{}`",
+                rest.len(),
+                rest.join("-")
+            ),
+        });
+    };
+    let ok = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
+    if !label.chars().all(ok) {
+        return Err(ScriptError {
+            line,
+            message: format!(
+                "label `{label}` may use only letters, digits, `-` and `_`; \
+                 it becomes part of a filename"
+            ),
+        });
+    }
+    Ok(Some(label.to_owned()))
 }
 
 /// One key's press and release, for delivery within a single pass.
@@ -230,6 +313,9 @@ pub struct ScriptSettings {
     pub size: Option<(f32, f32)>,
     /// Pixels per point.  2.0 is a Retina-class display.
     pub scale: Option<f32>,
+    /// Where captures are written.  Absolute or relative, exactly as `dump` is,
+    /// and overridden by `--capture`.
+    pub capture: Option<PathBuf>,
 }
 
 /// A parsed script: run settings plus steps in ascending time order.
@@ -301,6 +387,7 @@ enum Setting {
     Duration(f32),
     Size(f32, f32),
     Scale(f32),
+    Capture(PathBuf),
 }
 
 impl Setting {
@@ -339,6 +426,12 @@ impl Setting {
                 }
                 settings.scale = Some(s);
             }
+            Setting::Capture(p) => {
+                if settings.capture.is_some() {
+                    return Err(dup("capture"));
+                }
+                settings.capture = Some(p);
+            }
         }
         Ok(())
     }
@@ -349,7 +442,7 @@ impl Setting {
 /// Dispatching on the *first word* rather than on "does it parse as a number"
 /// is deliberate: a mistyped time like `0.O5 key Q` still reports "not a time in
 /// seconds" instead of "not a directive", so no existing diagnostic gets worse.
-const SETTING_VERBS: [&str; 4] = ["dump", "duration", "scale", "size"];
+const SETTING_VERBS: [&str; 5] = ["capture", "dump", "duration", "scale", "size"];
 
 fn parse_line(text: &str, line: usize) -> Result<Line, ScriptError> {
     let first = text.split_whitespace().next().unwrap_or_default();
@@ -372,6 +465,7 @@ fn parse_setting(text: &str, line: usize) -> Result<Setting, ScriptError> {
     };
     match verb {
         "dump" => Ok(Setting::Dump(PathBuf::from(arg))),
+        "capture" => Ok(Setting::Capture(PathBuf::from(arg))),
         "duration" => {
             let secs: f32 = arg
                 .parse()
@@ -434,7 +528,7 @@ fn parse_step(text: &str, line: usize) -> Result<Step, ScriptError> {
 
     let verb = words
         .next()
-        .ok_or_else(|| err("expected `key`, `source`, `text` or `assert`".to_owned()))?;
+        .ok_or_else(|| err("expected `key`, `source`, `pane`, `text` or `assert`".to_owned()))?;
     let rest: Vec<&str> = words.collect();
 
     // A trailing `xN` repeat count applies to key and text alike.
@@ -480,6 +574,31 @@ fn parse_step(text: &str, line: usize) -> Result<Step, ScriptError> {
             })?;
             Action::Source { mode }
         }
+        "pane" => {
+            if repeat != 1 {
+                return Err(err(
+                    "`pane` takes no repeat count; writing the same raster twice \
+                     would only overwrite it"
+                        .to_owned(),
+                ));
+            }
+            let Some((name, rest)) = rest.split_first() else {
+                let names: Vec<&str> = Pane::ALL.iter().map(|p| p.name()).collect();
+                return Err(err(format!(
+                    "`pane` needs a pane name (one of: {})",
+                    names.join(", ")
+                )));
+            };
+            let pane = Pane::by_name(name).ok_or_else(|| {
+                let names: Vec<&str> = Pane::ALL.iter().map(|p| p.name()).collect();
+                err(format!(
+                    "`{name}` is not a pane (expected one of: {})",
+                    names.join(", ")
+                ))
+            })?;
+            let label = parse_label(rest, line)?;
+            Action::Pane { pane, label }
+        }
         "text" => {
             let [literal] = rest[..] else {
                 return Err(err(format!(
@@ -502,7 +621,8 @@ fn parse_step(text: &str, line: usize) -> Result<Step, ScriptError> {
         }
         other => {
             return Err(err(format!(
-                "`{other}` is not a directive (expected `key`, `source`, `text` or `assert`)"
+                "`{other}` is not a directive \
+                 (expected `key`, `source`, `pane`, `text` or `assert`)"
             )));
         }
     };

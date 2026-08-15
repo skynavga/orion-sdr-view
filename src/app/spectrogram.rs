@@ -242,6 +242,11 @@ impl SpectrogramDisplay {
         self.filled
     }
 
+    /// Height of a column, in frequency rows.
+    pub fn freq_rows(&self) -> usize {
+        self.freq_rows
+    }
+
     /// The committed columns in the order [`draw_ring`](Self::draw_ring) paints
     /// them, left of the pane first — so **newest first**, going back in time
     /// rightward.

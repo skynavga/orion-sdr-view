@@ -432,3 +432,70 @@ fn a_script_with_no_viewport_settings_carries_none() {
     assert_eq!(s.settings.size, None);
     assert_eq!(s.settings.scale, None);
 }
+
+// ── Capture directory and the `pane` directive ──────────────────────────────
+
+#[test]
+fn a_script_can_say_where_captures_go() {
+    let s = Script::parse("capture ./shots\n0.0 pane waterfall\n").expect("parses");
+    assert_eq!(s.settings.capture.as_deref(), Some(Path::new("./shots")));
+    assert_eq!(s.steps.len(), 1, "a setting is not a step");
+}
+
+#[test]
+fn every_pane_that_keeps_pixels_is_nameable() {
+    // The round trip that keeps this honest as panes are added.  The spectrum
+    // pane is deliberately absent: it is a line plot drawn straight to a
+    // painter, with no buffer to hand over.
+    use orion_sdr_view::utils::script::Pane;
+    for pane in Pane::ALL {
+        let s = Script::parse(&format!("0.0 pane {}", pane.name())).expect("parses");
+        assert_eq!(
+            s.steps[0].action,
+            Action::Pane {
+                pane: *pane,
+                label: None
+            }
+        );
+    }
+    assert_eq!(Pane::by_name("WaterFall"), Some(Pane::Waterfall));
+    assert_eq!(Pane::by_name("spectrum"), None, "no buffer to capture");
+}
+
+#[test]
+fn a_pane_capture_can_carry_a_label() {
+    // So a script taking several produces readable names rather than a column
+    // of timestamps.
+    let s = Script::parse("0.0 pane waterfall burst_2\n").expect("parses");
+    assert_eq!(
+        s.steps[0].action,
+        Action::Pane {
+            pane: orion_sdr_view::utils::script::Pane::Waterfall,
+            label: Some("burst_2".to_owned()),
+        }
+    );
+    // ...and it emits no input events, since it writes a file instead.
+    assert!(s.steps[0].action.events().is_empty());
+}
+
+#[test]
+fn a_label_that_would_not_survive_a_filesystem_is_refused() {
+    // A label becomes part of a filename, so anything needing quoting would
+    // make the very artifact it names awkward to handle.  Refused rather than
+    // silently mangled.
+    for (src, needle) in [
+        ("0.0 pane waterfall a/b", "only letters, digits"),
+        ("0.0 pane waterfall 'x'", "only letters, digits"),
+        ("0.0 pane waterfall two words", "one whitespace-free word"),
+        ("0.0 pane notapane", "is not a pane"),
+        ("0.0 pane", "needs a pane name"),
+        ("0.0 pane waterfall x3", "takes no repeat count"),
+    ] {
+        let e = Script::parse(src).expect_err(&format!("`{src}` should not parse"));
+        assert!(
+            e.message.contains(needle),
+            "`{src}` gave `{}`, expected `{needle}`",
+            e.message
+        );
+    }
+}

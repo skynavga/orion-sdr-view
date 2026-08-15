@@ -463,6 +463,33 @@ impl ViewApp {
         self.capture.is_recording()
     }
 
+    /// Write one pane's raster to `dir`, with a metadata sidecar.
+    ///
+    /// The headless entry point: no renderer, no GPU, no screenshot round trip
+    /// — the pane's pixels are already CPU-side.  Returns the path written, or
+    /// `None` if the pane has no pixels yet.
+    pub fn capture_pane(
+        &mut self,
+        dir: &std::path::Path,
+        pane: crate::utils::script::Pane,
+        label: Option<&str>,
+    ) -> std::io::Result<Option<std::path::PathBuf>> {
+        let scene = self.scene_info();
+        let seq = self.capture.next_pane_seq();
+        super::capture::write_pane(
+            self,
+            super::capture::PaneRequest {
+                dir,
+                pane,
+                label,
+                seq,
+                now: self.clock.now(),
+                offset_min: self.time_zone_offset_min,
+                scene,
+            },
+        )
+    }
+
     /// `F` — capture one still.
     ///
     /// **One implementation, called from both key paths**, the same shape as
@@ -1483,6 +1510,14 @@ impl ViewApp {
     }
 
     /// Pane 3's horizontal spectrogram, for the CPU-side pixel assertions.
+    /// The persistence pane's accumulated density as an image.
+    ///
+    /// Built on demand rather than kept, since the renderer uploads it to a
+    /// texture and never needs it CPU-side afterwards.
+    pub fn persistence_image(&self) -> Option<egui::ColorImage> {
+        Some(self.persistence.map.to_color_image())
+    }
+
     pub fn spectrogram(&self) -> &SpectrogramDisplay {
         &self.spectrogram
     }

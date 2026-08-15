@@ -49,6 +49,8 @@ pub struct Harness {
     /// Viewport commands from the most recent pass.  The app's only outward
     /// channel for a capture request, and observable without a renderer.
     viewport_commands: Vec<egui::ViewportCommand>,
+    /// Where a `pane` directive writes.  Defaults to the app's own setting.
+    pub capture_dir: std::path::PathBuf,
 }
 
 impl Harness {
@@ -60,11 +62,13 @@ impl Harness {
     pub fn new(cfg: ViewConfig) -> Self {
         let ctx = egui::Context::default();
         let app = ViewApp::new(&ctx, cfg);
+        let capture_dir = app.capture_dir().to_path_buf();
         Self {
             ctx,
             app,
             frames: 0,
             viewport_commands: Vec::new(),
+            capture_dir,
         }
     }
 
@@ -242,6 +246,14 @@ impl Harness {
                 // what the directive means.  The parser refuses a repeat on it,
                 // so there is no count to honour here.
                 Action::Source { mode } => self.select_source(*mode),
+                // Executed, not ignored: a pane's pixels are CPU-side, so the
+                // harness can write one exactly as the driver does.
+                Action::Pane { pane, label } => {
+                    let dir = self.capture_dir.clone();
+                    self.app
+                        .capture_pane(&dir, *pane, label.as_deref())
+                        .unwrap_or_else(|e| panic!("line {}: {e}", step.line));
+                }
                 action => {
                     for _ in 0..step.repeat {
                         self.frame(action.events(), action.modifiers());

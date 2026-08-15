@@ -76,6 +76,8 @@ pub enum RunError {
     DroppedChunks(u64),
     /// Neither `--script` nor `--duration` was given, so the run has no end.
     Unbounded,
+    /// A capture could not be written.
+    Capture(String),
 }
 
 impl std::fmt::Display for RunError {
@@ -90,6 +92,7 @@ impl std::fmt::Display for RunError {
             RunError::Unbounded => {
                 write!(f, "a headless run needs --script or --duration to bound it")
             }
+            RunError::Capture(m) => write!(f, "capture: {m}"),
         }
     }
 }
@@ -146,6 +149,8 @@ pub struct RunSummary {
     pub frames: u64,
     pub samples: u64,
     pub records: u64,
+    /// Files a `pane` directive wrote, in the order taken.
+    pub captures: Vec<PathBuf>,
 }
 
 /// Knobs for one run.
@@ -172,6 +177,8 @@ pub struct RunOptions {
     pub size: Option<(f32, f32)>,
     /// Pixels per point.  **Overrides the script's own `scale`.**
     pub scale: Option<f32>,
+    /// Where captures are written.  **Overrides the script's own `capture`.**
+    pub capture: Option<PathBuf>,
 }
 
 impl Default for RunOptions {
@@ -182,6 +189,7 @@ impl Default for RunOptions {
             dt: 1.0 / 60.0,
             size: None,
             scale: None,
+            capture: None,
         }
     }
 }
@@ -232,6 +240,7 @@ pub fn run_file(
     script_path: Option<&Path>,
     dump_path: Option<&Path>,
     duration: Option<f32>,
+    capture_dir: Option<&Path>,
 ) -> Result<RunSummary, RunError> {
     let src = match script_path {
         Some(p) => Some(std::fs::read_to_string(p).map_err(|e| RunError::Io(p.to_path_buf(), e))?),
@@ -253,6 +262,7 @@ pub fn run_file(
     let opts = RunOptions {
         script: src,
         duration,
+        capture: capture_dir.map(Path::to_path_buf),
         ..Default::default()
     };
     match dump_path {
@@ -285,12 +295,14 @@ fn to_run_error(e: DriveError, path: &Path) -> RunError {
     match e {
         DriveError::Io(e) => RunError::Io(path.to_path_buf(), e),
         DriveError::Dropped(n) => RunError::DroppedChunks(n),
+        DriveError::Capture(m) => RunError::Capture(m),
     }
 }
 
 enum DriveError {
     Io(std::io::Error),
     Dropped(u64),
+    Capture(String),
 }
 
 impl From<std::io::Error> for DriveError {
@@ -316,7 +328,6 @@ fn drive<W: Write>(
     // `end_pass` are public, so a complete pass runs against it and the
     // `FullOutput` — tessellated shapes and texture deltas — is dropped.
     let ctx = egui::Context::default();
-    let mut app = ViewApp::new_replay(&ctx, cfg);
 
     // `duration` is already resolved — command line over script over nothing —
     // and a duration shorter than the script still runs every step, because the
@@ -333,6 +344,13 @@ fn drive<W: Write>(
         .or_else(|| script.and_then(|s| s.settings.scale))
         .unwrap_or(DEFAULT_SCALE);
     let viewport = (w, h, scale);
+    let capture_dir = opts
+        .capture
+        .clone()
+        .or_else(|| script.and_then(|s| s.settings.capture.clone()))
+        .unwrap_or_else(|| cfg.capture_dir());
+
+    let mut app = ViewApp::new_replay(&ctx, cfg);
 
     let script_end = script
         .and_then(|s| s.steps.last())
@@ -346,6 +364,7 @@ fn drive<W: Write>(
         script_sha256: digest,
     })?;
 
+    let mut captures: Vec<PathBuf> = Vec::new();
     let mut steps = script.map(|s| s.steps.as_slice()).unwrap_or(&[]).iter();
     let mut next = steps.next();
     let mut frames: u64 = 0;
@@ -388,6 +407,38 @@ fn drive<W: Write>(
                 // — which the parser refuses on this directive anyway.
                 Action::Source { .. } => {
                     pending = Some((step.action.clone(), SourceMode::ALL.len()));
+                }
+                // Written here rather than delivered as input: a pane's pixels
+                // are already CPU-side, so there is nothing to press and nothing
+                // to wait a frame for.
+                Action::Pane { pane, label } => {
+                    match app.capture_pane(&capture_dir, *pane, label.as_deref()) {
+                        Ok(Some(path)) => captures.push(path),
+                        // Not a failure: a script that captures before any
+                        // spectrum has been processed has nothing to write. Said
+                        // out loud, because a missing file otherwise looks like
+                        // a bug in the directive.
+                        Ok(None) => eprintln!(
+                            "{}",
+                            crate::utils::term::notice(
+                                crate::utils::term::Level::Warn,
+                                &format!(
+                                    "line {}: the {} pane has no pixels yet, so nothing \
+                                     was written",
+                                    step.line,
+                                    pane.name()
+                                ),
+                            )
+                        ),
+                        Err(e) => {
+                            return Err(DriveError::Capture(format!(
+                                "line {}: {} pane: {e}",
+                                step.line,
+                                pane.name()
+                            )));
+                        }
+                    }
+                    continue;
                 }
                 action => pending = Some((action.clone(), step.repeat.max(1))),
             }
@@ -449,6 +500,7 @@ fn drive<W: Write>(
         frames,
         samples,
         records: dump.records(),
+        captures,
     })
 }
 

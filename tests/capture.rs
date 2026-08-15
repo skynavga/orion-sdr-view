@@ -618,3 +618,128 @@ fn captures_default_to_a_directory_beside_the_project() {
     let h = Harness::with_defaults();
     assert_eq!(h.app.capture_dir(), Path::new("./capture"));
 }
+
+// ── J. Pane rasters, headless ───────────────────────────────────────────────
+
+#[test]
+fn a_pane_directive_writes_the_dsp_s_own_raster() {
+    // **No renderer is involved.** The waterfall, spectrogram and persistence
+    // panes keep their pixels CPU-side, so this is reachable in a headless run
+    // where a window screenshot is not.
+    use orion_sdr_view::utils::script::Pane;
+    for pane in Pane::ALL {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut h = Harness::with_defaults();
+        h.capture_dir = dir.path().to_path_buf();
+        h.idle(40); // let the panes accumulate something
+
+        h.run_script(&format!("0.0 pane {}\n", pane.name()));
+
+        let mut names: Vec<String> = std::fs::read_dir(dir.path())
+            .expect("read_dir")
+            .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(
+            names.len(),
+            2,
+            "{}: a PNG and its sidecar: {names:?}",
+            pane.name()
+        );
+        assert!(
+            names.iter().all(|n| n.contains(pane.name())),
+            "{}: the pane should be in the filename: {names:?}",
+            pane.name()
+        );
+    }
+}
+
+#[test]
+fn a_pane_sidecar_says_which_pane_and_which_label() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut h = Harness::with_defaults();
+    h.capture_dir = dir.path().to_path_buf();
+    h.idle(40);
+    h.run_script("0.0 pane waterfall burst_2\n");
+
+    let json = std::fs::read_dir(dir.path())
+        .expect("read_dir")
+        .map(|e| e.expect("entry").path())
+        .find(|p| p.extension().is_some_and(|e| e == "json"))
+        .expect("a sidecar");
+    let meta: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&json).expect("read")).expect("json");
+    assert_eq!(meta["kind"], "pane");
+    assert_eq!(meta["pane"], "waterfall");
+    assert_eq!(meta["label"], "burst_2");
+    assert!(meta["width"].as_u64().unwrap_or(0) > 0);
+    assert!(meta["height"].as_u64().unwrap_or(0) > 0);
+    // The scene travels with it, so the raster can be read later.
+    assert_eq!(meta["source"], "Test Tone");
+    assert_eq!(meta["fs_hz"], 48_000.0);
+}
+
+#[test]
+fn a_waterfall_raster_matches_the_pane_it_came_from() {
+    // The pixels written must be the pane's own, in its display order — not a
+    // re-render, and not the physical ring order.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut h = Harness::with_defaults();
+    h.capture_dir = dir.path().to_path_buf();
+    h.idle(40);
+
+    let want_w = h.app.waterfall().freq_bins();
+    let want_h = h.app.waterfall().filled();
+    let first_row: Vec<egui::Color32> = h
+        .app
+        .waterfall()
+        .rows_in_display_order()
+        .next()
+        .expect("a row")
+        .to_vec();
+
+    h.run_script("0.0 pane waterfall\n");
+    let png = std::fs::read_dir(dir.path())
+        .expect("read_dir")
+        .map(|e| e.expect("entry").path())
+        .find(|p| p.extension().is_some_and(|e| e == "png"))
+        .expect("a png");
+
+    let decoder = png::Decoder::new(std::io::BufReader::new(
+        std::fs::File::open(&png).expect("open"),
+    ));
+    let mut reader = decoder.read_info().expect("info");
+    let mut buf = vec![0; reader.output_buffer_size().expect("size")];
+    let info = reader.next_frame(&mut buf).expect("decode");
+    assert_eq!(
+        (info.width as usize, info.height as usize),
+        (want_w, want_h)
+    );
+
+    // Top row of the image is the newest row of the waterfall.
+    let got: Vec<egui::Color32> = buf[..want_w * 4]
+        .chunks_exact(4)
+        .map(|p| egui::Color32::from_rgba_premultiplied(p[0], p[1], p[2], p[3]))
+        .collect();
+    assert_eq!(got, first_row, "the image is not the pane's display order");
+}
+
+#[test]
+fn a_pane_with_no_pixels_yet_writes_nothing_and_says_so() {
+    // A legitimate outcome, not a failure — but a missing file would otherwise
+    // look like a broken directive.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut h = Harness::with_defaults();
+    h.capture_dir = dir.path().to_path_buf();
+    // No idle: nothing has been processed, so the waterfall is empty.
+    let wrote = h
+        .app
+        .capture_pane(
+            dir.path(),
+            orion_sdr_view::utils::script::Pane::Waterfall,
+            None,
+        )
+        .expect("no error");
+    assert_eq!(wrote, None);
+    assert_eq!(std::fs::read_dir(dir.path()).expect("read_dir").count(), 0);
+}

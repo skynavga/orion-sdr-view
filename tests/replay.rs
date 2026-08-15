@@ -460,7 +460,7 @@ fn no_dump_named_anywhere_writes_nothing_but_still_runs() {
     let script = dir.path().join("demo.txt");
     std::fs::write(&script, "0.00 key I x5\n").expect("write");
 
-    let summary = run_file(ViewConfig::empty(), Some(&script), None, Some(0.5))
+    let summary = run_file(ViewConfig::empty(), Some(&script), None, Some(0.5), None)
         .expect("the run should succeed");
     assert!(summary.frames > 0);
     assert_eq!(
@@ -484,7 +484,7 @@ fn a_scripts_own_dump_is_written() {
     )
     .expect("write");
 
-    run_file(ViewConfig::empty(), Some(&script), None, Some(0.5)).expect("run");
+    run_file(ViewConfig::empty(), Some(&script), None, Some(0.5), None).expect("run");
     let text = std::fs::read_to_string(&dumped).expect("the script's dump should exist");
     assert!(
         text.lines()
@@ -519,7 +519,8 @@ fn dumping_to_stdout_writes_no_file_called_dash() {
     let script = dir.path().join("demo.txt");
     std::fs::write(&script, format!("dump {STDOUT_PATH}\n0.00 key Q\n")).expect("write");
 
-    let summary = run_file(ViewConfig::empty(), Some(&script), None, Some(0.05)).expect("run");
+    let summary =
+        run_file(ViewConfig::empty(), Some(&script), None, Some(0.05), None).expect("run");
     assert!(summary.records > 0, "the run should have emitted records");
     assert_eq!(
         std::fs::read_dir(dir.path()).expect("read_dir").count(),
@@ -549,6 +550,7 @@ fn the_command_line_dump_overrides_the_scripts() {
         Some(&script),
         Some(&elsewhere),
         Some(0.5),
+        None,
     )
     .expect("run");
     assert!(elsewhere.exists(), "--dump should win");

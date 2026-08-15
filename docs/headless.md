@@ -34,6 +34,7 @@ dump     run.jsonl
 | `key <[mod+]Name>` | Press and release one key within a single pass. Modifiers are spelled out: `shift+`, `ctrl+`, `alt+`, `cmd+` |
 | `source <name>` | Select a source by name, case- and punctuation-insensitively |
 | `text <literal>` | Deliver a text event — the only way to reach the marker, help and dB-reference bindings |
+| `pane <name> [label]` | Write one pane's raster to the capture directory |
 | `assert <name> [args]` | A property for the *test harness* to check; the replay driver parses it and ignores it |
 
 A repeat count is **frames, not events**: `key_pressed` is a per-pass boolean, so five press events
@@ -74,6 +75,7 @@ not free, since it flushes the decode pipeline and restarts the burst.
 | --- | --- |
 | `duration <secs>` | How long to run |
 | `dump <path>` | Where the measurement stream goes; `-` is stdout |
+| `capture <dir>` | Where `pane` captures are written |
 | `size <W>x<H>` | Logical window size, in points |
 | `scale <n>` | Pixels per point; `2` is a Retina-class display |
 
@@ -127,6 +129,44 @@ whole run at the end.
 A file genuinely called `-` is still reachable as `./-`, which is the escape hatch the same
 convention offers everywhere else. Only the whole path counts: `runs/-`, `dash-` and `-.jsonl` are
 ordinary files.
+
+## Capturing a pane
+
+`pane waterfall` writes one pane's raster to the capture directory, as a PNG with a metadata
+sidecar beside it:
+
+```text
+capture ./shots
+duration 8
+
+0.00 source COFDM
+5.00 pane waterfall locked
+5.00 pane spectrogram
+```
+
+**No renderer is involved, which is why this works headless at all.** The waterfall, spectrogram
+and persistence panes each keep their pixels CPU-side — that is what makes their ring arithmetic
+assertable without a GPU — and a `pane` capture reads those buffers in the same display order the
+painter uses. So it is the DSP's own output, without the HUD, the spectrum plot or any chrome
+around it: a cheaper thing than a picture of the window, and a different question.
+
+The spectrum pane is absent deliberately. It is a line plot drawn straight to a painter, with no
+pixel buffer to hand over.
+
+An optional label is appended to the filename, so a script taking several produces readable names
+rather than a column of timestamps. Labels are restricted to letters, digits, `-` and `_`, because
+they become part of a filename; anything else is a parse error rather than a silently mangled name.
+
+**Names are reproducible even though they are timestamps.** A replay run stamps from the scripted
+clock, so a `pane` at t = 5 s is always `20260101T000005.000Z-waterfall.png` — on any machine, at
+any hour.
+
+`--capture <dir>` overrides the `capture` setting, the same precedence as `--dump` over `dump`.
+With neither, captures go to `capture.dir` from the config, which defaults to `./capture`.
+
+A pane with no pixels yet — a script capturing before any spectrum has been processed — writes
+nothing and says so. That is a legitimate outcome, but a missing file would otherwise look like a
+broken directive.
 
 ## Example scripts
 
