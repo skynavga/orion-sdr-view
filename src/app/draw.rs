@@ -382,9 +382,18 @@ impl ViewApp {
             return;
         }
 
+        // The window, which may hang past either band edge.  The trace below
+        // needs no guard for that — there are simply no bins out there, so it
+        // stops of its own accord — but the empty run has to be *marked*, or a
+        // quiet band edge and the end of the band look the same.
         let lo = self.freq_view.lo();
         let hi = self.freq_view.hi();
         let nyquist = self.freq_view.nyquist;
+        if let Some((band, _, _)) = self.band_sub_rect(rect) {
+            super::utils::mark_off_band(painter, rect, band);
+        } else {
+            painter.rect_filled(rect, 0.0, super::OFF_BAND_DIM);
+        }
 
         // bin index → Hz
         let bin_hz = |b: usize| b as f32 * nyquist / (n - 1) as f32;
@@ -443,9 +452,15 @@ impl ViewApp {
                 } else {
                     format!("{:.0}", hz)
                 };
-                // Skip freq label if it would overlap the bottom-left dB label area.
+                // Skip freq label if it would overlap the bottom-left dB label
+                // area, or if it falls outside the band.  The grid line still
+                // runs through the empty region — the ruler is what makes a pan
+                // legible — but a number does not: the sources are real-valued
+                // at the display tap, so a "-50.0k" out there would assert a
+                // mirrored spectrum that is not being shown.
                 let label_x = x + 3.0;
-                if label_x >= rect.left() + db_label_clearance {
+                let in_band = (0.0..=nyquist).contains(&hz);
+                if in_band && label_x >= rect.left() + db_label_clearance {
                     painter.text(
                         egui::pos2(label_x, rect.bottom() - 14.0),
                         egui::Align2::LEFT_BOTTOM,
@@ -644,26 +659,53 @@ impl ViewApp {
         }
     }
 
+    /// The part of `rect` that holds band, and the texture UV range to draw into
+    /// it — or `None` when the view has been panned entirely off the end.
+    ///
+    /// **The reason the texture panes cannot simply keep passing `lo`/`hi`.**
+    /// `TextureOptions::NEAREST` is `TextureWrapMode::ClampToEdge`, so a UV
+    /// outside `[0, 1]` does not come back empty: it repeats the edge column
+    /// across the whole off-band region, drawing a smooth extension of the
+    /// spectrum that is entirely fabricated.  That is worse than a visible
+    /// artifact, because it looks like data and no screenshot will show it.  So
+    /// the band gets its own sub-rect and the UVs stay inside the texture.
+    fn band_sub_rect(&self, rect: egui::Rect) -> Option<(egui::Rect, f32, f32)> {
+        let (b_lo, b_hi) = self.freq_view.band_window()?;
+        let (f_lo, f_hi) = self.freq_view.band_frac()?;
+        let sub = egui::Rect::from_min_max(
+            egui::pos2(rect.left() + f_lo * rect.width(), rect.top()),
+            egui::pos2(rect.left() + f_hi * rect.width(), rect.bottom()),
+        );
+        Some((
+            sub,
+            self.freq_view.hz_to_uv(b_lo),
+            self.freq_view.hz_to_uv(b_hi),
+        ))
+    }
+
     /// Draw persistence pane with freq zoom UV and markers.
     pub(super) fn draw_persistence_pane(&self, painter: &egui::Painter, rect: egui::Rect) {
-        // Draw with UV cropped to visible frequency range
-        let lo_uv = self.freq_view.lo() / self.freq_view.nyquist;
-        let hi_uv = self.freq_view.hi() / self.freq_view.nyquist;
+        let label_font = egui::FontId::new(10.0, egui::FontFamily::Monospace);
+        let Some((band, lo_uv, hi_uv)) = self.band_sub_rect(rect) else {
+            painter.rect_filled(rect, 0.0, super::OFF_BAND_DIM);
+            self.draw_freq_markers(painter, rect, &label_font);
+            return;
+        };
+        super::utils::mark_off_band(painter, rect, band);
 
         if let Some(tex) = self.persistence.texture_handle() {
             let uv = egui::Rect::from_min_max(egui::pos2(lo_uv, 0.0), egui::pos2(hi_uv, 1.0));
-            painter.image(tex.id(), rect, uv, egui::Color32::WHITE);
+            painter.image(tex.id(), band, uv, egui::Color32::WHITE);
         } else {
-            self.persistence.draw(painter, rect, self.envelope_visible);
+            self.persistence.draw(painter, band, self.envelope_visible);
             return;
         }
 
         if self.envelope_visible {
             self.persistence
-                .draw_envelope_cropped(painter, rect, lo_uv, hi_uv);
+                .draw_envelope_cropped(painter, band, lo_uv, hi_uv);
         }
 
-        let label_font = egui::FontId::new(10.0, egui::FontFamily::Monospace);
         self.draw_freq_markers(painter, rect, &label_font);
     }
 
@@ -677,17 +719,22 @@ impl ViewApp {
     }
 
     fn draw_vertical_waterfall(&self, painter: &egui::Painter, rect: egui::Rect) {
-        let lo_uv = self.freq_view.lo() / self.freq_view.nyquist;
-        let hi_uv = self.freq_view.hi() / self.freq_view.nyquist;
-
         if self.waterfall.texture_handle().is_none() {
             return;
         }
-        // Ring-buffer draw: frequency (X) cropped to [lo_uv, hi_uv], rows mapped
-        // newest-at-top via two UV quads split at the ring head.
-        self.waterfall.draw_cropped(painter, rect, lo_uv, hi_uv);
-
         let label_font = egui::FontId::new(10.0, egui::FontFamily::Monospace);
+        let Some((band, lo_uv, hi_uv)) = self.band_sub_rect(rect) else {
+            painter.rect_filled(rect, 0.0, super::OFF_BAND_DIM);
+            self.draw_freq_markers(painter, rect, &label_font);
+            return;
+        };
+        super::utils::mark_off_band(painter, rect, band);
+
+        // Ring-buffer draw: frequency (X) cropped to [lo_uv, hi_uv] and confined
+        // to the band's sub-rect, rows mapped newest-at-top via two UV quads
+        // split at the ring head.
+        self.waterfall.draw_cropped(painter, band, lo_uv, hi_uv);
+
         self.draw_freq_markers(painter, rect, &label_font);
     }
 
@@ -705,20 +752,33 @@ impl ViewApp {
         let grid_stroke = egui::Stroke::new(0.5_f32, egui::Color32::from_gray(45));
 
         // ── Frequency window ─────────────────────────────────────────────
-        // The spectrogram shows the same frequency extent as the spectrum /
-        // waterfall panes: centered on the primary marker, ± half the current
-        // viewport span, so ↑/↓ zoom scales it in lockstep.
-        let center_hz = self.markers[0].hz;
-        let delta_hz = self.freq_view.visible_span() / 2.0;
+        // The same window the spectrum and waterfall panes draw, taken from the
+        // viewport rather than re-derived: this used to recompute it from the
+        // primary marker and clamp it to the band on its own, a second copy of a
+        // rule the viewport already owns.  Two copies were harmless while both
+        // clamped; under overscan they would disagree, and the disagreement
+        // would show up as axis labels that no longer line up with the pixels.
+        let center_hz = self.freq_view.center_hz;
+        let delta_hz = self.freq_view.span_hz / 2.0;
         let nyquist = self.freq_view.nyquist;
-        let f_lo = (center_hz - delta_hz).max(0.0);
-        let f_hi = (center_hz + delta_hz).min(nyquist);
-        let f_span = (f_hi - f_lo).max(1.0);
+        let f_lo = self.freq_view.lo();
+        let f_hi = self.freq_view.hi();
+        let f_span = self.freq_view.span_hz.max(1.0);
 
         let y_for_hz = |hz: f32| -> f32 {
             // hi → top, lo → bottom
             rect.top() + (f_hi - hz) / f_span * rect.height()
         };
+
+        // The band edges, where they fall inside the pane.  `commit_column`
+        // paints the off-band rows themselves — they are inside the texture, not
+        // over it — so all that is left here is to say where the band stopped.
+        let edge_stroke = egui::Stroke::new(1.0_f32, super::BAND_EDGE_COL);
+        for edge in [0.0_f32, nyquist] {
+            if edge > f_lo && edge < f_hi {
+                painter.hline(rect.x_range(), y_for_hz(edge), edge_stroke);
+            }
+        }
 
         // ── Horizontal frequency grid + labels ──────────────────────────
         // Three labels inside the pane at center±delta/2 and center.  The
@@ -738,6 +798,11 @@ impl ViewApp {
         let lo_half = center_hz - delta_hz * 0.5;
         for hz in [hi_half, center_hz, lo_half] {
             painter.hline(rect.x_range(), y_for_hz(hz), grid_stroke);
+            // Same rule as the spectrum's frequency axis: the grid line runs
+            // through the off-band region, the number does not.
+            if !(0.0..=nyquist).contains(&hz) {
+                continue;
+            }
             painter.text(
                 egui::pos2(rect.left() + 4.0, y_for_hz(hz) - 2.0),
                 egui::Align2::LEFT_BOTTOM,
@@ -887,7 +952,10 @@ impl ViewApp {
                 2,
             ),
             ("Frequency Pan / Zoom", 1),
-            ("← / →\tpan left / right", 2),
+            (
+                "← / →\tpan left / right (past the band edge; Z or R returns)",
+                2,
+            ),
             ("Shift+← / →\tfine pan, snap 100 Hz", 2),
             ("Ctrl+Shift+← / →\textra-fine pan, snap 10 Hz", 2),
             ("↑ / ↓ | Shift+↑ / ↓\tzoom | fine zoom (in / out)", 2),

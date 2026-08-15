@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use eframe::egui;
 
 use super::capture::CaptureController;
-use super::freqview::{FreqMarker, FreqView};
+use super::freqview::{FreqMarker, FreqView, PanLimit};
 use super::persistence::PersistenceRenderer;
 use super::settings::{AmDsbSettings, CwSettings, Psk31Settings, SettingsState, ToneSettings};
 use super::spectrogram::SpectrogramDisplay;
@@ -1015,10 +1015,6 @@ impl ViewApp {
                 let left = i.key_pressed(egui::Key::ArrowLeft);
                 let right = i.key_pressed(egui::Key::ArrowRight);
                 if left || right {
-                    // Zoom in from full span first so panning has room at all.
-                    // How far is a trade against how much of the screen the
-                    // signal fills — see `PAN_AUTO_ZOOM`.
-                    self.freq_view.ensure_pannable();
                     let coarse = self.freq_view.span_hz / 12.0;
                     let step = if i.modifiers.ctrl && i.modifiers.shift {
                         coarse * 0.01 // extra-fine
@@ -1078,7 +1074,17 @@ impl ViewApp {
             if self.settings.pan_signal_follows() {
                 pan_delta = -pan_delta;
             }
-            self.freq_view.pan(pan_delta);
+            // The lock writes the viewport centre into the source's carrier row,
+            // which clamps to the source's own range — so panning into empty
+            // space with `L` engaged would pin the row while the view kept
+            // moving, and the lock would stop tracking with nothing on screen to
+            // say why.  Overscan is reachable with the lock off.
+            let limit = if self.source_locked {
+                PanLimit::Band
+            } else {
+                PanLimit::Overscan
+            };
+            self.freq_view.pan(pan_delta, limit);
         }
         if zoom_delta.abs() > 0.001 {
             self.freq_view.step_zoom(zoom_delta);
@@ -1096,6 +1102,12 @@ impl ViewApp {
 
         if toggle_lock {
             self.source_locked ^= true;
+            if self.source_locked {
+                // Engaging the lock re-seats a panned-out view inside the band,
+                // so "locked carrier == viewport centre" holds from this frame
+                // rather than from the next pan.  A zero-delta pan is the clamp.
+                self.freq_view.pan(0.0, PanLimit::Band);
+            }
         }
 
         // Update primary marker to track center
@@ -1429,8 +1441,13 @@ impl ViewApp {
             .set_time_range(self.settings.spec_time_range_secs());
         // Frequency window = ± half the current viewport span (same extent as
         // the spectrum/waterfall panes), so ↑/↓ zoom scales the spectrogram.
-        let spec_center = self.markers[0].hz;
-        let spec_delta = self.freq_view.visible_span() / 2.0;
+        //
+        // Read from the viewport, not from `markers[0]`.  The marker is written
+        // from `center_hz` in `handle_keys`, which a headless run never calls —
+        // so sourcing the data path from it would let the pixels and the axis
+        // drift apart in exactly the configuration used to test them.
+        let spec_center = self.freq_view.center_hz;
+        let spec_delta = self.freq_view.span_hz / 2.0;
         self.spectrogram.push_spectrum(
             &self.spectrum.fft_out_db,
             dt,

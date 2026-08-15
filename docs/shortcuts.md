@@ -31,12 +31,19 @@
 
 | Key | Action |
 | --- | --- |
-| `←` / `→` | Pan frequency view (coarse, 1/12 of span per press; zooms in first if at full span) |
+| `←` / `→` | Pan frequency view (coarse, 1/12 of span per press; may pan past the band edge) |
 | `Shift+←` / `Shift+→` | Pan frequency view (fine, 10% of coarse) |
 | `Ctrl+Shift+←` / `Ctrl+Shift+→` | Pan frequency view (extra-fine, 1% of coarse) |
 | `↑` / `↓` | Zoom in / out (±0.5×) |
 | `Shift+↑` / `Shift+↓` | Fine zoom in / out (±0.1×) |
 | `Z` | Center view to mid-band (keeps zoom) |
+
+The view may be panned past either end of `0..Nyquist`, stopping when the band edge reaches screen
+centre. The empty region is dimmed and the band edge drawn as a line, so it cannot be mistaken for a
+quiet part of the band. `Z` recentres and `R` resets. See [Viewport](viewport.md#panning-past-the-band).
+
+With the source lock (`L`) engaged the pan stays inside the band, because the lock writes the
+viewport centre into the source's carrier and there is no source out past the edge to follow.
 
 ## Markers
 

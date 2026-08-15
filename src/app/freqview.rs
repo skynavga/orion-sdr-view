@@ -7,7 +7,7 @@
 //! the library at [`crate::viewport`]; it is re-exported here so the rest of the
 //! app keeps one import path for the pair.
 
-pub use crate::viewport::FreqView;
+pub use crate::viewport::{FreqView, PanLimit};
 
 // ── FreqMarker ────────────────────────────────────────────────────────────────
 

@@ -5,6 +5,34 @@
 
 use eframe::egui;
 
+use super::{BAND_EDGE_COL, OFF_BAND_DIM};
+
+/// Mark the parts of `rect` outside `band` as lying beyond the band edge.
+///
+/// Called by every pane that can now be panned past `0..nyquist`.  The wash says
+/// "not a place data can be"; the edge line says *where* the band stopped, which
+/// dimming alone does not — in the waterfall an absent signal is already dark,
+/// so without the line the two are indistinguishable.
+pub(super) fn mark_off_band(painter: &egui::Painter, rect: egui::Rect, band: egui::Rect) {
+    let edge = egui::Stroke::new(1.0_f32, BAND_EDGE_COL);
+    if band.left() > rect.left() {
+        painter.rect_filled(
+            egui::Rect::from_min_max(rect.left_top(), egui::pos2(band.left(), rect.bottom())),
+            0.0,
+            OFF_BAND_DIM,
+        );
+        painter.vline(band.left(), rect.y_range(), edge);
+    }
+    if band.right() < rect.right() {
+        painter.rect_filled(
+            egui::Rect::from_min_max(egui::pos2(band.right(), rect.top()), rect.right_bottom()),
+            0.0,
+            OFF_BAND_DIM,
+        );
+        painter.vline(band.right(), rect.y_range(), edge);
+    }
+}
+
 /// Draw a dashed horizontal line at `y` from `x0` to `x1`.  Matches the
 /// dash geometry used for vertical frequency markers in the other panes.
 pub(super) fn dashed_hline(

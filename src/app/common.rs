@@ -11,6 +11,30 @@ pub(crate) const PANE_BG: [egui::Color32; 3] = [
     egui::Color32::from_rgb(40, 30, 60),
 ];
 
+/// Wash over the part of a pane lying outside `0..nyquist`, once the viewport is
+/// allowed to pan past a band edge.
+///
+/// Premultiplied black, so it darkens whichever `PANE_BG` it lands on rather
+/// than replacing it — one constant for all three panes, and the pane keeps its
+/// identity while the empty region stops looking like a place data could be.
+pub(crate) const OFF_BAND_DIM: egui::Color32 = egui::Color32::from_rgba_premultiplied(0, 0, 0, 160);
+
+/// [`OFF_BAND_DIM`] pre-composited over `PANE_BG[2]`, for the spectrogram.
+///
+/// That pane's off-band region is *inside* its texture rather than painted over
+/// it — rows outside the band are written as pixels — and the texture is opaque,
+/// so the wash has to be resolved to a solid colour here: `40·(1−160/255) ≈ 15`,
+/// `30· ≈ 11`, `60· ≈ 22`.  Distinct from the colour ramp's floor, which is pure
+/// black, so "no band here" cannot be read as "no signal here".
+pub(crate) const OFF_BAND_SOLID: egui::Color32 = egui::Color32::from_rgb(15, 11, 22);
+
+/// The band edge itself, drawn where `0` or Nyquist falls inside a pane.
+///
+/// Dimming alone is too weak a cue in the waterfall, where absent signal is
+/// already dark.  A visible edge is what says the band *stops* here rather than
+/// merely going quiet, and it is the cue that tells the user which way home is.
+pub(crate) const BAND_EDGE_COL: egui::Color32 = egui::Color32::from_rgb(90, 90, 110);
+
 pub(crate) const FFT_SIZE: usize = 1024;
 pub(crate) const SAMPLE_RATE: f32 = 48_000.0;
 /// Per-frame sample consumption is paced to wall-clock
