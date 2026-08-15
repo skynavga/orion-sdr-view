@@ -14,11 +14,12 @@
 
 use std::path::{Path, PathBuf};
 
-use orion_sdr_view::utils::script::{Action, Script, ScriptSettings};
+use orion_sdr_view::app::SourceMode;
+use orion_sdr_view::utils::script::{Action, Script, ScriptSettings, source_mode_by_name};
 
 const EXAMPLE: &str = "
 # t(s)   directive
-0.00     key I x5              # cycle to COFDM
+0.00     source COFDM          # select a source by name
 0.50     key L                 # lock the source to the viewport centre
 0.75     key shift+ArrowRight
 0.80     text a
@@ -100,6 +101,101 @@ fn text_directives_reach_the_bindings_keys_cannot() {
         assert_eq!(
             s.steps[0].action.events(),
             vec![egui::Event::Text(literal.to_owned())]
+        );
+    }
+}
+
+// ── Naming a source ─────────────────────────────────────────────────────────
+
+#[test]
+fn a_source_directive_is_an_i_press_with_the_count_left_to_the_reader() {
+    // Not a separate mechanism: it delivers exactly what `key I` delivers, so
+    // the same key path runs.  What it drops is the *count*, which is the part
+    // a script cannot know — the distance to a source depends on where the app
+    // already is — and the part that goes stale when the list changes.
+    let s = Script::parse("0.0 source COFDM").expect("parses");
+    assert_eq!(
+        s.steps[0].action,
+        Action::Source {
+            mode: SourceMode::Cofdm
+        }
+    );
+    assert_eq!(s.steps[0].action.events(), {
+        let i = Script::parse("0.0 key I").expect("parses");
+        i.steps[0].action.events()
+    });
+}
+
+#[test]
+fn every_source_is_nameable_by_the_label_it_shows() {
+    // The round trip that keeps this honest as sources are added: a new variant
+    // in `SourceMode::ALL` is nameable with no edit to the parser, and a label
+    // that collided with another would fail here rather than in a dump.
+    for mode in SourceMode::ALL {
+        let s = Script::parse(&format!("0.0 source {}", mode.label())).expect("label parses");
+        assert_eq!(s.steps[0].action, Action::Source { mode: *mode });
+    }
+}
+
+#[test]
+fn source_names_ignore_case_and_punctuation() {
+    // A two-word label has no single obvious spelling, so all of them work
+    // rather than one being correct and the rest being parse errors.
+    for spelling in ["AM DSB", "AM-DSB", "AM_DSB", "amdsb", "Am.Dsb"] {
+        assert_eq!(
+            source_mode_by_name(spelling),
+            Some(SourceMode::AmDsb),
+            "`{spelling}` should name AM DSB"
+        );
+    }
+    assert_eq!(source_mode_by_name("cofdm"), Some(SourceMode::Cofdm));
+    assert_eq!(source_mode_by_name("TestTone"), Some(SourceMode::TestTone));
+    // ...and a multi-word spelling survives the parser's whitespace splitting.
+    let s = Script::parse("0.0 source test tone").expect("parses");
+    assert_eq!(
+        s.steps[0].action,
+        Action::Source {
+            mode: SourceMode::TestTone
+        }
+    );
+}
+
+#[test]
+fn a_name_that_matches_nothing_is_not_a_near_miss() {
+    // Folding is not fuzzy matching: dropping punctuation must not make two
+    // different sources collide, or a typo would silently select a neighbour.
+    for name in ["", "FT9", "PSK", "AM", "COFDM2"] {
+        assert_eq!(
+            source_mode_by_name(name),
+            None,
+            "`{name}` should not resolve"
+        );
+    }
+}
+
+#[test]
+fn a_bad_source_directive_names_itself() {
+    for (src, needle) in [
+        ("0.0 source NotASource", "is not a source"),
+        ("0.0 source", "needs a source name"),
+        ("0.0 source COFDM x5", "takes no repeat count"),
+    ] {
+        let e = Script::parse(src).expect_err(&format!("`{src}` should not parse"));
+        assert_eq!(e.line, 1);
+        assert!(
+            e.message.contains(needle),
+            "`{src}` gave `{}`, expected it to mention `{needle}`",
+            e.message
+        );
+    }
+    // The diagnostic lists what *does* exist, so a wrong name is self-service.
+    let e = Script::parse("0.0 source NotASource").unwrap_err();
+    for mode in SourceMode::ALL {
+        assert!(
+            e.message.contains(mode.label()),
+            "expected `{}` in: {}",
+            mode.label(),
+            e.message
         );
     }
 }

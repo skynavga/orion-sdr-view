@@ -34,4 +34,4 @@ orion-sdr-view --headless --config scripts/degraded.yaml \
   --script scripts/cofdm-degraded.txt --dump run.jsonl
 ```
 
-The format is documented in the top-level `README.md` under **Headless replay**.
+The format is documented in [`docs/headless.md`](../docs/headless.md).

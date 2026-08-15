@@ -27,8 +27,8 @@ struct Cli {
     #[arg(long, value_name = "FILE")]
     script: Option<std::path::PathBuf>,
 
-    /// Write the measurement stream to FILE as JSON Lines; overrides the
-    /// script's own `dump`
+    /// Write the measurement stream to FILE as JSON Lines, or to stdout for
+    /// `-`; overrides the script's own `dump`
     ///
     /// Deliberately does *not* imply --headless: dumping from an interactive
     /// session is a reasonable future want, but it would not be reproducible and

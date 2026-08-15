@@ -11,6 +11,6 @@
 
 duration 15
 
-0.00 key I         # Test Tone -> CW
+0.00 source CW
 0.50 key D         # decode bar: off -> Di
 0.75 key D         # Di -> Dt (text)

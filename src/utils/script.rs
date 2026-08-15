@@ -9,7 +9,7 @@
 //! dump     run.jsonl
 //!
 //! # t(s)   directive
-//! 0.00     key I x5              # cycle to COFDM
+//! 0.00     source COFDM          # select a source by name
 //! 0.50     key L                 # lock the source to the viewport centre
 //! 0.75     key shift+ArrowRight
 //! 0.80     text a                # markers arrive as Text, not Key
@@ -26,6 +26,23 @@
 //! [`ViewApp::advance`](crate::app::ViewApp::advance) a driver steps exactly to
 //! each boundary, so "at t = 0.75 s" is exact rather than approximate.
 //!
+//! # Naming a source
+//!
+//! `source COFDM` selects a source by name.  It is not a shorthand for a
+//! different mechanism — it presses `I` exactly as `key I` does, with **the
+//! count worked out at run time** rather than written down.
+//!
+//! That is the whole of it: `key I x5` encodes the *distance* from wherever the
+//! app happens to be to the source you meant, so adding a source, reordering
+//! the list, or starting from a different one retargets every such line at once.
+//! It fails silently, too — the line still parses and still runs, just onto the
+//! wrong source, and a dump is perfectly happy to record a measurement of the
+//! wrong thing.  A name cannot go stale that way: it either resolves or the
+//! script does not parse.
+//!
+//! Names are case- and punctuation-insensitive, so `AM DSB`, `AM-DSB`, `AM_DSB`
+//! and `amdsb` are one source.  See [`source_mode_by_name`].
+//!
 //! # Run settings
 //!
 //! `duration` and `dump` take **no time**, because they configure the run rather
@@ -41,10 +58,14 @@
 //! A `dump` path may be absolute or relative, and a relative one resolves
 //! **against the viewer's working directory** — the same as `--dump` and as any
 //! other path a shell hands a program.  The directive is a default for the flag,
-//! so the two must mean the same thing given the same string.
+//! so the two must mean the same thing given the same string.  That includes
+//! `-`, which means standard output in both; see
+//! [`STDOUT_PATH`](crate::replay::STDOUT_PATH).
 
 use std::fmt;
 use std::path::PathBuf;
+
+use crate::app::SourceMode;
 
 /// A parse failure, carrying the 1-based source line so the diagnostic can name
 /// it.  A headless run must fail loudly on an unparsable script rather than
@@ -77,6 +98,16 @@ pub enum Action {
     /// out of [`egui::Event::Text`], so a key-only format could not reach the
     /// marker or dB-reference bindings at all.
     Text { text: String },
+    /// Select a source by name.
+    ///
+    /// **This is `key I` with the repeat count deferred to run time.**  It
+    /// delivers the same press, and the reader keeps delivering it until
+    /// `mode` is active — at most [`SourceMode::ALL`]`.len()` times, since
+    /// [`SourceMode::next`] cycles every source.  So it drives the same key
+    /// path a user does; the only thing it removes is the need to know how far
+    /// away the source is, which is the part a script cannot know and the part
+    /// that goes stale.
+    Source { mode: SourceMode },
     /// A property for the *test harness* to check.  The replay driver parses it
     /// — so a typo is still an error — and then ignores it.
     Assert { name: String, args: Vec<String> },
@@ -91,22 +122,10 @@ impl Action {
     /// the only one — see the key up again in the same pass and so do not fire.
     pub fn events(&self) -> Vec<egui::Event> {
         match self {
-            Self::Key { key, modifiers } => vec![
-                egui::Event::Key {
-                    key: *key,
-                    physical_key: None,
-                    pressed: true,
-                    repeat: false,
-                    modifiers: *modifiers,
-                },
-                egui::Event::Key {
-                    key: *key,
-                    physical_key: None,
-                    pressed: false,
-                    repeat: false,
-                    modifiers: *modifiers,
-                },
-            ],
+            Self::Key { key, modifiers } => key_events(*key, *modifiers),
+            // One `I` press, the same as `key I`.  How many of them a selection
+            // needs is the reader's business, not the event's.
+            Self::Source { .. } => key_events(egui::Key::I, egui::Modifiers::default()),
             Self::Text { text } => vec![egui::Event::Text(text.clone())],
             Self::Assert { .. } => Vec::new(),
         }
@@ -124,6 +143,53 @@ impl Action {
             _ => egui::Modifiers::default(),
         }
     }
+}
+
+/// One key's press and release, for delivery within a single pass.
+fn key_events(key: egui::Key, modifiers: egui::Modifiers) -> Vec<egui::Event> {
+    vec![
+        egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        },
+        egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: false,
+            repeat: false,
+            modifiers,
+        },
+    ]
+}
+
+/// Resolve a source name as written in a script.
+///
+/// Case- and punctuation-insensitive: `AM DSB`, `AM-DSB`, `AM_DSB` and `amdsb`
+/// all name the same source.  The labels these are matched against are the ones
+/// the HUD shows, so what a script writes is what a user reads on screen — and
+/// a source added to [`SourceMode::ALL`] becomes nameable with no edit here.
+pub fn source_mode_by_name(name: &str) -> Option<SourceMode> {
+    let want = fold_name(name);
+    if want.is_empty() {
+        return None;
+    }
+    SourceMode::ALL
+        .iter()
+        .copied()
+        .find(|m| fold_name(m.label()) == want)
+}
+
+/// Fold a source name to its comparison form: ASCII letters and digits only,
+/// lowercased.  Spacing and punctuation carry no meaning in these labels, so
+/// two spellings that differ only there are the same name.
+fn fold_name(s: &str) -> String {
+    s.chars()
+        .filter(char::is_ascii_alphanumeric)
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
 }
 
 /// One directive at one instant.
@@ -150,7 +216,8 @@ pub struct Step {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ScriptSettings {
     /// Where to write the dump.  Absolute or relative; a relative path resolves
-    /// against the working directory, exactly as `--dump` does.
+    /// against the working directory, exactly as `--dump` does, and `-` means
+    /// standard output in both.
     pub dump: Option<PathBuf>,
     /// How long to run, in scripted seconds.
     pub duration: Option<f32>,
@@ -313,7 +380,7 @@ fn parse_step(text: &str, line: usize) -> Result<Step, ScriptError> {
 
     let verb = words
         .next()
-        .ok_or_else(|| err("expected `key`, `text` or `assert`".to_owned()))?;
+        .ok_or_else(|| err("expected `key`, `source`, `text` or `assert`".to_owned()))?;
     let rest: Vec<&str> = words.collect();
 
     // A trailing `xN` repeat count applies to key and text alike.
@@ -332,6 +399,32 @@ fn parse_step(text: &str, line: usize) -> Result<Step, ScriptError> {
             };
             let (key, modifiers) = parse_key_spec(spec, line)?;
             Action::Key { key, modifiers }
+        }
+        "source" => {
+            // A repeat is refused rather than ignored: `source COFDM x5` reads
+            // as "five presses", but the count is exactly what this directive
+            // exists to stop anyone writing, and honouring it would re-select
+            // the same source five times — five playback resets, silently.
+            if repeat != 1 {
+                return Err(err(
+                    "`source` takes no repeat count; it presses `I` until the named source is active"
+                        .to_owned(),
+                ));
+            }
+            if rest.is_empty() {
+                return Err(err("`source` needs a source name".to_owned()));
+            }
+            // Joined, so a two-word label may be written the way it is shown:
+            // `source AM DSB` and `source AM-DSB` are the same line.
+            let name = rest.join(" ");
+            let mode = source_mode_by_name(&name).ok_or_else(|| {
+                let names: Vec<&str> = SourceMode::ALL.iter().map(|m| m.label()).collect();
+                err(format!(
+                    "`{name}` is not a source (expected one of: {})",
+                    names.join(", ")
+                ))
+            })?;
+            Action::Source { mode }
         }
         "text" => {
             let [literal] = rest[..] else {
@@ -355,7 +448,7 @@ fn parse_step(text: &str, line: usize) -> Result<Step, ScriptError> {
         }
         other => {
             return Err(err(format!(
-                "`{other}` is not a directive (expected `key`, `text` or `assert`)"
+                "`{other}` is not a directive (expected `key`, `source`, `text` or `assert`)"
             )));
         }
     };

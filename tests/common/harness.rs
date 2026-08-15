@@ -26,7 +26,7 @@
 
 use orion_sdr_view::app::ViewApp;
 use orion_sdr_view::config::ViewConfig;
-use orion_sdr_view::utils::script::{Action, Script};
+use orion_sdr_view::utils::script::{Action, Script, source_mode_by_name};
 
 /// Wrapper matching the `view:` key, so a test can build a [`ViewConfig`] from
 /// an inline YAML fixture the same way the real loader does.
@@ -163,6 +163,10 @@ impl Harness {
             }
             match &step.action {
                 Action::Assert { name, args } => self.check(step.line, name, args),
+                // Already implemented, and by pressing `I` — which is exactly
+                // what the directive means.  The parser refuses a repeat on it,
+                // so there is no count to honour here.
+                Action::Source { mode } => self.select_source(*mode),
                 action => {
                     for _ in 0..step.repeat {
                         self.frame(action.events(), action.modifiers());
@@ -184,7 +188,6 @@ impl Harness {
             "span_hz" => self.app.freq_view().span_hz as f64,
             "zoom" => self.app.freq_view().zoom_ratio() as f64,
             "zoom_row" => self.app.settings().zoom_ratio() as f64,
-            "source" => self.app.source_mode().index() as f64,
             "locked" => self.app.source_locked() as u8 as f64,
             "fs_hz" => self.app.source_sample_rate() as f64,
             "cofdm_center_hz" => self.app.settings().cofdm_center_hz() as f64,
@@ -193,14 +196,41 @@ impl Harness {
     }
 
     fn check(&self, line: usize, name: &str, args: &[String]) {
+        let first = args
+            .first()
+            .unwrap_or_else(|| panic!("line {line}: `assert {name}` needs a value"));
+
+        // `source` asserts a **name**, not an index.  An index is a position in
+        // `SourceMode::ALL`, so adding or reordering a source changes what the
+        // line means without changing the line — and the assertion carries on
+        // passing, against a source nobody asked about.  Resolved through the
+        // same folding the `source` directive uses, so `assert source am-dsb`
+        // and `source AM-DSB` agree on what they name.
+        if name == "source" {
+            let got = self.app.source_mode();
+            // Joined, not just the first word: `assert` splits on whitespace, so
+            // a two-word label arrives as two arguments.  The `source` directive
+            // joins for the same reason, and the two must accept the same
+            // spellings or `assert source Test Tone` would read as `Test`.
+            let spelling = args.join(" ");
+            let want = source_mode_by_name(&spelling)
+                .unwrap_or_else(|| panic!("line {line}: `{spelling}` is not a source"));
+            assert_eq!(
+                got,
+                want,
+                "line {line}: source is {}, expected {}",
+                got.label(),
+                want.label()
+            );
+            return;
+        }
+
         let got = self
             .probe(name)
             .unwrap_or_else(|| panic!("line {line}: `{name}` is not an assertable property"));
-        let want: f64 = args
-            .first()
-            .unwrap_or_else(|| panic!("line {line}: `assert {name}` needs a value"))
+        let want: f64 = first
             .parse()
-            .unwrap_or_else(|_| panic!("line {line}: `{:?}` is not a number", args[0]));
+            .unwrap_or_else(|_| panic!("line {line}: `{first:?}` is not a number"));
         let tol: f64 = match args.get(1) {
             Some(t) => t
                 .parse()

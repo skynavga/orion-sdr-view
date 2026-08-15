@@ -1,6 +1,6 @@
 # Measure a COFDM link at the default 35 dB C/N.
 #
-# Cycles to COFDM and then leaves it alone: the measurement is of the waveform,
+# Selects COFDM and then leaves it alone: the measurement is of the waveform,
 # not of the interaction.  Every `instrument` record in the dump carries the full
 # reading the `X` panel shows, each field with its provenance.
 #
@@ -11,4 +11,4 @@
 
 duration 20
 
-0.00 key I x5      # Test Tone -> CW -> AM DSB -> PSK31 -> FT8 -> COFDM
+0.00 source COFDM
