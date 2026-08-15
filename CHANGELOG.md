@@ -9,6 +9,78 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.29] - 2026-08-15
+
+### Changed
+
+- **The frequency view can be panned past either end of the band**, the way
+  most panadapters work, stopping when the band edge reaches screen centre. It
+  is a visible change to `←`/`→` on every source. Previously the window was
+  held inside `0..Nyquist`, which made two unrelated things one number: the
+  distance the view could travel was exactly the part of the band that was
+  *not* on screen, while the step was a fraction of the part that *was*. So
+  widening the span to make a signal look smaller was the same act as
+  shortening the pan, and no zoom ratio gave both. The travel is now the whole
+  band at every zoom, and the zoom is free to be chosen for how the signal
+  should look.
+- **`←`/`→` no longer zooms in before it can move.** At full span the old pan
+  was inert by construction — the centre had exactly one legal value — so the
+  first arrow press had to zoom or the key did nothing. How far to zoom was
+  that same unwinnable trade, which is why `PAN_AUTO_ZOOM` is deleted rather
+  than retuned. This removes a branch from the key handler.
+- **Zoom can no longer move the centre.** Bounding overscan at half a span
+  makes the centre bound `[0, Nyquist]` whatever the zoom, so `↑`/`↓` magnify
+  about the centre and never slide the view sideways.
+- **The region outside the band is dimmed, with the band edge drawn as a
+  line.** The line is the point: in the waterfall an absent signal is already
+  dark, so dimming alone could not distinguish *the band stops here* from *the
+  band is quiet here*. Frequency grid lines continue through the empty region,
+  but the axis is not labelled out there — the sources are real-valued at the
+  display tap, so a negative frequency label would assert a mirrored spectrum
+  that is not being shown.
+- **A locked view (`L`) still cannot leave the band.** The lock writes the
+  viewport centre into the active source's carrier setting, which clamps to
+  that source's own range; panning into empty space would pin it at that bound
+  while the view kept moving, so the lock would quietly stop tracking with
+  nothing on screen to say why. Engaging `L` while already panned out re-seats
+  the view for the same reason.
+- **Overscan does not survive a source switch.** The empty space was measured
+  against the old band, so carrying a fraction of it across a sample-rate
+  change or an auto-frame would land the new source somewhere neither the user
+  nor the arithmetic chose.
+
+### Fixed
+
+- **The spectrogram would have compressed the spectrum rather than letting it
+  scroll off.** It clamped its frequency window to the band in three places,
+  one of them inside `commit_column` — the data path — so it would have kept
+  mapping `0..Nyquist` across every row while the axis labels beside it said
+  otherwise. All three now read the window from the viewport, and rows outside
+  the band are painted as off-band rather than sampled.
+- **The spectrogram's data path read the primary marker rather than the
+  viewport.** The marker is written in `handle_keys`, which a headless run
+  never calls, so the pixels and the axis could drift apart in exactly the
+  configuration used to test them.
+
+### Testing
+
+- **`tests/overscan.rs` checks the empty region in pixels**, because the
+  failure mode looks like data rather than like a defect: pane textures sample
+  with `ClampToEdge`, so a coordinate past the end does not come back empty —
+  it repeats the band's edge column across the whole region as a smooth,
+  fabricated continuation of the spectrum. No screenshot would show it.
+  Thresholds are calibrated against the defect rather than guessed:
+  reintroducing the smear measures **5.76%** saturated pixels in the empty
+  region against **0.48%** with the fix.
+- **`scripts/overscan.txt` is executed verbatim by the suite.** `scripts/`
+  documentation has claimed since 0.0.26 that a script's `assert` lines make it
+  "a regression test unchanged", but no test was dropping one in — true of the
+  format, untrue of the tree. Every frequency the script and `docs/viewport.md`
+  quote is now checked in CI.
+- The six tests that asserted the deleted invariant were rewritten rather than
+  patched; the three auto-zoom tests had no successor, since the trade they
+  pinned no longer exists.
+
 ## [0.0.28] - 2026-08-15
 
 ### Added
