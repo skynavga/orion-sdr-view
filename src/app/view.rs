@@ -463,6 +463,63 @@ impl ViewApp {
         self.capture.is_recording()
     }
 
+    /// Write one pane's raster to `dir`, with a metadata sidecar.
+    ///
+    /// The headless entry point: no renderer, no GPU, no screenshot round trip
+    /// — the pane's pixels are already CPU-side.  Returns the path written, or
+    /// `None` if the pane has no pixels yet.
+    pub fn capture_pane(
+        &mut self,
+        dir: &std::path::Path,
+        pane: crate::utils::script::Pane,
+        label: Option<&str>,
+    ) -> std::io::Result<Option<std::path::PathBuf>> {
+        let scene = self.scene_info();
+        let seq = self.capture.next_pane_seq();
+        super::capture::write_pane(
+            self,
+            super::capture::PaneRequest {
+                dir,
+                pane,
+                label,
+                seq,
+                now: self.clock.now(),
+                offset_min: self.time_zone_offset_min,
+                scene,
+            },
+        )
+    }
+
+    /// Write an already-rasterized frame as a still, with its sidecar.
+    ///
+    /// The headless counterpart to the interactive `F` path: the pixels arrive
+    /// from a CPU rasterizer rather than a GPU readback, and everything after
+    /// that point — naming, metadata, encoding — is the same code.
+    pub fn write_still_raster(
+        &mut self,
+        dir: &std::path::Path,
+        label: Option<&str>,
+        width: u32,
+        height: u32,
+        rgba: &[u8],
+    ) -> std::io::Result<std::path::PathBuf> {
+        let scene = self.scene_info();
+        let seq = self.capture.next_pane_seq();
+        let now = self.clock.now();
+        let offset = self.time_zone_offset_min;
+        let stamp = crate::utils::format::format_stamp(now, offset);
+        let name = match label {
+            Some(l) => format!("{stamp}-{l}.png"),
+            None => format!("{stamp}.png"),
+        };
+        let path = dir.join(name);
+        crate::capture::write_png(&path, width, height, rgba)?;
+        let mut m = crate::capture::StillMeta::new(&path, now, offset, seq, width, height, scene);
+        m.label = label.map(str::to_owned);
+        crate::capture::write_json(&crate::capture::sidecar_path(&path), &m)?;
+        Ok(path)
+    }
+
     /// `F` — capture one still.
     ///
     /// **One implementation, called from both key paths**, the same shape as
@@ -1412,6 +1469,17 @@ impl ViewApp {
     /// overlay, so the harness calls [`handle_keys`](Self::handle_keys) itself.
     pub fn draw(&mut self, ui: &mut egui::Ui) {
         self.handle_keys(ui.ctx());
+        self.draw_ui(ui);
+    }
+
+    /// Everything `draw` does **except** handling keys.
+    ///
+    /// Split out for a caller that has already handled them: the replay driver
+    /// calls `handle_keys` itself, because it drives the app without drawing at
+    /// all on most frames.  Calling `draw` there would process every keystroke
+    /// twice — a press and a second press in the same pass — which for a toggle
+    /// means no change at all.
+    pub fn draw_ui(&mut self, ui: &mut egui::Ui) {
         self.draw_hud(ui);
         if self.decode_bar.is_visible() {
             egui::Panel::bottom("decode_bar")
@@ -1483,6 +1551,14 @@ impl ViewApp {
     }
 
     /// Pane 3's horizontal spectrogram, for the CPU-side pixel assertions.
+    /// The persistence pane's accumulated density as an image.
+    ///
+    /// Built on demand rather than kept, since the renderer uploads it to a
+    /// texture and never needs it CPU-side afterwards.
+    pub fn persistence_image(&self) -> Option<egui::ColorImage> {
+        Some(self.persistence.map.to_color_image())
+    }
+
     pub fn spectrogram(&self) -> &SpectrogramDisplay {
         &self.spectrogram
     }

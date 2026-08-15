@@ -46,6 +46,12 @@ pub struct StillMeta {
     pub seq: u64,
     pub width: u32,
     pub height: u32,
+    /// Which pane this is, when it is a pane raster rather than a window still.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pane: Option<String>,
+    /// The script's label for this capture, if it gave one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
     #[serde(flatten)]
     pub scene: SceneInfo,
 }
@@ -92,6 +98,8 @@ impl StillMeta {
             seq,
             width,
             height,
+            pane: None,
+            label: None,
             scene,
         }
     }

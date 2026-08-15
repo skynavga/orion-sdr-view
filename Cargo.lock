@@ -1982,20 +1982,23 @@ dependencies = [
 
 [[package]]
 name = "orion-sdr-view"
-version = "0.0.27"
+version = "0.0.28"
 dependencies = [
  "clap",
  "eframe",
  "egui",
+ "egui-wgpu",
  "hound",
  "num-complex",
  "orion-sdr",
  "png",
+ "pollster",
  "rustfft",
  "serde",
  "serde_json",
  "serde_yaml",
  "tempfile",
+ "wgpu",
 ]
 
 [[package]]

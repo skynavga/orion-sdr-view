@@ -375,3 +375,160 @@ fn a_script_with_no_settings_carries_none() {
     assert_eq!(s.settings, ScriptSettings::default());
     assert_eq!(s.settings.dump, None, "no dump named, no dump written");
 }
+
+// ── Viewport size and scale ─────────────────────────────────────────────────
+
+#[test]
+fn a_script_can_state_the_size_and_scale_it_lays_out_at() {
+    // A headless pass supplies no `screen_rect` unless something sets one, and
+    // egui's fallback is 10000 x 10000 — a size no window has, and one that
+    // would make a capture 400 MB.
+    let s = Script::parse("size 1600x900\nscale 2\n0.0 key Q\n").expect("parses");
+    assert_eq!(s.settings.size, Some((1600.0, 900.0)));
+    assert_eq!(s.settings.scale, Some(2.0));
+    assert_eq!(s.steps.len(), 1, "a setting is not a step");
+}
+
+#[test]
+fn a_size_is_written_the_way_every_other_tool_writes_one() {
+    for (spec, want) in [
+        ("1200x828", (1200.0, 828.0)),
+        ("1200X828", (1200.0, 828.0)),
+        ("640x480", (640.0, 480.0)),
+    ] {
+        let s = Script::parse(&format!("size {spec}\n0.0 key Q\n")).expect("parses");
+        assert_eq!(s.settings.size, Some(want), "{spec}");
+    }
+}
+
+#[test]
+fn a_bad_size_or_scale_names_itself() {
+    // Bounded at both ends.  The upper bound is the point of the setting: the
+    // 10000 x 10000 fallback is what it exists to replace, so accepting it back
+    // through the front door would be absurd.
+    for (src, needle) in [
+        ("size 1200\n", "not a size"),
+        ("size axb\n", "not a size"),
+        ("size 10000x10000\n", "not a size"),
+        ("size 4x4\n", "not a size"),
+        ("scale nope\n", "not a scale factor"),
+        ("scale 0\n", "between 0.1 and 8.0"),
+        ("scale 99\n", "between 0.1 and 8.0"),
+        ("size 800x600\nsize 640x480\n", "more than once"),
+        ("scale 1\nscale 2\n", "more than once"),
+    ] {
+        let e = Script::parse(src).expect_err(&format!("`{src}` should not parse"));
+        assert!(
+            e.message.contains(needle),
+            "`{src}` gave `{}`, expected `{needle}`",
+            e.message
+        );
+    }
+}
+
+#[test]
+fn a_script_with_no_viewport_settings_carries_none() {
+    let s = Script::parse("0.0 key Q\n").expect("parses");
+    assert_eq!(s.settings.size, None);
+    assert_eq!(s.settings.scale, None);
+}
+
+// ── Capture directory and the `pane` directive ──────────────────────────────
+
+#[test]
+fn a_script_can_say_where_captures_go() {
+    let s = Script::parse("capture ./shots\n0.0 pane waterfall\n").expect("parses");
+    assert_eq!(s.settings.capture.as_deref(), Some(Path::new("./shots")));
+    assert_eq!(s.steps.len(), 1, "a setting is not a step");
+}
+
+#[test]
+fn every_pane_that_keeps_pixels_is_nameable() {
+    // The round trip that keeps this honest as panes are added.  The spectrum
+    // pane is deliberately absent: it is a line plot drawn straight to a
+    // painter, with no buffer to hand over.
+    use orion_sdr_view::utils::script::Pane;
+    for pane in Pane::ALL {
+        let s = Script::parse(&format!("0.0 pane {}", pane.name())).expect("parses");
+        assert_eq!(
+            s.steps[0].action,
+            Action::Pane {
+                pane: *pane,
+                label: None
+            }
+        );
+    }
+    assert_eq!(Pane::by_name("WaterFall"), Some(Pane::Waterfall));
+    assert_eq!(Pane::by_name("spectrum"), None, "no buffer to capture");
+}
+
+#[test]
+fn a_pane_capture_can_carry_a_label() {
+    // So a script taking several produces readable names rather than a column
+    // of timestamps.
+    let s = Script::parse("0.0 pane waterfall burst_2\n").expect("parses");
+    assert_eq!(
+        s.steps[0].action,
+        Action::Pane {
+            pane: orion_sdr_view::utils::script::Pane::Waterfall,
+            label: Some("burst_2".to_owned()),
+        }
+    );
+    // ...and it emits no input events, since it writes a file instead.
+    assert!(s.steps[0].action.events().is_empty());
+}
+
+#[test]
+fn a_label_that_would_not_survive_a_filesystem_is_refused() {
+    // A label becomes part of a filename, so anything needing quoting would
+    // make the very artifact it names awkward to handle.  Refused rather than
+    // silently mangled.
+    for (src, needle) in [
+        ("0.0 pane waterfall a/b", "only letters, digits"),
+        ("0.0 pane waterfall 'x'", "only letters, digits"),
+        ("0.0 pane waterfall two words", "one whitespace-free word"),
+        ("0.0 pane notapane", "is not a pane"),
+        ("0.0 pane", "needs a pane name"),
+        ("0.0 pane waterfall x3", "takes no repeat count"),
+    ] {
+        let e = Script::parse(src).expect_err(&format!("`{src}` should not parse"));
+        assert!(
+            e.message.contains(needle),
+            "`{src}` gave `{}`, expected `{needle}`",
+            e.message
+        );
+    }
+}
+
+#[test]
+fn a_still_directive_captures_the_whole_window() {
+    // Distinct from `pane`, which writes one pane's own raster: a still is
+    // everything the viewer draws, so the frame has to be drawn for it.
+    let s = Script::parse("0.0 still\n").expect("parses");
+    assert_eq!(s.steps[0].action, Action::Still { label: None });
+    assert!(s.steps[0].action.events().is_empty(), "it writes a file");
+
+    let s = Script::parse("0.0 still band_edge\n").expect("parses");
+    assert_eq!(
+        s.steps[0].action,
+        Action::Still {
+            label: Some("band_edge".to_owned())
+        }
+    );
+}
+
+#[test]
+fn a_bad_still_directive_names_itself() {
+    for (src, needle) in [
+        ("0.0 still two words", "one whitespace-free word"),
+        ("0.0 still a/b", "only letters, digits"),
+        ("0.0 still x2", "takes no repeat count"),
+    ] {
+        let e = Script::parse(src).expect_err(&format!("`{src}` should not parse"));
+        assert!(
+            e.message.contains(needle),
+            "`{src}` gave `{}`, expected `{needle}`",
+            e.message
+        );
+    }
+}

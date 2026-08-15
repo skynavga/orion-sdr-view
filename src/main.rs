@@ -41,11 +41,11 @@ struct Cli {
     #[arg(long, value_name = "SECS")]
     duration: Option<f32>,
 
-    /// Directory for captured stills and recordings; overrides `capture.dir`
+    /// Directory for captures; overrides `capture.dir` and a script's own
+    /// `capture`
     ///
-    /// Interactive only.  Capture reads back the rendered surface, and a
-    /// headless run has no renderer to read back from — see the check in
-    /// `main`.
+    /// Interactively this is where `F` and `V` write.  Headless it is where a
+    /// `pane` directive writes.
     #[arg(long, value_name = "DIR")]
     capture: Option<std::path::PathBuf>,
 }
@@ -55,16 +55,6 @@ fn main() -> eframe::Result<()> {
     let cfg = ViewConfig::load(cli.config.clone());
 
     if cli.headless {
-        // Refused rather than ignored.  `F` and `V` capture by reading back the
-        // rendered surface, and a headless run has no surface — so accepting
-        // the flag there would promise an artifact that never appears, which is
-        // worse than not offering it.
-        if cli.capture.is_some() {
-            eprintln!(
-                "orion-sdr-view: --capture needs a renderer and cannot be used with --headless"
-            );
-            std::process::exit(2);
-        }
         return run_headless(cfg, &cli);
     }
     if cli.script.is_some() || cli.dump.is_some() || cli.duration.is_some() {
@@ -102,12 +92,22 @@ fn run_headless(cfg: ViewConfig, cli: &Cli) -> eframe::Result<()> {
         cli.script.as_deref(),
         cli.dump.as_deref(),
         cli.duration,
+        cli.capture.as_deref(),
     ) {
         Ok(summary) => {
             eprintln!(
                 "orion-sdr-view: {} frames, {} samples, {} records",
                 summary.frames, summary.samples, summary.records
             );
+            for path in &summary.captures {
+                eprintln!(
+                    "{}",
+                    orion_sdr_view::utils::term::notice(
+                        orion_sdr_view::utils::term::Level::Info,
+                        &format!("capture: wrote {}", path.display()),
+                    )
+                );
+            }
             Ok(())
         }
         Err(e) => {

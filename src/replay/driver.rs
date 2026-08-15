@@ -76,6 +76,8 @@ pub enum RunError {
     DroppedChunks(u64),
     /// Neither `--script` nor `--duration` was given, so the run has no end.
     Unbounded,
+    /// A capture could not be written.
+    Capture(String),
 }
 
 impl std::fmt::Display for RunError {
@@ -90,6 +92,7 @@ impl std::fmt::Display for RunError {
             RunError::Unbounded => {
                 write!(f, "a headless run needs --script or --duration to bound it")
             }
+            RunError::Capture(m) => write!(f, "capture: {m}"),
         }
     }
 }
@@ -106,6 +109,24 @@ impl std::error::Error for RunError {}
 /// margin rather than a fraction because what it buys is a fixed amount of
 /// decoding, not a proportion of the script.
 pub const DEFAULT_TAIL_SECS: f32 = 1.0;
+
+/// The logical window size a headless pass lays out in, when nothing says
+/// otherwise.
+///
+/// **A headless pass supplies no `screen_rect` unless one is set**, and egui's
+/// fallback is 10000 x 10000 at scale 1 — measured, not guessed.  Nothing
+/// consults the layout while the driver only advances and handles keys, so this
+/// changes no existing behaviour; it matters the moment anything *draws*, where
+/// the fallback would put every layout-dependent path at a width no window has
+/// and make a capture 400 MB.
+///
+/// The interactive window's size, so a scripted reproduction lays out the way a
+/// user's does.
+pub const DEFAULT_SIZE: (f32, f32) = (1200.0, 800.0 + crate::app::DECODE_BAR_H);
+
+/// Pixels per point, when nothing says otherwise.  1.0 rather than the 2.0 a
+/// Retina display reports, so a run's output does not depend on the machine.
+pub const DEFAULT_SCALE: f32 = 1.0;
 
 /// The dump path that means **standard output** rather than a file.
 ///
@@ -128,6 +149,8 @@ pub struct RunSummary {
     pub frames: u64,
     pub samples: u64,
     pub records: u64,
+    /// Files a `pane` directive wrote, in the order taken.
+    pub captures: Vec<PathBuf>,
 }
 
 /// Knobs for one run.
@@ -150,6 +173,12 @@ pub struct RunOptions {
     /// 1/60 s to match the interactive app, which is what makes a scripted
     /// reproduction and a hand-driven one comparable.
     pub dt: f32,
+    /// Logical window size.  **Overrides the script's own `size`.**
+    pub size: Option<(f32, f32)>,
+    /// Pixels per point.  **Overrides the script's own `scale`.**
+    pub scale: Option<f32>,
+    /// Where captures are written.  **Overrides the script's own `capture`.**
+    pub capture: Option<PathBuf>,
 }
 
 impl Default for RunOptions {
@@ -158,6 +187,9 @@ impl Default for RunOptions {
             script: None,
             duration: None,
             dt: 1.0 / 60.0,
+            size: None,
+            scale: None,
+            capture: None,
         }
     }
 }
@@ -208,6 +240,7 @@ pub fn run_file(
     script_path: Option<&Path>,
     dump_path: Option<&Path>,
     duration: Option<f32>,
+    capture_dir: Option<&Path>,
 ) -> Result<RunSummary, RunError> {
     let src = match script_path {
         Some(p) => Some(std::fs::read_to_string(p).map_err(|e| RunError::Io(p.to_path_buf(), e))?),
@@ -229,6 +262,7 @@ pub fn run_file(
     let opts = RunOptions {
         script: src,
         duration,
+        capture: capture_dir.map(Path::to_path_buf),
         ..Default::default()
     };
     match dump_path {
@@ -261,12 +295,14 @@ fn to_run_error(e: DriveError, path: &Path) -> RunError {
     match e {
         DriveError::Io(e) => RunError::Io(path.to_path_buf(), e),
         DriveError::Dropped(n) => RunError::DroppedChunks(n),
+        DriveError::Capture(m) => RunError::Capture(m),
     }
 }
 
 enum DriveError {
     Io(std::io::Error),
     Dropped(u64),
+    Capture(String),
 }
 
 impl From<std::io::Error> for DriveError {
@@ -292,13 +328,30 @@ fn drive<W: Write>(
     // `end_pass` are public, so a complete pass runs against it and the
     // `FullOutput` — tessellated shapes and texture deltas — is dropped.
     let ctx = egui::Context::default();
-    let mut app = ViewApp::new_replay(&ctx, cfg);
 
     // `duration` is already resolved — command line over script over nothing —
     // and a duration shorter than the script still runs every step, because the
     // loop also waits on the step iterator.  So this can cut a script short or
     // extend it into its steady state.  With nothing named at all, the run ends
     // a fixed margin past the last step; see `DEFAULT_TAIL_SECS`.
+    // Command line over script over default, the same precedence as `duration`.
+    let (w, h) = opts
+        .size
+        .or_else(|| script.and_then(|s| s.settings.size))
+        .unwrap_or(DEFAULT_SIZE);
+    let scale = opts
+        .scale
+        .or_else(|| script.and_then(|s| s.settings.scale))
+        .unwrap_or(DEFAULT_SCALE);
+    let viewport = (w, h, scale);
+    let capture_dir = opts
+        .capture
+        .clone()
+        .or_else(|| script.and_then(|s| s.settings.capture.clone()))
+        .unwrap_or_else(|| cfg.capture_dir());
+
+    let mut app = ViewApp::new_replay(&ctx, cfg);
+
     let script_end = script
         .and_then(|s| s.steps.last())
         .map_or(0.0, |s| s.t_secs);
@@ -311,6 +364,21 @@ fn drive<W: Write>(
         script_sha256: digest,
     })?;
 
+    // **Decided once, before the loop.**  A script with no `still` never builds
+    // a capturer, so it never draws and never tessellates — the cost of the
+    // feature is exactly zero rather than merely small.
+    let mut capturer = script
+        .is_some_and(|s| {
+            s.steps
+                .iter()
+                .any(|st| matches!(st.action, Action::Still { .. }))
+        })
+        .then(|| StillCapturer {
+            textures: crate::capture::Textures::default(),
+            dir: capture_dir.clone(),
+        });
+
+    let mut captures: Vec<PathBuf> = Vec::new();
     let mut steps = script.map(|s| s.steps.as_slice()).unwrap_or(&[]).iter();
     let mut next = steps.next();
     let mut frames: u64 = 0;
@@ -334,6 +402,9 @@ fn drive<W: Write>(
             break;
         }
 
+        // Set by a `still` step consumed below, and acted on inside the frame.
+        let mut still_this_frame: Option<Option<String>> = None;
+
         // Pick up the next due step, unless one is still being delivered.
         // Delivery takes precedence over arrival, so a repeat that overruns the
         // next step's time delays it rather than being truncated by it.
@@ -353,6 +424,44 @@ fn drive<W: Write>(
                 // — which the parser refuses on this directive anyway.
                 Action::Source { .. } => {
                     pending = Some((step.action.clone(), SourceMode::ALL.len()));
+                }
+                // Written here rather than delivered as input: a pane's pixels
+                // are already CPU-side, so there is nothing to press and nothing
+                // to wait a frame for.
+                // Deferred to the frame rather than done here: a still is of
+                // what the pass *draws*, so it has to happen inside one.
+                Action::Still { label } => {
+                    still_this_frame = Some(label.clone());
+                    continue;
+                }
+                Action::Pane { pane, label } => {
+                    match app.capture_pane(&capture_dir, *pane, label.as_deref()) {
+                        Ok(Some(path)) => captures.push(path),
+                        // Not a failure: a script that captures before any
+                        // spectrum has been processed has nothing to write. Said
+                        // out loud, because a missing file otherwise looks like
+                        // a bug in the directive.
+                        Ok(None) => eprintln!(
+                            "{}",
+                            crate::utils::term::notice(
+                                crate::utils::term::Level::Warn,
+                                &format!(
+                                    "line {}: the {} pane has no pixels yet, so nothing \
+                                     was written",
+                                    step.line,
+                                    pane.name()
+                                ),
+                            )
+                        ),
+                        Err(e) => {
+                            return Err(DriveError::Capture(format!(
+                                "line {}: {} pane: {e}",
+                                step.line,
+                                pane.name()
+                            )));
+                        }
+                    }
+                    continue;
                 }
                 action => pending = Some((action.clone(), step.repeat.max(1))),
             }
@@ -381,7 +490,16 @@ fn drive<W: Write>(
             None => (Vec::new(), egui::Modifiers::default()),
         };
 
-        samples += step_once(&ctx, &mut app, opts.dt, events, modifiers);
+        let step = FrameStep {
+            dt: opts.dt,
+            events,
+            modifiers,
+            viewport,
+            still: still_this_frame,
+        };
+        let (consumed, captured) = step_once(&ctx, &mut app, step, capturer.as_mut())?;
+        samples += consumed;
+        captures.extend(captured);
         frames += 1;
         let t = frames as f32 * opts.dt;
 
@@ -414,29 +532,164 @@ fn drive<W: Write>(
         frames,
         samples,
         records: dump.records(),
+        captures,
     })
 }
 
 /// One complete pass, returning the samples the source consumed.
-fn step_once(
-    ctx: &egui::Context,
-    app: &mut ViewApp,
+/// One frame's worth of instruction for [`step_once`].
+struct FrameStep {
     dt: f32,
     events: Vec<egui::Event>,
     modifiers: egui::Modifiers,
-) -> u64 {
+    viewport: (f32, f32, f32),
+    /// `Some(label)` when this frame is to be captured.
+    still: Option<Option<String>>,
+}
+
+/// One complete pass, returning the samples consumed and any still written.
+fn step_once(
+    ctx: &egui::Context,
+    app: &mut ViewApp,
+    step: FrameStep,
+    capturer: Option<&mut StillCapturer>,
+) -> Result<(u64, Option<PathBuf>), DriveError> {
     let before = app.samples_consumed();
-    ctx.begin_pass(egui::RawInput {
-        events,
-        modifiers,
-        ..Default::default()
-    });
-    app.advance(ctx, dt);
+    ctx.begin_pass(raw_input(step.events, step.modifiers, step.viewport));
+    app.advance(ctx, step.dt);
     // `handle_keys` runs from `draw`, not `advance`; a driver that only advances
     // would process samples and never see a keystroke.
     app.handle_keys(ctx);
-    let _ = ctx.end_pass();
-    app.samples_consumed() - before
+
+    // **The only frame that draws.**  On every other one the pass ends with its
+    // shapes discarded, exactly as before this feature existed.
+    let drawing = step.still.is_some();
+    if let (true, Some(cap)) = (drawing, capturer.as_deref()) {
+        cap.draw(ctx, app, step.viewport);
+    }
+    let out = ctx.end_pass();
+
+    let captured = match capturer {
+        Some(cap) => {
+            // **Applied every frame, not only on capture frames.** Texture
+            // uploads are incremental and mostly happen once: the font atlas is
+            // built on first use and the pane textures upload when their
+            // contents change. Collecting only the capture frame's delta left
+            // the rasterizer without the atlas — and since egui draws *solid*
+            // shapes from a white texel in that same atlas, the result was a
+            // frame with almost everything missing rather than an error.
+            cap.textures.apply(&out.textures_delta);
+            match step.still {
+                Some(label) => Some(cap.capture(ctx, app, label.as_deref(), step.viewport, out)?),
+                None => None,
+            }
+        }
+        None => None,
+    };
+    Ok((app.samples_consumed() - before, captured))
+}
+
+/// Draws and rasterizes the frames a `still` directive asks for.
+///
+/// **Constructed only when a script contains a `still`.**  A run without one
+/// never builds this, never draws, and never tessellates — which is what keeps
+/// the cost of the feature at zero for every script that does not use it.  The
+/// driver has never drawn on an ordinary frame, so that baseline is not a
+/// promise being made here, only one being kept.
+struct StillCapturer {
+    textures: crate::capture::Textures,
+    dir: PathBuf,
+}
+
+impl StillCapturer {
+    /// Draw the UI into the pass.  Must run before `end_pass`.
+    ///
+    /// `draw_ui` rather than `draw`, because the driver has already handled this
+    /// pass's keys and doing it again would toggle every binding twice.
+    fn draw(&self, ctx: &egui::Context, app: &mut ViewApp, viewport: (f32, f32, f32)) {
+        let (w, h, _) = viewport;
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w, h));
+        let mut ui = egui::Ui::new(
+            ctx.clone(),
+            egui::Id::new("headless_capture"),
+            egui::UiBuilder::new().max_rect(rect),
+        );
+        app.draw_ui(&mut ui);
+    }
+
+    /// Rasterize what the pass produced and write it.
+    fn capture(
+        &mut self,
+        ctx: &egui::Context,
+        app: &mut ViewApp,
+        label: Option<&str>,
+        viewport: (f32, f32, f32),
+        out: egui::FullOutput,
+    ) -> Result<PathBuf, DriveError> {
+        let (w, h, scale) = viewport;
+        let primitives = ctx.tessellate(out.shapes, scale);
+        let size_px = ((w * scale).round() as u32, (h * scale).round() as u32);
+        let raster = crate::capture::rasterize(&primitives, &self.textures, size_px, scale);
+
+        if raster.missing_textures > 0 {
+            // Loud, because the failure mode is a *plausible-looking* image
+            // rather than an error: a mesh whose texture is missing simply does
+            // not draw, and the result is a picture with pieces silently absent.
+            eprintln!(
+                "{}",
+                crate::utils::term::notice(
+                    crate::utils::term::Level::Warn,
+                    &format!(
+                        "capture: {} mesh(es) referenced a texture that was never \
+                         uploaded; the image is incomplete",
+                        raster.missing_textures
+                    ),
+                )
+            );
+        }
+        if raster.skipped_callbacks > 0 {
+            // Not silent: this app registers no paint callbacks, so if one ever
+            // appears the capture would be quietly missing part of the frame.
+            eprintln!(
+                "{}",
+                crate::utils::term::notice(
+                    crate::utils::term::Level::Warn,
+                    &format!(
+                        "capture: {} paint callback(s) could not be rasterized",
+                        raster.skipped_callbacks
+                    ),
+                )
+            );
+        }
+
+        app.write_still_raster(&self.dir, label, raster.width, raster.height, &raster.rgba)
+            .map_err(|e| DriveError::Capture(e.to_string()))
+    }
+}
+
+/// The pass's raw input, at a stated size and scale.
+///
+/// `screen_rect` and `native_pixels_per_point` are set explicitly because a
+/// headless pass has no window to report them.  See [`DEFAULT_SIZE`].
+fn raw_input(
+    events: Vec<egui::Event>,
+    modifiers: egui::Modifiers,
+    (w, h, scale): (f32, f32, f32),
+) -> egui::RawInput {
+    let mut raw = egui::RawInput {
+        events,
+        modifiers,
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(w, h),
+        )),
+        ..Default::default()
+    };
+    // The scale lives on the viewport, not beside `screen_rect`: egui reads it
+    // as `raw_input.viewport().native_pixels_per_point`.
+    let id = raw.viewport_id;
+    raw.viewports.entry(id).or_default().native_pixels_per_point = Some(scale);
+    raw
 }
 
 /// Write whatever this frame produced.

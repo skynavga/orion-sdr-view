@@ -183,9 +183,27 @@ without overlays means not drawing them at all for that frame — the live windo
 a still that is one frame's flicker and imperceptible. For a recording it holds throughout, which
 is usually what a clean demo wants anyway.
 
-## Not available headless
+## Headless capture
 
-`--capture` is refused with `--headless`. Capture reads back a rendered surface and a headless run
-has no renderer — accepting the flag there would promise an artifact that never appears, which is
-worse than not offering it. Scripted capture would need pixels from somewhere else; see
-[headless.md](headless.md) for what a headless run *can* produce.
+A headless run has no renderer, so it cannot read back a surface. It rasterizes the frame on the
+CPU instead — see [headless.md](headless.md) for the `still` and `pane` directives.
+
+That is not a fallback but a different guarantee. A GPU render cannot promise the same bytes twice,
+and a capture that cannot be reproduced is no use as a test fixture; the CPU path produces
+byte-identical images from the same script.
+
+**The two renderers are checked against each other.** `tests/raster_oracle.rs` renders one frame's
+primitives through `egui-wgpu`'s own shader and pipeline, offscreen, and compares. Measured on a
+full COFDM window: **1.2% of pixels differ at all, worst channel delta 2 of 255** — edge coverage
+on feathered text, with no systematic error. It needs a GPU adapter, so it is `#[ignore]`d and run
+explicitly:
+
+```sh
+cargo test --release --test raster_oracle -- --ignored --nocapture
+```
+
+`tests/reference/rasterizer.png` is the other half: a committed image of a synthetic scene, so CI
+on x86-64 checks what was generated here on arm64. That is the cross-architecture check, and it is
+why the scene is synthetic — a *captured* frame is not reproducible across architectures, because
+`rustfft` dispatches to AVX on one and Neon on the other and the spectrum differs in its last
+bits.

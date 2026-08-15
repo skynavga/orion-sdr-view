@@ -34,6 +34,8 @@ dump     run.jsonl
 | `key <[mod+]Name>` | Press and release one key within a single pass. Modifiers are spelled out: `shift+`, `ctrl+`, `alt+`, `cmd+` |
 | `source <name>` | Select a source by name, case- and punctuation-insensitively |
 | `text <literal>` | Deliver a text event — the only way to reach the marker, help and dB-reference bindings |
+| `still [label]` | Capture the whole window to the capture directory |
+| `pane <name> [label]` | Write one pane's raster to the capture directory |
 | `assert <name> [args]` | A property for the *test harness* to check; the replay driver parses it and ignores it |
 
 A repeat count is **frames, not events**: `key_pressed` is a per-pass boolean, so five press events
@@ -70,7 +72,15 @@ not free, since it flushes the decode pipeline and restarts the burst.
 
 ## Run settings, and what overrides what
 
-`duration` and `dump` take no time column, because they configure the run rather than happen during
+| Setting | Meaning |
+| --- | --- |
+| `duration <secs>` | How long to run |
+| `dump <path>` | Where the measurement stream goes; `-` is stdout |
+| `capture <dir>` | Where `pane` captures are written |
+| `size <W>x<H>` | Logical window size, in points |
+| `scale <n>` | Pixels per point; `2` is a Retina-class display |
+
+They take no time column, because they configure the run rather than happen during
 it. They let a script be a complete recipe — what to press, how long for, and where the answer goes
 — instead of a file that needs a remembered command line beside it.
 
@@ -86,6 +96,17 @@ With neither naming a value:
 - **no dump** → nothing is written. The run is still worth doing: it fails on a panic, an
   unparsable script or a dropped chunk just the same. A dump of `-` writes to stdout instead; see
   [below](#dumping-to-stdout).
+
+### Size and scale
+
+A headless pass has no window, so it supplies no `screen_rect` — and egui's fallback for one that
+does not is **10000 x 10000 at scale 1**, a size no window has. The driver therefore states one:
+1200 x 828 at scale 1, the interactive window's own size, so a scripted reproduction lays out the
+way a user's session does.
+
+Nothing consults the layout while a run only advances the DSP and handles keys, so this changes no
+measurement — pinned by a test that runs the same script at two sizes and compares the dumps. It
+matters to anything that *draws*.
 
 `--duration` may also be shorter than the script. Every step still runs — the loop waits on the
 script as well as the clock — so cutting a run short cannot silently skip the actions that were
@@ -109,6 +130,94 @@ whole run at the end.
 A file genuinely called `-` is still reachable as `./-`, which is the escape hatch the same
 convention offers everywhere else. Only the whole path counts: `runs/-`, `dash-` and `-.jsonl` are
 ordinary files.
+
+## Capturing the window
+
+`still` captures everything the viewer draws — HUD, spectrum, panes, decode bar and overlays — with
+no window, no renderer and no GPU:
+
+```text
+capture ./shots
+size 1200x828
+duration 8
+
+0.00 source COFDM
+1.00 key D
+5.00 still cofdm
+```
+
+**The frame is rasterized on the CPU**, and that is a deliberate choice over rendering it on a GPU.
+A GPU render cannot promise the same bytes twice — fill rules and texture filtering vary by vendor
+and driver version — and a capture that cannot be reproduced is no use as a test fixture, because a
+difference could not be told from a different machine. Two runs of one script produce
+**byte-identical PNGs**, which a test pins.
+
+What makes that cheap to guarantee is what egui already does. Its preferred framebuffer is *not*
+sRGB, so the fragment stage is the whole of `vertex_colour × texture_sample` with no colour-space
+conversion — no `powf`, and therefore no libm transcendental whose result can differ between x86
+and ARM. Anti-aliasing is already carried in the geometry, since epaint feathers edges by emitting
+extra triangles, and MSAA is off; so coverage is one sample per pixel centre. Every operation is
+`+`, `-`, `*`, `/` or a comparison: IEEE-correctly-rounded, and identical everywhere.
+
+The CPU renderer is checked against the real GPU pipeline by
+`tests/raster_oracle.rs`, which renders the same primitives through `egui-wgpu` offscreen: on a
+full COFDM window, 1.2% of pixels differ at all with a worst channel delta of 2 of 255 — edge
+coverage on feathered text, and no systematic error.
+
+**Reproducible across runs, not across architectures.** Two runs on one machine give identical
+bytes. Two *different* machines may not, and the rasterizer is not why: `rustfft` dispatches to AVX
+on x86-64 and Neon on AArch64, so the spectrum itself differs in its last bits and every pixel
+downstream inherits that. A committed golden image of a captured frame will therefore fail when
+the architecture changes. Compare within one architecture, or assert on regions and statistics
+rather than whole images.
+
+### It costs nothing unless a script asks for it
+
+A run whose script contains no `still` **never draws and never tessellates**. The decision is made
+once, before the loop, from the parsed script; without one the driver builds no rasterizer at all
+and behaves exactly as it did before the feature existed. A test compares the dumps of two such
+runs to keep it that way.
+
+Drawn frames are the expensive ones, so capture at moments rather than continuously. There is no
+video path here for that reason.
+
+## Capturing a pane
+
+`pane waterfall` writes one pane's raster to the capture directory, as a PNG with a metadata
+sidecar beside it:
+
+```text
+capture ./shots
+duration 8
+
+0.00 source COFDM
+5.00 pane waterfall locked
+5.00 pane spectrogram
+```
+
+**No renderer is involved, which is why this works headless at all.** The waterfall, spectrogram
+and persistence panes each keep their pixels CPU-side — that is what makes their ring arithmetic
+assertable without a GPU — and a `pane` capture reads those buffers in the same display order the
+painter uses. So it is the DSP's own output, without the HUD, the spectrum plot or any chrome
+around it: a cheaper thing than a picture of the window, and a different question.
+
+The spectrum pane is absent deliberately. It is a line plot drawn straight to a painter, with no
+pixel buffer to hand over.
+
+An optional label is appended to the filename, so a script taking several produces readable names
+rather than a column of timestamps. Labels are restricted to letters, digits, `-` and `_`, because
+they become part of a filename; anything else is a parse error rather than a silently mangled name.
+
+**Names are reproducible even though they are timestamps.** A replay run stamps from the scripted
+clock, so a `pane` at t = 5 s is always `20260101T000005.000Z-waterfall.png` — on any machine, at
+any hour.
+
+`--capture <dir>` overrides the `capture` setting, the same precedence as `--dump` over `dump`.
+With neither, captures go to `capture.dir` from the config, which defaults to `./capture`.
+
+A pane with no pixels yet — a script capturing before any spectrum has been processed — writes
+nothing and says so. That is a legitimate outcome, but a missing file would otherwise look like a
+broken directive.
 
 ## Example scripts
 

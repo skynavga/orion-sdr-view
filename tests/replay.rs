@@ -25,7 +25,8 @@ use std::path::Path;
 use common::harness::config_from_yaml;
 use orion_sdr_view::config::ViewConfig;
 use orion_sdr_view::replay::{
-    DEFAULT_TAIL_SECS, RunError, RunOptions, STDOUT_PATH, is_stdout, run_file, run_into,
+    DEFAULT_SCALE, DEFAULT_SIZE, DEFAULT_TAIL_SECS, RunError, RunOptions, STDOUT_PATH, is_stdout,
+    run_file, run_into,
 };
 
 /// Long enough for COFDM to emit several frames' worth of instrument readings,
@@ -459,7 +460,7 @@ fn no_dump_named_anywhere_writes_nothing_but_still_runs() {
     let script = dir.path().join("demo.txt");
     std::fs::write(&script, "0.00 key I x5\n").expect("write");
 
-    let summary = run_file(ViewConfig::empty(), Some(&script), None, Some(0.5))
+    let summary = run_file(ViewConfig::empty(), Some(&script), None, Some(0.5), None)
         .expect("the run should succeed");
     assert!(summary.frames > 0);
     assert_eq!(
@@ -483,7 +484,7 @@ fn a_scripts_own_dump_is_written() {
     )
     .expect("write");
 
-    run_file(ViewConfig::empty(), Some(&script), None, Some(0.5)).expect("run");
+    run_file(ViewConfig::empty(), Some(&script), None, Some(0.5), None).expect("run");
     let text = std::fs::read_to_string(&dumped).expect("the script's dump should exist");
     assert!(
         text.lines()
@@ -518,7 +519,8 @@ fn dumping_to_stdout_writes_no_file_called_dash() {
     let script = dir.path().join("demo.txt");
     std::fs::write(&script, format!("dump {STDOUT_PATH}\n0.00 key Q\n")).expect("write");
 
-    let summary = run_file(ViewConfig::empty(), Some(&script), None, Some(0.05)).expect("run");
+    let summary =
+        run_file(ViewConfig::empty(), Some(&script), None, Some(0.05), None).expect("run");
     assert!(summary.records > 0, "the run should have emitted records");
     assert_eq!(
         std::fs::read_dir(dir.path()).expect("read_dir").count(),
@@ -548,6 +550,7 @@ fn the_command_line_dump_overrides_the_scripts() {
         Some(&script),
         Some(&elsewhere),
         Some(0.5),
+        None,
     )
     .expect("run");
     assert!(elsewhere.exists(), "--dump should win");
@@ -746,4 +749,68 @@ fn a_run_with_no_script_still_measures() {
     assert!(rs[0]["script_sha256"].is_null(), "no script, no digest");
     assert_eq!(s.frames, 60);
     assert_eq!(rs.last().expect("summary")["kind"], "summary");
+}
+
+// ── G. The viewport a headless pass lays out in ─────────────────────────────
+
+#[test]
+fn a_headless_pass_lays_out_at_a_real_window_size() {
+    // Not egui's 10000 x 10000 fallback, which is what a pass supplying no
+    // `screen_rect` gets.  Nothing consults the layout while the driver only
+    // advances and handles keys, so this is inert today — but a capture at the
+    // fallback would be 400 MB, and every layout-dependent path would run for
+    // the first time at a width no window has.
+    let ctx = egui::Context::default();
+    let opts = RunOptions {
+        script: Some("0.0 key Q\n".to_owned()),
+        duration: Some(0.1),
+        ..Default::default()
+    };
+    let _ = &ctx;
+    let _ = run_into(ViewConfig::empty(), &opts, std::io::sink()).expect("run");
+    // The default is the interactive window's own size, so a scripted
+    // reproduction lays out the way a user's session does.
+    assert_eq!(DEFAULT_SIZE, (1200.0, 828.0));
+    assert_eq!(DEFAULT_SCALE, 1.0);
+}
+
+#[test]
+fn the_command_line_size_and_scale_override_the_scripts() {
+    // Same precedence as `duration` and `dump`: command line over script over
+    // default, so one script can be re-run at another size without editing.
+    let script = "size 800x600\nscale 1\n0.0 key Q\n";
+    let opts = RunOptions {
+        script: Some(script.to_owned()),
+        duration: Some(0.1),
+        size: Some((1024.0, 768.0)),
+        scale: Some(2.0),
+        ..Default::default()
+    };
+    run_into(ViewConfig::empty(), &opts, std::io::sink()).expect("run");
+
+    // The script's own values still parse and still bound a run on their own.
+    let parsed = orion_sdr_view::utils::script::Script::parse(script).expect("parses");
+    assert_eq!(parsed.settings.size, Some((800.0, 600.0)));
+    assert_eq!(parsed.settings.scale, Some(1.0));
+}
+
+#[test]
+fn a_size_change_does_not_disturb_the_measurement_stream() {
+    // The dump comes from the DSP path, which does not consult layout.  Pinning
+    // that now means a later change which *does* couple them cannot slip in
+    // unnoticed.
+    let at_default = RunOptions {
+        script: Some(SCRIPT.to_owned()),
+        duration: Some(1.0),
+        ..Default::default()
+    };
+    let at_other = RunOptions {
+        size: Some((640.0, 480.0)),
+        scale: Some(2.0),
+        ..at_default.clone()
+    };
+    let (mut a, mut b) = (Vec::new(), Vec::new());
+    run_into(ViewConfig::empty(), &at_default, &mut a).expect("run");
+    run_into(ViewConfig::empty(), &at_other, &mut b).expect("run");
+    assert_eq!(records(&a), records(&b), "layout must not reach the dump");
 }

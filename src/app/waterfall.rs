@@ -205,6 +205,11 @@ impl WaterfallDisplay {
         self.filled
     }
 
+    /// Width of a row, in FFT bins.
+    pub fn freq_bins(&self) -> usize {
+        self.freq_bins
+    }
+
     /// The committed rows in the order [`draw_cropped`](Self::draw_cropped)
     /// paints them, top of the pane first — so **newest first**, going back in
     /// time downward, which is what makes it a waterfall.

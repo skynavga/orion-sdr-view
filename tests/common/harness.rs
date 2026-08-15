@@ -49,6 +49,11 @@ pub struct Harness {
     /// Viewport commands from the most recent pass.  The app's only outward
     /// channel for a capture request, and observable without a renderer.
     viewport_commands: Vec<egui::ViewportCommand>,
+    /// Where a `pane` or `still` directive writes.  Defaults to the app's own
+    /// setting.
+    pub capture_dir: std::path::PathBuf,
+    /// Textures accumulated for the rasterizer, across frames.
+    textures: orion_sdr_view::capture::Textures,
 }
 
 impl Harness {
@@ -60,11 +65,14 @@ impl Harness {
     pub fn new(cfg: ViewConfig) -> Self {
         let ctx = egui::Context::default();
         let app = ViewApp::new(&ctx, cfg);
+        let capture_dir = app.capture_dir().to_path_buf();
         Self {
             ctx,
             app,
             frames: 0,
             viewport_commands: Vec::new(),
+            capture_dir,
+            textures: orion_sdr_view::capture::Textures::default(),
         }
     }
 
@@ -90,14 +98,30 @@ impl Harness {
 
     /// One complete pass: deliver `events`, advance by `DT`, run key handling.
     pub fn frame(&mut self, events: Vec<egui::Event>, modifiers: egui::Modifiers) {
-        self.ctx.begin_pass(egui::RawInput {
+        // A real window size, not egui's 10000 x 10000 fallback for a pass that
+        // supplies none.  Matches the driver's `DEFAULT_SIZE`, so a script
+        // replayed here and by the driver lays out identically.
+        let (w, h) = orion_sdr_view::replay::DEFAULT_SIZE;
+        let mut raw = egui::RawInput {
             events,
             modifiers,
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(w, h),
+            )),
             ..Default::default()
-        });
+        };
+        let id = raw.viewport_id;
+        raw.viewports.entry(id).or_default().native_pixels_per_point =
+            Some(orion_sdr_view::replay::DEFAULT_SCALE);
+        self.ctx.begin_pass(raw);
         self.app.advance(&self.ctx, Self::DT);
         self.app.handle_keys(&self.ctx);
         let out = self.ctx.end_pass();
+        // Texture uploads are incremental and mostly happen once, so they are
+        // accumulated every frame rather than only when capturing — see the
+        // driver's `step_once`.
+        self.textures.apply(&out.textures_delta);
         // Keep the viewport commands this pass produced.  They are the app's
         // only outward channel for a screenshot request, and a bare
         // `egui::Context` is enough to observe them — which is what makes the
@@ -214,6 +238,94 @@ impl Harness {
         );
     }
 
+    /// Draw the UI, rasterize it, and write it as a still.
+    ///
+    /// The harness's counterpart to the driver's `still` handling, so a script
+    /// means the same thing in both readers.
+    pub fn capture_still_now(
+        &mut self,
+        dir: &std::path::Path,
+        label: Option<&str>,
+    ) -> std::io::Result<std::path::PathBuf> {
+        let (w, h) = orion_sdr_view::replay::DEFAULT_SIZE;
+        let scale = orion_sdr_view::replay::DEFAULT_SCALE;
+        self.ctx.begin_pass(egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(w, h),
+            )),
+            ..Default::default()
+        });
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w, h));
+        let mut ui = egui::Ui::new(
+            self.ctx.clone(),
+            egui::Id::new("harness_capture"),
+            egui::UiBuilder::new().max_rect(rect),
+        );
+        self.app.draw_ui(&mut ui);
+        let out = self.ctx.end_pass();
+        self.textures.apply(&out.textures_delta);
+        let primitives = self.ctx.tessellate(out.shapes, scale);
+        let size = ((w * scale).round() as u32, (h * scale).round() as u32);
+        let raster = orion_sdr_view::capture::rasterize(&primitives, &self.textures, size, scale);
+        self.frames += 1;
+        self.app
+            .write_still_raster(dir, label, raster.width, raster.height, &raster.rgba)
+    }
+
+    /// Draw one frame and return its tessellated primitives, this frame's
+    /// texture deltas, and the accumulated texture set.
+    ///
+    /// The seam the GPU oracle compares across: both renderers are handed
+    /// exactly these primitives, so any difference between their images is a
+    /// difference between the renderers rather than between the frames.
+    pub fn frame_primitives(
+        &mut self,
+        size: (f32, f32),
+    ) -> (
+        Vec<egui::epaint::ClippedPrimitive>,
+        egui::TexturesDelta,
+        orion_sdr_view::capture::Textures,
+    ) {
+        let (w, h) = size;
+        self.ctx.begin_pass(egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(w, h),
+            )),
+            ..Default::default()
+        });
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w, h));
+        let mut ui = egui::Ui::new(
+            self.ctx.clone(),
+            egui::Id::new("oracle_frame"),
+            egui::UiBuilder::new().max_rect(rect),
+        );
+        self.app.draw_ui(&mut ui);
+        let out = self.ctx.end_pass();
+        self.textures.apply(&out.textures_delta);
+        self.frames += 1;
+        let primitives = self.ctx.tessellate(out.shapes, 1.0);
+        // The accumulated set is cloned out because the GPU needs *every*
+        // texture, not only this frame's patch — the font atlas was uploaded
+        // long before the frame that draws with it.
+        let mut all = egui::TexturesDelta::default();
+        for (id, tex) in self.textures.iter() {
+            all.set.push((
+                *id,
+                egui::epaint::ImageDelta::full(
+                    egui::epaint::ImageData::Color(std::sync::Arc::new(egui::ColorImage {
+                        size: [tex.width, tex.height],
+                        pixels: tex.pixels.clone(),
+                        source_size: egui::vec2(tex.width as f32, tex.height as f32),
+                    })),
+                    egui::TextureOptions::LINEAR,
+                ),
+            ));
+        }
+        (primitives, all, self.textures.clone_set())
+    }
+
     /// Replay a script, executing its `assert` directives.
     ///
     /// Panics naming the offending source line, so a failure points at the
@@ -230,6 +342,19 @@ impl Harness {
                 // what the directive means.  The parser refuses a repeat on it,
                 // so there is no count to honour here.
                 Action::Source { mode } => self.select_source(*mode),
+                // Executed, not ignored: a pane's pixels are CPU-side, so the
+                // harness can write one exactly as the driver does.
+                Action::Still { label } => {
+                    let dir = self.capture_dir.clone();
+                    self.capture_still_now(&dir, label.as_deref())
+                        .unwrap_or_else(|e| panic!("line {}: {e}", step.line));
+                }
+                Action::Pane { pane, label } => {
+                    let dir = self.capture_dir.clone();
+                    self.app
+                        .capture_pane(&dir, *pane, label.as_deref())
+                        .unwrap_or_else(|e| panic!("line {}: {e}", step.line));
+                }
                 action => {
                     for _ in 0..step.repeat {
                         self.frame(action.events(), action.modifiers());

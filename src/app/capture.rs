@@ -23,6 +23,7 @@ use crate::capture::{
     SceneInfo, ffmpeg_available, meta, writer,
 };
 use crate::config::CaptureFormat;
+use crate::utils::script::Pane;
 use crate::utils::term::Level;
 
 /// What a capture request was for.
@@ -101,6 +102,15 @@ impl CaptureController {
 
     fn notify(&mut self, level: Level, msg: impl Into<String>) {
         self.pending_notices.push((level, msg.into()));
+    }
+
+    /// The next sequence number, for a capture that does not go through the
+    /// request/reply path at all.  Shares the counter so numbers stay unique
+    /// across a session however a capture was taken.
+    pub(super) fn next_pane_seq(&mut self) -> u64 {
+        let seq = self.next_seq;
+        self.next_seq += 1;
+        seq
     }
 
     /// Ask for one frame.  Returns the tag to attach to the viewport command.
@@ -275,6 +285,100 @@ impl CaptureController {
                     }
                 }
             }
+        }
+    }
+}
+
+/// What one `pane` capture needs to know.
+///
+/// Grouped rather than passed as seven arguments, which is both unreadable and
+/// easy to transpose at a call site.
+pub(super) struct PaneRequest<'a> {
+    pub dir: &'a std::path::Path,
+    pub pane: Pane,
+    pub label: Option<&'a str>,
+    pub seq: u64,
+    pub now: std::time::SystemTime,
+    pub offset_min: i32,
+    pub scene: SceneInfo,
+}
+
+/// Write one pane's raster and its metadata sidecar, returning the image path.
+///
+/// Returns `Ok(None)` when the pane has no pixels yet — a run that captures
+/// before any spectrum has been processed.  That is a legitimate outcome, not a
+/// failure, but the caller is told so it can say so rather than leave a script
+/// author wondering where the file went.
+pub(super) fn write_pane(
+    app: &super::ViewApp,
+    req: PaneRequest<'_>,
+) -> std::io::Result<Option<PathBuf>> {
+    let Some((w, h, rgba)) = pane_raster(app, req.pane) else {
+        return Ok(None);
+    };
+    let stamp = crate::utils::format::format_stamp(req.now, req.offset_min);
+    let suffix = match req.label {
+        Some(l) => format!("-{}-{l}", req.pane.name()),
+        None => format!("-{}", req.pane.name()),
+    };
+    let path = req.dir.join(format!("{stamp}{suffix}.png"));
+    crate::capture::write_png(&path, w, h, &rgba)?;
+
+    let mut m = meta::StillMeta::new(&path, req.now, req.offset_min, req.seq, w, h, req.scene);
+    m.kind = "pane";
+    m.pane = Some(req.pane.name().to_owned());
+    m.label = req.label.map(str::to_owned);
+    meta::write_json(&meta::sidecar_path(&path), &m)?;
+    Ok(Some(path))
+}
+
+/// One pane's CPU-side raster as RGBA, or `None` if it has no pixels yet.
+///
+/// **No renderer is involved.** Each of these panes keeps its own pixel buffer
+/// so the ring arithmetic is assertable without a GPU; this reads the same
+/// buffers, in the same display order the painter uses, so what lands in the
+/// file is what the pane shows.
+pub(super) fn pane_raster(app: &super::ViewApp, pane: Pane) -> Option<(u32, u32, Vec<u8>)> {
+    let push = |out: &mut Vec<u8>, c: egui::Color32| out.extend_from_slice(&c.to_array());
+    match pane {
+        Pane::Waterfall => {
+            let wf = app.waterfall();
+            let (w, h) = (wf.freq_bins(), wf.filled());
+            if w == 0 || h == 0 {
+                return None;
+            }
+            let mut rgba = Vec::with_capacity(w * h * 4);
+            for row in wf.rows_in_display_order() {
+                for &c in row {
+                    push(&mut rgba, c);
+                }
+            }
+            Some((w as u32, h as u32, rgba))
+        }
+        Pane::Spectrogram => {
+            let sg = app.spectrogram();
+            let (w, h) = (sg.filled(), sg.freq_rows());
+            if w == 0 || h == 0 {
+                return None;
+            }
+            // Columns are yielded newest-first and each runs top to bottom, so
+            // this transposes into the row-major order a PNG wants.
+            let cols: Vec<Vec<egui::Color32>> = sg.cols_in_display_order().collect();
+            let mut rgba = Vec::with_capacity(w * h * 4);
+            for y in 0..h {
+                for col in &cols {
+                    push(&mut rgba, col[y]);
+                }
+            }
+            Some((w as u32, h as u32, rgba))
+        }
+        Pane::Persistence => {
+            let img = app.persistence_image()?;
+            let (w, h) = (img.width(), img.height());
+            if w == 0 || h == 0 {
+                return None;
+            }
+            Some((w as u32, h as u32, img.as_raw().to_vec()))
         }
     }
 }
