@@ -6,7 +6,7 @@ use eframe::egui;
 /// Maps a normalized density value [0, 1] to a color.
 /// t=0 (no hits) → pane background (dark navy).
 /// t>0: dark blue → cyan → green → yellow → white.
-fn density_color(t: f32, count: u32) -> egui::Color32 {
+pub(super) fn density_color(t: f32, count: u32) -> egui::Color32 {
     if count == 0 {
         return egui::Color32::from_rgb(10, 10, 20); // matches PANE_BG[1] background
     }

@@ -9,6 +9,8 @@ mod source;
 mod sources;
 mod view;
 
+pub mod constellation;
+pub mod correction;
 pub(super) mod freqview;
 pub(super) mod persistence;
 pub mod settings;
@@ -18,8 +20,8 @@ pub(super) mod utils;
 pub mod waterfall;
 
 pub(super) use common::{
-    BAND_EDGE_COL, DecodeBarMode, FFT_SIZE, MAX_SAMPLES_PER_FRAME, MIN_SAMPLES_PER_FRAME,
-    OFF_BAND_DIM, OFF_BAND_SOLID, PANE_BG, SAMPLE_RATE, WaterfallMode,
+    BAND_EDGE_COL, DecodeBarMode, FFT_SIZE, HUD_DATA_COL, MAX_SAMPLES_PER_FRAME,
+    MIN_SAMPLES_PER_FRAME, OFF_BAND_DIM, OFF_BAND_SOLID, PANE_BG, Pane3Mode, SAMPLE_RATE,
 };
 pub use common::{DECODE_BAR_H, SourceMode};
 pub use view::ViewApp;

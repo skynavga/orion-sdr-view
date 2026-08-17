@@ -7,7 +7,7 @@ use super::settings::AmDsbSettings;
 use super::source::{amdsb, cofdm, cw, ft8, psk31};
 use super::utils::dashed_hline;
 use super::view::ViewApp;
-use super::{DecodeBarMode, PANE_BG, SourceMode, WaterfallMode};
+use super::{DecodeBarMode, HUD_DATA_COL, PANE_BG, Pane3Mode, SourceMode};
 use crate::decode::DecodeResult;
 
 impl ViewApp {
@@ -132,7 +132,7 @@ impl ViewApp {
                 egui::Align2::CENTER_CENTER,
                 &status,
                 self.mono_font_id.clone(),
-                egui::Color32::from_rgb(0, 200, 255),
+                HUD_DATA_COL,
             );
             ui.painter().text(
                 egui::pos2(right_x, mid_y),
@@ -709,13 +709,202 @@ impl ViewApp {
         self.draw_freq_markers(painter, rect, &label_font);
     }
 
-    /// Draw pane 3: either the vertical waterfall or the horizontal
-    /// spectrogram, depending on `waterfall_mode` (cycled by `W`).
+    /// Draw pane 3 in whichever of its three modes is selected (cycled by `W`).
     pub(super) fn draw_waterfall_pane(&self, painter: &egui::Painter, rect: egui::Rect) {
-        match self.waterfall_mode {
-            WaterfallMode::Vertical => self.draw_vertical_waterfall(painter, rect),
-            WaterfallMode::Horizontal => self.draw_horizontal_spectrogram(painter, rect),
+        match self.pane3_mode {
+            Pane3Mode::Waterfall => self.draw_vertical_waterfall(painter, rect),
+            Pane3Mode::Spectrogram => self.draw_horizontal_spectrogram(painter, rect),
+            Pane3Mode::Constellation => self.draw_decoder_pane(painter, rect),
         }
+    }
+
+    /// Pane 3's decoder mode: the equalizer's output on the left, the inner
+    /// decoder's per-coded-bit correction map on the right.
+    ///
+    /// The split is the receiver's own boundary — signal domain to the left of
+    /// the demapper, coding domain to the right of it — which is why the two
+    /// sit side by side rather than in separate panes.
+    ///
+    /// **The two halves are equal width.**  The constellation is square within
+    /// its half — an I/Q plot stretched to a wide rect is a sheared cloud, and
+    /// its shape is the entire measurement — so it takes a square of the pane's
+    /// height and is **centred horizontally** in the half, leaving a margin
+    /// either side.  The map has no such constraint and scales horizontally to
+    /// fill its half, however many columns the codeword has.
+    fn draw_decoder_pane(&self, painter: &egui::Painter, rect: egui::Rect) {
+        const GUTTER: f32 = 6.0;
+        // The HUD's data *colour*, not a dimmer pane label: these readouts are
+        // measurements of the same kind as `ctr` / `span` / `c/n`, and reading
+        // as something lesser was what was wrong with them.  At the HUD's own
+        // 14 pt they crowded the two halves, so the size drops and the colour
+        // stays — the colour is what carries the "this is a reading" meaning.
+        let label_font = egui::FontId::new(10.0, egui::FontFamily::Monospace);
+        let label_col = HUD_DATA_COL;
+
+        let half_w = ((rect.width() - GUTTER) * 0.5).max(1.0);
+        let left = egui::Rect::from_min_size(rect.left_top(), egui::vec2(half_w, rect.height()));
+        let right = egui::Rect::from_min_max(
+            egui::pos2(rect.left() + half_w + GUTTER, rect.top()),
+            rect.right_bottom(),
+        );
+
+        // ── Left: the constellation, square and centred in its half ──────
+        let side = rect.height().min(half_w).max(1.0);
+        let square = egui::Rect::from_center_size(left.center(), egui::vec2(side, side));
+        self.constellation.draw(painter, square);
+        let const_label = match self.constellation.order() {
+            Some(o) => format!("CONST {}", super::source::cofdm::constellation_label(o)),
+            None => "CONST".to_owned(),
+        };
+        painter.text(
+            egui::pos2(square.left() + 4.0, square.top() + 2.0),
+            egui::Align2::LEFT_TOP,
+            const_label,
+            label_font.clone(),
+            label_col,
+        );
+        // Points that fell outside the fixed extent are dropped rather than
+        // clamped, so the count is the only evidence they existed.  A clamped
+        // cloud would look tighter than the real one.
+        let (off, total) = self.constellation.off_scale();
+        if off > 0 {
+            painter.text(
+                egui::pos2(square.left() + 4.0, square.bottom() - 2.0),
+                egui::Align2::LEFT_BOTTOM,
+                format!("{off} off-scale of {total}"),
+                label_font.clone(),
+                label_col,
+            );
+        }
+
+        // ── Right: the correction map ────────────────────────────────────
+        if right.width() > 8.0 {
+            self.correction.draw_ring(painter, right);
+            painter.text(
+                egui::pos2(right.left() + 4.0, right.top() + 2.0),
+                egui::Align2::LEFT_TOP,
+                "CORR",
+                label_font.clone(),
+                label_col,
+            );
+            // The systematic/parity boundary.  "Errors cluster in the parity
+            // half" is a real and readable story, and it is invisible without
+            // the line.
+            let (k, n) = (self.correction.info_bits(), self.correction.cols());
+            if k > 0 && k < n {
+                let x = right.left() + (k as f32 / n as f32) * right.width();
+                painter.vline(
+                    x,
+                    right.y_range(),
+                    egui::Stroke::new(1.0, egui::Color32::from_gray(70)),
+                );
+                // Name the halves.  An unlabelled divider is read as whatever
+                // the viewer already believes, and the belief it invited was
+                // that a row is one codeword laid end to end — so a run of
+                // colour on one side looked like "codeword 6 as well as 5"
+                // rather than "the parity bits of whichever codeword failed".
+                painter.text(
+                    egui::pos2(x - 4.0, right.top() + 2.0),
+                    egui::Align2::RIGHT_TOP,
+                    format!("msg {k}"),
+                    label_font.clone(),
+                    label_col,
+                );
+                painter.text(
+                    egui::pos2(x + 4.0, right.top() + 2.0),
+                    egui::Align2::LEFT_TOP,
+                    format!("parity {}", n - k),
+                    label_font.clone(),
+                    label_col,
+                );
+            }
+            // The Y axis is codeword index, not time — at a fixed MCS the two
+            // are proportional, but they are not the same thing.
+            painter.text(
+                egui::pos2(right.right() - 4.0, right.top() + 2.0),
+                egui::Align2::RIGHT_TOP,
+                {
+                    // Omitted until a row has actually aggregated something,
+                    // rather than shown as zero.
+                    let d = match self.correction.last_depth() {
+                        0 => String::new(),
+                        n => format!("{n} codewords overlaid  "),
+                    };
+                    let held = if self.pane3_frozen { "  HELD" } else { "" };
+                    // The depth is on the pane because the union inflates
+                    // density in proportion to it — the reader needs it to
+                    // discount what they are looking at.
+                    let _ = n;
+                    format!("{d}\u{2193} time{held}")
+                },
+                label_font.clone(),
+                label_col,
+            );
+            // **A clean link draws a near-black rectangle**, which is honest and
+            // uninformative: nothing distinguishes "measured, and zero" from a
+            // dead pane.  The tally does, and it is the first thing that read
+            // wrong when this pane was looked at.
+            let t = self.correction.last_tally();
+            if t.bits > 0 || self.correction.no_truth() > 0 {
+                painter.text(
+                    egui::pos2(right.left() + 4.0, right.bottom() - 2.0),
+                    egui::Align2::LEFT_BOTTOM,
+                    format!(
+                        "fix {}  unc {}  intro {} / {} msg  \u{b7}  fail {}",
+                        t.corrected,
+                        t.uncorrected,
+                        t.introduced,
+                        t.bits,
+                        self.correction.no_truth(),
+                    ),
+                    label_font.clone(),
+                    label_col,
+                );
+            }
+        }
+
+        // ── The ways this pane can be empty, told apart ───────────────────
+        //
+        // Centred on whichever region is actually blank: a source with no
+        // receiver kills both halves, while a gap only empties the
+        // constellation — the correction map keeps its scrollback, and covering
+        // that with a message would hide the history of how the link failed.
+        if let Some(reason) = self.decoder_pane_absence() {
+            let over = if self.source_mode == SourceMode::Cofdm {
+                square
+            } else {
+                rect
+            };
+            painter.text(
+                over.center(),
+                egui::Align2::CENTER_CENTER,
+                reason,
+                label_font.clone(),
+                label_col,
+            );
+        }
+    }
+
+    /// Why the decoder pane has nothing to show, or `None` when it does.
+    ///
+    /// Three different absences a blank pane would fold into one — the same
+    /// reason the `X` panel renders an unmeasured field as an em-dash rather
+    /// than as zero.
+    fn decoder_pane_absence(&self) -> Option<&'static str> {
+        if self.source_mode != SourceMode::Cofdm {
+            return Some("no receiver for this source");
+        }
+        // A gap resets the constellation, so say so rather than leaving an
+        // empty grid to be read as a dead pane.  Checked before emptiness: the
+        // correction map may still hold scrollback from the burst that just
+        // ended, and that does not make the *cloud* meaningful.
+        if !self.loop_timer.in_signal {
+            return Some("waiting for signal\u{2026}");
+        }
+        if !self.constellation.is_empty() {
+            return None;
+        }
+        Some("no frame decoded yet")
     }
 
     fn draw_vertical_waterfall(&self, painter: &egui::Painter, rect: egui::Rect) {
@@ -948,7 +1137,7 @@ impl ViewApp {
             ("L\tlock source freq/carrier/center to display center", 2),
             ("D\tcycle decode bar: off → info → text → off", 2),
             (
-                "W\tcycle pane 3: waterfall (vertical) / spectrogram (horizontal)",
+                "W\tcycle pane 3: waterfall / spectrogram / constellation+correction",
                 2,
             ),
             ("Frequency Pan / Zoom", 1),

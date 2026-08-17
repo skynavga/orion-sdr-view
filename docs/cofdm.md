@@ -281,3 +281,130 @@ right for one of them.
 Everything the panel shows is also written by the replay driver, one JSON object per frame, each
 field carrying its provenance. See [headless.md](headless.md); `scripts/cofdm-link.txt` and
 `scripts/cofdm-degraded.txt` are ready-to-run recipes for a working and a broken link.
+
+## Decoder view
+
+`W` cycles pane 3 to a third mode: the receiver's own two views, side by side. It is COFDM-only —
+the other five sources have no demodulator to look inside — and on them the pane says so rather than
+going blank.
+
+The split is the receiver's boundary. Left is the **signal domain**, continuous complex symbols;
+right is the **coding domain**, discrete outcomes. Both halves show the same instant from either
+side of one stage, which is why they sit together.
+
+### Left: the constellation
+
+The **equalizer's output** — `ŝ = r / Ĥ`, after channel correction and common-phase-error removal,
+before the demapper. That is where a vector signal analyzer takes its constellation, and it is the
+demapper's actual input.
+
+Symbols are stamped as hollow circles coloured by point density, over the ideal points for whichever
+constellation the frame header recovered. Hollow so thousands of overlapping symbols stay
+distinguishable; the density colour underneath is the same ramp the persistence pane uses.
+
+**The plot extent is fixed, not auto-scaled.** The equalizer divides out the channel including any
+uniform gain, so the cloud sits at unit energy whatever the transmit amplitude was. Auto-scaling
+would renormalise away the one thing a constellation is for — how far the cloud has spread.
+
+Symbols outside the extent are **dropped, not clamped**, and counted underneath. Clamping piles the
+tail onto the border and reads as a hard edge that is not in the signal, making the cloud look
+tighter than it is.
+
+### Right: the inner FEC outcome
+
+**X is the bit's index within a single codeword** — 512 columns for the shipped LDPC — and the
+codewords in a slice are **overlaid** on those same columns, not laid end to end. A cell is
+therefore "at this bit position, the worst thing that happened to any codeword in this slice", and a
+row is one slice of time rather than one codeword. The header says how many are stacked
+(`10 codewords overlaid`).
+
+That matters for reading a run of colour: it says *some* codeword failed at those positions, never
+which one or how many. Per-codeword identity is what the overlay trades away for a readable scroll
+rate — see the Y-axis note below.
+
+The left half is the code's **message** bits and the right half its **parity**, split at the marked
+boundary and labelled `msg 256` / `parity 256`. Four states, from comparing what the transmitter sent, what
+arrived at the demapper, and what the inner decoder made of it:
+
+| State | Colour | Meaning |
+| --- | --- | --- |
+| Clean | near-black navy `#0C1018` | the channel did not touch it |
+| Corrected | teal-green `#00BE8C` | it arrived wrong and the inner code fixed it |
+| Uncorrected | red `#E63C32` | it arrived wrong and is still wrong — the outer code's problem now |
+| Introduced | magenta `#D246D2` | it arrived *right* and the decoder broke it |
+
+Two more colours are not bit states but whole-row annotations, so they span the full width of a row
+rather than appearing cell by cell:
+
+| Band | Colour | Meaning |
+| --- | --- | --- |
+| No ground truth | warm olive `#463A1E` | a frame arrived and failed to verify, so there is nothing to compare against |
+| No signal | cool slate `#282E3C` | nothing arrived at all — a different fact, hence a different hue |
+
+Four flat colours for the states, not a ramp: these are categories, and a gradient would imply an
+ordering between `Uncorrected` and `Introduced` that does not exist. The two bands are deliberately
+opposite in temperature, because "a frame failed" and "there was no frame" are the two absences and
+confusing them is the easiest mistake to make when reading the scroll.
+
+`Introduced` is worth its own state rather than being folded into `Uncorrected`: a
+belief-propagation decoder that fails to converge flips correct bits, and one doing that at high SNR
+is broken rather than merely stretched.
+
+The values above are the constants in `src/app/correction.rs`; changing one should change both.
+
+The clean/corrected split is exactly what `CBER` is the ratio of, so this is that reading's per-bit
+expansion rather than a second measurement of it.
+
+### Why a failed codeword lights up its parity half
+
+The decoder decides **message** bits. The parity half of the map is a re-encode of that decision, so
+when the decoder gets a few message bits wrong, re-encoding scatters the error across roughly half
+the parity positions — and since most of those bits *arrived* correct, they classify as
+`Introduced`. Measured on this link: **11 wrong message bits produced 300 `Introduced` parity
+bits**.
+
+That is a syndrome, not three hundred independent decoder mistakes, and it is why the magenta
+appears only to the right of the systematic boundary. The picture keeps it, because a solid parity
+block is an unmistakable "this codeword is wrong" at a glance.
+
+**The tally does not.** `fix` / `unc` / `intro` are counted over the systematic positions only, and
+the denominator says so (`/ 2560 msg`), so the numbers mean what the decoder actually got wrong. A
+whole-block tally overstated it by about 25x. A code with no systematic prefix — the convolutional
+arm — has no subset to restrict to, so it tallies the whole block and the denominator reflects
+that.
+
+**The Y axis is time**, one row per 1/60 s, and each row is the **union** of every codeword that
+landed in its slice — worst state winning per bit position.
+
+It was one row per codeword, and that did not survive contact with the wide bandwidth fractions. At
+7/8 the receiver produces about 580 codewords per second, so a 256-row pane turned over in 0.44 s
+and roughly five rows appeared per rendered frame: each got one 8 ms glimpse. It also scrolled
+*slower* on a worse link, because a decoded frame committed ten rows and a failed one committed a
+single band. Time pacing makes the scroll independent of both bandwidth and link quality, and 256
+rows is 4.3 s of history everywhere.
+
+Union rather than sample, because the rare `Uncorrected` and `Introduced` lines are what the pane is
+watched for — decimating to hit the row rate would drop nine codewords in ten at 7/8 and take those
+with them. **The cost is that density is inflated in proportion to the aggregation**, which is
+roughly ×10 at 7/8 and barely ×1 at 1/8. The depth is reported on the pane (`10 codewords overlaid`) so it can
+be discounted, and the per-frame tally underneath stays un-aggregated as the calibrated figure.
+
+### Reading it
+
+- **A good link draws a near-black rectangle**, because a good link has nothing to correct. The
+  tally underneath is what distinguishes "measured, and zero" from a dead pane.
+- **A frame that fails its CRC has no ground truth**, so it has no map — the map would otherwise
+  empty exactly when the link is worst. It commits an olive band instead, and the running count of
+  those is the `fail` figure in the tally.
+- **A silence gets a slate band**, at the same fixed row rate, so its height is how long the silence
+  was. The constellation resets across a gap, since a held cloud shows a link that is not there, and
+  both halves' counters restart with it so they share an epoch.
+- **`.` holds the view** — "full stop" — when something goes past too fast to read. Both halves stop
+  together and the header says `HELD`. The receiver keeps running underneath, so releasing shows
+  live data rather than replaying the backlog.
+
+### Capturing it
+
+Both halves are CPU-side rasters, so `pane constellation` and `pane correction` write them headless
+with no renderer — see [headless.md](headless.md). Neither writes anything until the receiver has
+decoded a frame, because an empty pane has no pixels.

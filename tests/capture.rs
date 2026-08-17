@@ -627,7 +627,11 @@ fn a_pane_directive_writes_the_dsp_s_own_raster() {
     // panes keep their pixels CPU-side, so this is reachable in a headless run
     // where a window screenshot is not.
     use orion_sdr_view::utils::script::Pane;
-    for pane in Pane::ALL {
+    // The three *spectral* panes accumulate from any source.  The two decoder
+    // panes are COFDM-only and need a decode first — see
+    // `the_decoder_panes_capture_after_a_decode`.
+    for pane in [Pane::Waterfall, Pane::Spectrogram, Pane::Persistence] {
+        let pane = &pane;
         let dir = tempfile::tempdir().expect("tempdir");
         let mut h = Harness::with_defaults();
         h.capture_dir = dir.path().to_path_buf();
@@ -650,6 +654,63 @@ fn a_pane_directive_writes_the_dsp_s_own_raster() {
             names.iter().all(|n| n.contains(pane.name())),
             "{}: the pane should be in the filename: {names:?}",
             pane.name()
+        );
+    }
+}
+
+#[test]
+fn the_decoder_panes_capture_after_a_decode() {
+    // The constellation and correction rasters exist only where there is a
+    // receiver, and only once it has produced a frame — so unlike the three
+    // spectral panes they cannot be captured off an idle default harness.
+    //
+    // **All three gate conditions have to be met for the probe to run at all**:
+    // pane 3 visible, in the decoder mode, on COFDM.  That makes this the
+    // end-to-end test of the gate as well as of the rasters: if `W` did not
+    // reach the mode, or the mode did not re-sync the decode config, nothing
+    // would be written and the assertion below would fail with an empty
+    // directory.
+    use orion_sdr_view::app::SourceMode;
+    use orion_sdr_view::utils::script::Pane;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut h = Harness::with_defaults();
+    h.capture_dir = dir.path().to_path_buf();
+    h.select_source(SourceMode::Cofdm);
+    // Waterfall -> Spectrogram -> Constellation.
+    h.key_n(egui::Key::W, 2);
+
+    // **Poll, do not idle a fixed count.**  A gap empties the constellation, so
+    // a fixed wait can land in the silence between bursts and find nothing to
+    // capture — which is correct behaviour and a broken test.  Run until there
+    // is something, then capture straight away.
+    for _ in 0..1200 {
+        h.idle(1);
+        if !h.app.constellation().is_empty() && h.app.correction().committed() > 0 {
+            break;
+        }
+    }
+    assert!(
+        !h.app.constellation().is_empty(),
+        "the receiver should have produced symbols by now"
+    );
+    assert!(
+        h.app.correction().committed() > 0,
+        "and the correction map should have committed rows"
+    );
+
+    for pane in [Pane::Constellation, Pane::Correction] {
+        h.run_script(&format!("0.0 pane {}\n", pane.name()));
+    }
+    let names: Vec<String> = std::fs::read_dir(dir.path())
+        .expect("read_dir")
+        .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
+        .collect();
+    for pane in ["constellation", "correction"] {
+        assert_eq!(
+            names.iter().filter(|n| n.contains(pane)).count(),
+            2,
+            "{pane}: a PNG and its sidecar: {names:?}"
         );
     }
 }

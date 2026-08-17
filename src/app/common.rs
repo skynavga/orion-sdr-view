@@ -5,6 +5,15 @@ use eframe::egui;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
+/// The colour the HUD paints its *data* in — the status line's readouts, as
+/// opposed to the dim grey of a label or the plain white of the title.
+///
+/// Shared with pane 3's decoder-mode overlays so the two cannot drift: those
+/// readouts (`off-scale`, the correction tally, the codeword geometry) are the
+/// same kind of thing as `ctr`/`span`/`c/n`, and reading as a different kind of
+/// thing was the point of the change.
+pub(crate) const HUD_DATA_COL: egui::Color32 = egui::Color32::from_rgb(0, 200, 255);
+
 pub(crate) const PANE_BG: [egui::Color32; 3] = [
     egui::Color32::from_rgb(10, 10, 20),
     egui::Color32::from_rgb(20, 50, 40),
@@ -85,23 +94,40 @@ impl DecodeBarMode {
     }
 }
 
-// ── Waterfall mode (pane 3) ───────────────────────────────────────────────────
+// ── Pane 3 mode ───────────────────────────────────────────────────────────────
 
-/// Pane 3 layout: traditional vertical waterfall (time flows down, full
-/// spectrum across the top) or horizontal spectrogram (frequency on the
-/// y-axis around the primary marker, time on the x-axis with "now" at
-/// the left).  Cycled by the `W` key.
+/// What pane 3 shows, cycled by the `W` key:
+///
+/// - [`Waterfall`](Self::Waterfall) — the traditional vertical waterfall, time
+///   flowing down, full spectrum across the top.
+/// - [`Spectrogram`](Self::Spectrogram) — horizontal: frequency on the y-axis
+///   around the primary marker, time on the x-axis with "now" at the left.
+/// - [`Constellation`](Self::Constellation) — split: the equalizer's output on
+///   the left, the inner decoder's per-bit correction map on the right.  Named
+///   for its left half, which is what an operator would call the pane.
+///
+/// **Renamed from `WaterfallMode`.**  Two of the three variants are not
+/// waterfalls, and the names now line up with the capture
+/// [`Pane`](crate::utils::script::Pane) enum's, so a script's `pane
+/// constellation` and the key that selects it agree.
+///
+/// The cycle is **three long whatever the source is**, even though only COFDM
+/// has a receiver to feed the third.  A key whose cycle length depends on the
+/// source is worse than an honest empty state, and it lets a capture script
+/// select the mode regardless of what is running.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum WaterfallMode {
-    Vertical,
-    Horizontal,
+pub(crate) enum Pane3Mode {
+    Waterfall,
+    Spectrogram,
+    Constellation,
 }
 
-impl WaterfallMode {
+impl Pane3Mode {
     pub(crate) fn next(self) -> Self {
         match self {
-            Self::Vertical => Self::Horizontal,
-            Self::Horizontal => Self::Vertical,
+            Self::Waterfall => Self::Spectrogram,
+            Self::Spectrogram => Self::Constellation,
+            Self::Constellation => Self::Waterfall,
         }
     }
 }

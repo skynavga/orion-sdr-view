@@ -11,9 +11,9 @@ and waterfall from a configurable signal source.
 
 ## Features
 
-- **Three display panes** — instantaneous spectrum, persistence density map, and a cycle-able waterfall
-  pane (`W`) that toggles between a vertical waterfall and a horizontal spectrogram centered on the primary
-  marker (±freq delta, configurable time range)
+- **Three display panes** — instantaneous spectrum, persistence density map, and a cycle-able third
+  pane (`W`) rotating through a vertical waterfall, a horizontal spectrogram centered on the primary
+  marker (±freq delta, configurable time range), and a split decoder view
 - **Multiple signal sources** — synthetic test tone (sine + AWGN), CW (Morse code), AM DSB from looped
   audio, PSK31 (BPSK31/QPSK31), FT8/FT4, and COFDM (wideband coded-OFDM at 1.92 MHz, with a selectable
   occupied-bandwidth fraction and live out-of-band [spectral shaping](docs/cofdm.md) —
@@ -22,6 +22,9 @@ and waterfall from a configurable signal source.
   (Di: modulation, carrier, BW, SNR) or decoded text (Dt: smooth-scrolling teletype ticker)
 - **COFDM instrumentation** — an `X` panel driven by a real receiver: MER/EVM, the CBER/IBER error
   ladder, carrier offset, lock states, each reading tagged with its provenance
+- **COFDM decoder view** — pane 3's third mode, from the same receiver: the equalizer's output as a
+  live constellation beside the inner FEC's per-bit outcome, scrolling by codeword. Both halves are
+  CPU-side rasters, so they capture headless like every other pane
 - **Frequency pan and zoom** — keyboard-driven viewport with coarse/fine pan snap, coarse/fine zoom, and span steps
 - **Source lock** — lock source frequency/carrier to the display center marker; tracks pan, zoom, and span changes
 - **Frequency markers** — primary center marker plus two bracket markers (A/B) with label display
@@ -44,22 +47,25 @@ without a windowing system, e.g. on headless CI runners.
 
 ## Screen Shots
 
-### AM-DSB Image Source
+### AM-DSB Source
 
 <a href="./docs/images/source-am-dsb.png">
-  <img alt="AM-DSB Input Source" src="./docs/images/source-am-dsb.png" width="66%">
+  <img alt="AM-DSB Source" src="./docs/images/source-am-dsb.png" width="66%">
 </a>
 
-### COFDM Image Source
-
-<a href="./docs/images/source-cofdm.png">
-  <img alt="COFDM Input Source" src="./docs/images/source-cofdm.png" width="66%">
-</a>
-
-### COFDM Image Source with Instrumentation
+### COFDM Source with Instrumentation
 
 <a href="./docs/images/source-cofdm-instrumented.png">
-  <img alt="COFDM Input Source with Instrumentation" src="./docs/images/source-cofdm-instrumented.png" width="66%">
+  <img alt="COFDM Source with Instrumentation" src="./docs/images/source-cofdm-instrumented.png" width="66%">
+</a>
+
+### COFDM Source with Constellation and Inner FEC Outcome, C/N 10dB Impairment
+
+<a href="./docs/images/source-cofdm-constellation.png">
+  <img src="./docs/images/source-cofdm-constellation.png"
+    alt="COFDM Source with Constellation and Inner FEC Outcome, C/N 10dB Impairment"
+    style="margin-left: 2.5%; width: 61.5%;"
+  >
 </a>
 
 ## Documentation

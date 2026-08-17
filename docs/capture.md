@@ -6,7 +6,8 @@
 # Image and video capture
 
 `F` captures a still. `V` starts and stops a recording. Both capture **everything the viewer
-draws** — spectrum, persistence, waterfall or spectrogram, HUD, decode bar and overlays — and
+draws** — spectrum, persistence, waterfall / spectrogram / constellation, HUD, decode bar and
+overlays — and
 nothing it does not.
 
 ```sh

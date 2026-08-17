@@ -11,10 +11,11 @@
 
 | Key | Action |
 | --- | --- |
-| `1` / `2` / `3` | Toggle Spectrum / Persistence / Waterfall panes |
+| `1` / `2` / `3` | Toggle the Spectrum / Persistence / third pane |
 | `E` | Toggle persistence envelope overlay |
 | `P` | Toggle peak hold line |
-| `W` | Cycle pane 3 between vertical waterfall and horizontal spectrogram |
+| `W` | Cycle pane 3: vertical waterfall → horizontal spectrogram → constellation + correction map |
+| `.` | Hold pane 3's decoder view — "full stop". Both halves stop together; releasing shows live data, not a backlog |
 | `[` / `]` | Shift dB reference ±5 dB |
 
 ## Source
