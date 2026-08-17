@@ -23,11 +23,11 @@ use super::source::{
     COFDM_CP_LEN, COFDM_N_FFT, COFDM_PAYLOAD_BYTES, CofdmShaping, cofdm_data_carriers,
     cofdm_mcs_facts,
 };
-use crate::decode::DecodeResult;
 use crate::decode::instrument::{
     CofdmFacts, CofdmInstrument, CofdmRxFacts, ERROR_COUNT_WRAP, ErrorUnit,
 };
 use crate::decode::spectral::{SpectralState, wb_cn_db};
+use crate::decode::{CofdmProbe, DecodeResult, ProbeFrameData};
 
 /// Correction (dB) from the C/N a real-projection spectrum measures to the C/N
 /// the receiver actually sees, for a source that generates **complex** noise.
@@ -110,10 +110,12 @@ impl CofdmState {
         shaping: CofdmShaping,
         iq: Option<&[C32]>,
         fs: f32,
+        want_probe: bool,
         tx: &SyncSender<DecodeResult>,
     ) {
         self.samples_since_emit += samples.len();
-        self.feed_receiver(shaping, fs, is_signal, iq);
+        self.feed_receiver(shaping, fs, is_signal, iq, want_probe);
+        self.emit_probe(want_probe, tx);
         let emitted = self.spectral.process(
             samples,
             is_signal,
@@ -189,6 +191,7 @@ impl CofdmState {
         fs: f32,
         is_signal: bool,
         iq: Option<&[C32]>,
+        want_probe: bool,
     ) {
         let Some(iq) = iq else {
             // A source with no complex representation cannot be demodulated;
@@ -204,8 +207,44 @@ impl CofdmState {
             self.rx = Some((shaping, fs, CofdmRx::new(&shaping, fs)));
         }
         if is_signal && let Some((.., rx)) = self.rx.as_mut() {
-            rx.process(iq);
+            rx.process(iq, want_probe);
         }
+    }
+
+    /// Send whatever the probe collected on this block, if anything.
+    ///
+    /// **On the frame-arrival cadence, not the instrument's.**  The `X` panel
+    /// emits about once per 48 000 signal samples — roughly 9 Hz — which would
+    /// deliver the constellation in visible lurches and hand the correction map
+    /// 17 to 57 rows at a time.  Frames arrive at 8–51 Hz, and that is the rate
+    /// the data exists at, so this emits whenever a block produced any.
+    ///
+    /// The copy out of the probe's reusable buffers happens **inside** the
+    /// borrow: a `ProbedFrame` cannot outlive the call that filled it, and the
+    /// payload has to own its data to cross the channel anyway.
+    fn emit_probe(&self, want_probe: bool, tx: &SyncSender<DecodeResult>) {
+        if !want_probe {
+            return;
+        }
+        let Some((.., rx)) = self.rx.as_ref() else {
+            return;
+        };
+        let probe = rx.probe();
+        if probe.is_empty() {
+            return;
+        }
+        let frames: Vec<ProbeFrameData> = probe
+            .iter()
+            .map(|f| ProbeFrameData {
+                symbols: f.symbols.to_vec(),
+                correction: f.correction.to_vec(),
+                constellation: f.meta.constellation,
+                codeword_bits: f.meta.codeword_bits,
+                codeword_info_bits: f.meta.codeword_info_bits,
+                decoded: f.meta.decoded,
+            })
+            .collect();
+        let _ = tx.try_send(DecodeResult::Probe(Box::new(CofdmProbe { frames })));
     }
 
     /// What the receiver has measured, or `None` when none is running.

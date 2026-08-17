@@ -195,14 +195,21 @@ duration 8
 5.00 pane spectrogram
 ```
 
-**No renderer is involved, which is why this works headless at all.** The waterfall, spectrogram
-and persistence panes each keep their pixels CPU-side — that is what makes their ring arithmetic
-assertable without a GPU — and a `pane` capture reads those buffers in the same display order the
-painter uses. So it is the DSP's own output, without the HUD, the spectrum plot or any chrome
-around it: a cheaper thing than a picture of the window, and a different question.
+**No renderer is involved, which is why this works headless at all.** Every capturable pane —
+`waterfall`, `spectrogram`, `persistence`, and the decoder mode's `constellation` and `correction`
+— keeps its pixels CPU-side, which is what makes their ring arithmetic assertable without a GPU,
+and a `pane` capture reads those buffers in the same display order the painter uses. So it is the
+DSP's own output, without the HUD, the spectrum plot or any chrome around it: a cheaper thing than
+a picture of the window, and a different question.
 
 The spectrum pane is absent deliberately. It is a line plot drawn straight to a painter, with no
-pixel buffer to hand over.
+pixel buffer to hand over — and the reverse of that reasoning is why the constellation is *stamped*
+into a raster rather than drawn as painter circles: it would otherwise be uncapturable for the same
+reason.
+
+`constellation` and `correction` write nothing until the receiver has decoded a frame, since an
+empty pane has no pixels. They need a COFDM source with pane 3 in the decoder mode (`W` twice from
+the default); the driver reports "the … pane has no pixels yet" rather than writing a blank file.
 
 An optional label is appended to the filename, so a script taking several produces readable names
 rather than a column of timestamps. Labels are restricted to letters, digits, `-` and `_`, because

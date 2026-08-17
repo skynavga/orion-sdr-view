@@ -8,6 +8,7 @@ use crate::source::cofdm::{
     self, COFDM_PREFERRED_REF_DB, CofdmShaping, CofdmSource, cofdm_occupied_bw,
 };
 use crate::source::ft8::Ft8ViewState;
+use orion_sdr::modulate::ConstellationOrder;
 
 /// Build a fresh `CofdmSource` from current settings.
 ///
@@ -39,6 +40,22 @@ pub(in crate::app) fn sync(source: &mut dyn SignalSource, settings: &SettingsSta
             settings.cofdm_shaping(),
             settings.cofdm_center_hz(),
         );
+    }
+}
+
+/// Short label for a constellation order, for the decoder pane's heading.
+///
+/// The order is the one the **receiver recovered** from the frame header, not
+/// the one the transmit config was built with, so this is a display of what
+/// arrived rather than of what was configured — the same provenance rule the
+/// `X` panel's `mod` / `CR` / `GI` fields follow.
+pub(in crate::app) fn constellation_label(order: ConstellationOrder) -> &'static str {
+    match order {
+        ConstellationOrder::Bpsk => "BPSK",
+        ConstellationOrder::Qpsk => "QPSK",
+        ConstellationOrder::Qam16 => "QAM16",
+        ConstellationOrder::Qam64 => "QAM64",
+        ConstellationOrder::Qam256 => "QAM256",
     }
 }
 

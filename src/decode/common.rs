@@ -27,6 +27,8 @@ use orion_sdr::util::SIGNAL_THRESHOLD;
 use orion_sdr::util::rms;
 
 use num_complex::Complex32 as C32;
+use orion_sdr::demodulate::BitOutcome;
+use orion_sdr::modulate::ConstellationOrder;
 
 use crate::decode::instrument::CofdmInstrument;
 use crate::source::cofdm::CofdmShaping;
@@ -74,6 +76,36 @@ impl DecodeChunk {
     }
 }
 
+/// One frame's probe data, owned so it can cross the decode channel.
+///
+/// The upstream `ProbedFrame` borrows the receiver's reusable buffers and so
+/// cannot outlive the `feed_probed` that filled it — which is the point of that
+/// design.  Crossing a thread boundary needs ownership, so the decode worker
+/// copies out what the pane will draw, inside the borrow, and sends this.
+#[derive(Clone, Debug)]
+pub struct ProbeFrameData {
+    /// The equalizer's output, in demap order.
+    pub symbols: Vec<C32>,
+    /// Per-coded-bit outcomes.  **Empty when [`decoded`](Self::decoded) is
+    /// false** — no ground truth, which is not the same as no errors.
+    pub correction: Vec<BitOutcome>,
+    /// The constellation the symbols were demapped against, recovered from the
+    /// frame header rather than read off the transmit config.
+    pub constellation: ConstellationOrder,
+    /// The inner code's `n` and `k`, for the map's codeword geometry.  Both `0`
+    /// when the code has no block structure (the convolutional arm).
+    pub codeword_bits: usize,
+    pub codeword_info_bits: usize,
+    /// Whether the payload verified.  `false` ⇒ symbols only.
+    pub decoded: bool,
+}
+
+/// One decode chunk's worth of probe frames.
+#[derive(Clone, Debug, Default)]
+pub struct CofdmProbe {
+    pub frames: Vec<ProbeFrameData>,
+}
+
 // ── Public types ──────────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -111,6 +143,14 @@ pub struct DecodeConfig {
     /// demodulator differing by one field does not fail loudly, it simply never
     /// acquires, which is indistinguishable from a dead signal.
     pub cofdm_shaping: CofdmShaping,
+    /// Whether to run the receiver's diagnostic probe — the equalized symbols
+    /// and per-coded-bit correction map pane 3's constellation mode draws.
+    ///
+    /// **Driven by display state, not by settings**, which makes it the only
+    /// field here that is: the pane being on is the whole reason to pay for it.
+    /// Off, upstream's plain `feed` is called and nothing is computed, allocated
+    /// or sent; the gate is the choice of method rather than a branch inside it.
+    pub cofdm_probe: bool,
     /// Block RMS at or above which the source counts as transmitting.  Must
     /// match the main thread's `LoopTimer` threshold, or the two disagree about
     /// where a burst ends: the decode side keeps emitting into a gap the loop
@@ -133,6 +173,7 @@ impl DecodeConfig {
             fs,
             cofdm_bw_hz: 0.0,
             cofdm_shaping: CofdmShaping::derived(crate::source::cofdm::COFDM_DEFAULT_BW_FRACTION),
+            cofdm_probe: false,
             signal_threshold: SIGNAL_THRESHOLD,
             cw_message: String::new(),
             cw_wpm: 0.0,
@@ -163,6 +204,19 @@ pub enum DecodeResult {
     /// `None` **clears** the panel at a gap edge, so it falls back to em-dashes
     /// rather than holding numbers from a burst that has ended.
     Instrument(Option<Box<CofdmInstrument>>),
+    /// Equalized symbols and the per-bit correction map for the frames that
+    /// completed in one chunk — pane 3's constellation mode.
+    ///
+    /// A new variant rather than a widening of `Instrument`, on the precedent
+    /// that variant's own doc comment sets.  It also runs on a **different
+    /// cadence**: the instrument emits about once per 48 000 signal samples
+    /// (~9 Hz), which would deliver the constellation in visible lurches and
+    /// batch 17–57 map rows at a time.  This one emits whenever frames arrive,
+    /// 8–51 Hz, which is the rate the data is produced at.
+    ///
+    /// Only sent while the pane is asking for it — see
+    /// [`DecodeConfig::cofdm_probe`].
+    Probe(Box<CofdmProbe>),
     /// No signal detected or carrier not found.
     NoSignal,
     /// Definite signal gap — bypasses hold timer.
@@ -209,6 +263,13 @@ pub struct DecodeTicker {
     /// rather than a snapshot: opening it freezes nothing and closing it loses
     /// nothing.  Cleared alongside `last_info` on a gap.
     pub last_instrument: Option<Box<CofdmInstrument>>,
+    /// Probe frames delivered since the main thread last drained them.
+    ///
+    /// **Drained rather than held**, unlike `last_instrument`: the panes
+    /// *accumulate* what arrives (a density map and a scrolling ring), so a
+    /// batch read twice would double-count it and a batch never read would
+    /// leave a hole in the scroll.
+    pub pending_probe: Vec<ProbeFrameData>,
     /// True while in a signal gap — drives SPACE injection in `tick()`.
     pub in_gap: bool,
 }
@@ -229,6 +290,7 @@ impl DecodeTicker {
             hold_elapsed: 0.0,
             last_info: None,
             last_instrument: None,
+            pending_probe: Vec::new(),
             in_gap: false,
         }
     }
@@ -256,9 +318,11 @@ impl DecodeTicker {
                 let hold = match self.last_result {
                     DecodeResult::Text(_) => 0.0,
                     DecodeResult::Info { .. } => INFO_HOLD_SECS,
-                    // `Instrument` never becomes `last_result` (it does not
-                    // participate in the hold), so it imposes none.
+                    // Neither `Instrument` nor `Probe` ever becomes
+                    // `last_result` (they do not participate in the hold), so
+                    // they impose none.
                     DecodeResult::Instrument(_)
+                    | DecodeResult::Probe(_)
                     | DecodeResult::NoSignal
                     | DecodeResult::Gap { .. } => 0.0,
                 };
@@ -271,9 +335,11 @@ impl DecodeTicker {
                 let hold = match self.last_result {
                     DecodeResult::Text(_) => 0.0,
                     DecodeResult::Info { .. } => INFO_HOLD_SECS,
-                    // `Instrument` never becomes `last_result` (it does not
-                    // participate in the hold), so it imposes none.
+                    // Neither `Instrument` nor `Probe` ever becomes
+                    // `last_result` (they do not participate in the hold), so
+                    // they impose none.
                     DecodeResult::Instrument(_)
+                    | DecodeResult::Probe(_)
                     | DecodeResult::NoSignal
                     | DecodeResult::Gap { .. } => 0.0,
                 };
@@ -281,6 +347,12 @@ impl DecodeTicker {
                     self.last_result = r;
                     self.hold_elapsed = 0.0;
                 }
+            }
+            DecodeResult::Probe(p) => {
+                // Appended, not replaced: two chunks can complete frames
+                // between one main-thread drain and the next, and dropping the
+                // older batch would tear a hole in the correction map's scroll.
+                self.pending_probe.extend(p.frames.iter().cloned());
             }
             DecodeResult::Instrument(inst) => {
                 // Does not participate in the Info hold: the instrument feeds
@@ -293,6 +365,7 @@ impl DecodeTicker {
                 self.hold_elapsed = 0.0;
                 self.last_info = None;
                 self.last_instrument = None;
+                self.pending_probe.clear();
                 self.in_gap = true;
             }
         }
@@ -340,6 +413,7 @@ impl DecodeTicker {
         self.last_result = DecodeResult::NoSignal;
         self.last_info = None;
         self.last_instrument = None;
+        self.pending_probe.clear();
         self.in_gap = false;
     }
 }
@@ -513,6 +587,7 @@ impl DecodeState {
                     cfg.cofdm_shaping,
                     chunk.iq.as_deref(),
                     fs,
+                    cfg.cofdm_probe,
                     tx,
                 );
             }

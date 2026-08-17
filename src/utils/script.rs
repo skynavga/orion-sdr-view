@@ -144,10 +144,22 @@ pub enum Pane {
     Waterfall,
     Spectrogram,
     Persistence,
+    /// Pane 3's decoder-mode left half: the equalizer's output, stamped as
+    /// hollow circles over a density map.
+    Constellation,
+    /// Pane 3's decoder-mode right half: the per-coded-bit correction map,
+    /// scrolling by codeword.
+    Correction,
 }
 
 impl Pane {
-    pub const ALL: &'static [Pane] = &[Pane::Waterfall, Pane::Spectrogram, Pane::Persistence];
+    pub const ALL: &'static [Pane] = &[
+        Pane::Waterfall,
+        Pane::Spectrogram,
+        Pane::Persistence,
+        Pane::Constellation,
+        Pane::Correction,
+    ];
 
     /// The name a script writes, and the suffix a filename carries.
     pub fn name(self) -> &'static str {
@@ -155,6 +167,8 @@ impl Pane {
             Self::Waterfall => "waterfall",
             Self::Spectrogram => "spectrogram",
             Self::Persistence => "persistence",
+            Self::Constellation => "constellation",
+            Self::Correction => "correction",
         }
     }
 

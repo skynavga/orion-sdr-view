@@ -26,6 +26,8 @@ which this one deliberately does not duplicate in depth.
 | CBER | Channel Bit Error Rate | Pre-FEC: measured at the inner decoder's *input*. First rung of the error ladder |
 | CFR | Constant Frame Rate | Every frame the same duration apart. ffmpeg's rawvideo demuxer assumes it, so a recording is resampled onto fixed slots rather than carrying timestamps. See [capture.md](capture.md) |
 | COFDM | Coded OFDM | The wideband source: framed, concatenated-FEC OFDM at 1.92 MHz. See [cofdm.md](cofdm.md) |
+| CONST | Constellation | Pane 3's left half in the decoder mode, and the label above it: the equalizer's output plotted as hollow circles coloured by point density, over the ideal points |
+| CORR | Correction map | Pane 3's right half in the decoder mode: what the inner decoder did with each coded bit — clean, corrected, uncorrected, introduced — scrolling by codeword |
 | CP | Cyclic Prefix | `cp_len` = 32 here. The guard samples a receiver discards, and the budget the taper and mask share |
 | CR | Code Rate | The **inner** FEC's rate, on the instrumentation panel. The outer block code is a separate stage |
 | CRC | Cyclic Redundancy Check | Frame check; a CRC failure is what makes a frame count toward `FER` and `err` |
@@ -38,6 +40,7 @@ which this one deliberately does not duplicate in depth.
 | dt | Frame delta | Seconds of signal one pass advances. **Injected, not measured**, which is what makes a scripted run reproducible; 1/60 s in both the interactive app and the replay driver. Not `Dt` |
 | Dt | Decode bar, Text line | The smooth-scrolling teletype ticker, for the sources that decode to text (CW, PSK31, FT8/FT4). Not `dt` |
 | DVB-T | Digital Video Broadcasting – Terrestrial | Not implemented here. Named where this viewer's labels deliberately avoid DVB's, e.g. `IBER` rather than `VBER` |
+| EMA | Exponential Moving Average | `y ← α·x + (1−α)·y`. Smooths the Di bar's C/N reading, and paces the correction map's no-signal band from the codeword rate last observed. **Seeded on the first sample**, not blended up from a default, or the estimate is wrong for as long as convergence takes |
 | EVM | Error Vector Magnitude | Soft-vs-ideal constellation distance, in dB. `MER_dB = −EVM_dB` exactly, so one reading fills both fields |
 | FEC | Forward Error Correction | COFDM concatenates an inner and an outer code; every error-ladder rung refers to the **inner** one |
 | FER | Frame Error Rate | The *fraction* of frames that fail to decode. A rate, where `err` beside it is a running count |
@@ -47,7 +50,7 @@ which this one deliberately does not duplicate in depth.
 | GUI | Graphical User Interface | The optional `gui` feature; `--no-default-features` builds the DSP library alone |
 | HUD | Heads-Up Display | The text overlaid on the spectrum pane. Field widths are fixed throughout, so a value gaining a digit cannot reflow its neighbours |
 | IBER | Inner-decoder Bit Error Rate | BER at the inner decoder's *output*, before the outer code. Second rung of the ladder |
-| IQ | In-phase / Quadrature | Complex baseband. COFDM is the only complex-valued source; the other five are real |
+| IQ | In-phase / Quadrature | Complex baseband. COFDM is the only complex-valued source; the other five are real. The `CONST` pane's two axes, I across and Q up |
 | ISO 8601 | (date and time format) | How a capture is named. **Basic** format in filenames (`20260816T112233.456Z`), **extended** in metadata (`2026-08-16T11:22:33.456Z`); mixing the two in one representation is not conformant |
 | JSONL | JSON Lines | The dump format: one JSON object per line. Chosen over CSV because a column cannot hold `null` without a sentinel. See [headless.md](headless.md) |
 | LDPC | Low-Density Parity-Check | One of the inner FEC families COFDM's `CR` and `FEC` lock may refer to |
@@ -70,6 +73,7 @@ which this one deliberately does not duplicate in depth.
 | TS | Transport Stream | The MPEG-2 packet stream DVB-T carries. Permanently blank here: generic COFDM has no transport-stream layer |
 | UTC | Coordinated Universal Time | `display.time_zone` default; also `local` or an explicit `+HH:MM` offset |
 | VBER | Viterbi Bit Error Rate | DVB's name for `IBER`. **Deliberately not used** — it names a decoder the inner FEC need not be |
+| VSA | Vector Signal Analyzer | The class of instrument pane 3's `CONST` half imitates: points taken **post-equalizer, pre-demapper**, which is where a VSA takes them and where the demapper's input actually is. Not a vector *network* analyzer |
 | WPM | Words Per Minute | CW keying speed (`sources.cw.wpm`) |
 | YAML | YAML Ain't Markup Language | The configuration format; see [configuration.md](configuration.md) |
 | Δf | Frequency error | Residual carrier offset the COFDM receiver measures, in Hz |

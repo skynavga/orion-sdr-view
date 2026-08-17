@@ -63,7 +63,7 @@ fn pump(src: &mut CofdmSource, rx: &mut CofdmRx, n: usize) {
             .last_samples_iq()
             .expect("COFDM must offer complex baseband")
             .to_vec();
-        rx.process(&iq);
+        rx.process(&iq, false);
         taken += want;
     }
 }
@@ -179,7 +179,7 @@ fn occupying_dc_survives_a_round_trip() {
             &FramePacket::new(FrameMetadata::new(seq, 1), vec![0x5a; 184]),
             0,
         );
-        bare.process(&frame);
+        bare.process(&frame, false);
     }
     let bare_evm = bare
         .last()
@@ -245,7 +245,7 @@ fn carrier_offset_is_observable() {
                     c * r
                 })
                 .collect();
-            rx.process(&iq);
+            rx.process(&iq, false);
             taken += BLOCK;
         }
         let est = rx.last().and_then(|f| f.cfo_hz);

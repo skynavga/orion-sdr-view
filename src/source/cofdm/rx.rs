@@ -55,7 +55,7 @@
 //! *nonzero* offset; a naive mixer and low-pass is not it.
 
 use num_complex::Complex32 as C32;
-use orion_sdr::demodulate::{OfdmFrameStreamDemod, RxFrame};
+use orion_sdr::demodulate::{OfdmFrameStreamDemod, OfdmRxProbe, RxFrame};
 use orion_sdr::modulate::McsTable;
 
 use super::source::{COFDM_BUFFER_FRAMES, CofdmShaping, cofdm_link_config};
@@ -138,6 +138,17 @@ impl CofdmRxStats {
 /// The COFDM receiver: streaming demodulator plus frame accounting.
 pub struct CofdmRx {
     demod: OfdmFrameStreamDemod,
+    /// Reusable diagnostic buffers for the constellation / correction pane.
+    ///
+    /// Held here rather than allocated per call — that is the whole point of
+    /// upstream's caller-owned design: a probed frame is ~2600 complex symbols
+    /// and ~5100 outcome bytes at 8–51 frames per second, and capacity is
+    /// retained across calls so a steady stream does not reallocate.
+    ///
+    /// It costs nothing while the pane is closed: [`process`](Self::process)
+    /// calls plain `feed` then, and upstream's gate is the choice of method
+    /// rather than a flag, so there is not even a branch to pay.
+    probe: OfdmRxProbe,
     stats: CofdmRxStats,
     last: Option<CofdmRxFacts>,
     last_seq: Option<u32>,
@@ -167,6 +178,7 @@ impl CofdmRx {
             .with_error_rates(true);
         Self {
             demod,
+            probe: OfdmRxProbe::new(),
             stats: CofdmRxStats::default(),
             last: None,
             last_seq: None,
@@ -186,18 +198,36 @@ impl CofdmRx {
     /// accounting is never attributed to the next.
     pub fn reset(&mut self) {
         self.demod.clear();
+        self.probe.clear();
         self.stats = CofdmRxStats::default();
         self.last = None;
         self.last_seq = None;
         self.failed_since_accept = 0;
     }
 
+    /// The probe filled by the most recent [`process`](Self::process) call, or
+    /// an empty one when probing is off.
+    ///
+    /// Read it *inside* the borrow — a `ProbedFrame` cannot outlive the call
+    /// that filled it, and the next `process` clears and refills.
+    pub fn probe(&self) -> &OfdmRxProbe {
+        &self.probe
+    }
+
     /// Feeds one block of complex baseband — the source's
     /// [`last_samples_iq`](crate::source::SignalSource::last_samples_iq) — and
     /// folds any completed frames into the running stats and the last-frame
     /// snapshot.
-    pub fn process(&mut self, iq: &[C32]) {
-        for result in self.demod.feed(iq) {
+    ///
+    /// `want_probe` selects the entry point rather than setting a flag: with it
+    /// off nothing is computed for the pane at all.
+    pub fn process(&mut self, iq: &[C32], want_probe: bool) {
+        let results = if want_probe {
+            self.demod.feed_probed(iq, &mut self.probe)
+        } else {
+            self.demod.feed(iq)
+        };
+        for result in results {
             match result {
                 Ok(frame) => self.accept(&frame),
                 Err(_) => {

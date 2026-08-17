@@ -717,6 +717,7 @@ fn run_provider_with(
             shaping,
             iq.as_deref(),
             COFDM_DEFAULT_FS,
+            false,
             &tx,
         );
     }
@@ -730,6 +731,7 @@ fn run_provider_with(
             shaping,
             None,
             COFDM_DEFAULT_FS,
+            false,
             &tx,
         );
     }
@@ -1105,6 +1107,7 @@ fn a_new_burst_does_not_inherit_the_last_ones_sequence() {
             shaping,
             Some(&iq),
             COFDM_DEFAULT_FS,
+            false,
             &tx,
         );
         while let Ok(DecodeResult::Instrument(Some(inst))) = rx.try_recv() {

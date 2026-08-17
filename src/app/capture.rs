@@ -380,6 +380,32 @@ pub(super) fn pane_raster(app: &super::ViewApp, pane: Pane) -> Option<(u32, u32,
             }
             Some((w as u32, h as u32, img.as_raw().to_vec()))
         }
+        Pane::Constellation => {
+            let c = app.constellation();
+            if c.is_empty() {
+                return None;
+            }
+            let px = super::constellation::CONST_PX;
+            let mut rgba = Vec::with_capacity(px * px * 4);
+            for &c in c.pixels_in_display_order() {
+                push(&mut rgba, c);
+            }
+            Some((px as u32, px as u32, rgba))
+        }
+        Pane::Correction => {
+            let m = app.correction();
+            let (w, h) = (m.cols(), m.filled());
+            if w == 0 || h == 0 {
+                return None;
+            }
+            let mut rgba = Vec::with_capacity(w * h * 4);
+            for row in m.rows_in_display_order() {
+                for &c in row {
+                    push(&mut rgba, c);
+                }
+            }
+            Some((w as u32, h as u32, rgba))
+        }
     }
 }
 

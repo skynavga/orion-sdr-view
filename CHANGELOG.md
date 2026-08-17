@@ -9,6 +9,56 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.30] - 2026-08-16
+
+### Added
+
+- **A third pane-3 mode showing what the COFDM receiver sees**, cycled by `W`:
+  the equalizer's output as a live constellation — hollow circles coloured by
+  point density, over the ideal points — beside a per-coded-bit map of the
+  inner code's verdict on each bit. The `X` panel already reported the link as
+  numbers; nothing showed the shape of what the demapper saw or what the
+  decoder did with it.
+- **`pane constellation` and `pane correction` capture targets.** Both halves
+  are CPU-side rasters rather than painter geometry, which is the reverse of
+  the spectrum pane's reasoning and has the same cause: drawn straight to a
+  painter they would be uncapturable and unassertable, so a capture reads the
+  same pixels the painter does. Neither writes until the receiver has decoded
+  a frame, since an empty pane has no pixels.
+- **`.` holds the decoder view** — a hold rather than a pause. The receiver
+  keeps running and arriving frames are dropped rather than queued, so
+  releasing shows live data instead of replaying a backlog.
+
+### Changed
+
+- **`WaterfallMode` is now `Pane3Mode`.** Two of its three variants are not
+  waterfalls, and the names line up with the capture `Pane` enum's so a
+  script's `pane constellation` and the key that selects it agree.
+- Requires **orion-sdr 0.0.61** for `OfdmRxProbe`. The probe is opt-in by
+  choice of method rather than by a flag, so nothing is computed, allocated or
+  sent while pane 3 shows something else.
+
+### Notes
+
+- **The correction map's rows are time slices, not codewords.** One row per
+  codeword is unreadable at the 7/8 bandwidth fraction: measured ~580 rows/s
+  against a ~118 fps render, so a 256-row ring turned over in 0.44 s and five
+  rows flashed past per frame. It also scrolled *slower* on a worse link,
+  since a decoded frame committed ten rows and a failed one committed a single
+  band. A slice is the union of its codewords, worst state winning, so the rare
+  uncorrected lines survive where decimation would have dropped them. The cost
+  is that density inflates with the aggregation, so the depth is reported.
+- **The tally counts systematic positions only.** The decoder decides message
+  bits; parity is a re-encode of that decision, so eleven wrong message bits
+  showed as 300 `Introduced` parity bits — a syndrome, not 300 mistakes, and a
+  whole-block count overstated the decoder's damage by about 25x.
+- **A gap empties the constellation and resets both halves' counters
+  together**, while the map keeps scrolling in its own colour rather than
+  freezing — a frozen map reads as a link still delivering. Signal state comes
+  from the loop timer rather than `decode_ticker.in_gap`, which is only ever
+  set while the decode bar is visible: with the bar off, which is the default,
+  a silence was indistinguishable from a stall.
+
 ## [0.0.29] - 2026-08-15
 
 ### Changed

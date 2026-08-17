@@ -7,6 +7,8 @@ use std::sync::{Arc, Mutex};
 use eframe::egui;
 
 use super::capture::CaptureController;
+use super::constellation::ConstellationDisplay;
+use super::correction::CorrectionMap;
 use super::freqview::{FreqMarker, FreqView, PanLimit};
 use super::persistence::PersistenceRenderer;
 use super::settings::{AmDsbSettings, CwSettings, Psk31Settings, SettingsState, ToneSettings};
@@ -26,8 +28,8 @@ use crate::utils::time::Clock;
 use crate::utils::timer::LoopTimer;
 
 use super::{
-    DECODE_BAR_H, DecodeBarMode, FFT_SIZE, MAX_SAMPLES_PER_FRAME, MIN_SAMPLES_PER_FRAME,
-    SAMPLE_RATE, SourceMode, WaterfallMode,
+    DECODE_BAR_H, DecodeBarMode, FFT_SIZE, MAX_SAMPLES_PER_FRAME, MIN_SAMPLES_PER_FRAME, Pane3Mode,
+    SAMPLE_RATE, SourceMode,
 };
 
 /// The three mutually-exclusive overlays.  Only one can be up at a time.
@@ -71,10 +73,30 @@ pub struct ViewApp {
     pub(super) persistence: PersistenceRenderer,
     pub(super) envelope_visible: bool,
 
-    // Pane 3: waterfall — two presentations, cycled by `W`.
+    // Pane 3: three presentations, cycled by `W`.
     pub(super) waterfall: WaterfallDisplay,
     pub(super) spectrogram: SpectrogramDisplay,
-    pub(super) waterfall_mode: WaterfallMode,
+    /// The decoder mode's two halves.  Both are CPU-side rasters, so what the
+    /// pane shows and what `pane constellation` / `pane correction` write are
+    /// the same pixels — see `app::constellation`.
+    pub(super) constellation: ConstellationDisplay,
+    pub(super) correction: CorrectionMap,
+    pub(super) pane3_mode: Pane3Mode,
+    /// Whether pane 3's decoder view is held.  `.` toggles it — "full stop".
+    ///
+    /// A hold, not a pause: the receiver keeps running and the probe keeps
+    /// arriving, it is simply not folded into the two rasters.  Resuming shows
+    /// live data rather than a replay of the backlog, which is what "freeze the
+    /// picture" means — and it keeps the pane from lurching forward by however
+    /// long it was held.
+    pub(super) pane3_frozen: bool,
+    /// Last value of [`pane3_wants_probe`](Self::pane3_wants_probe), so the
+    /// decode config is re-synced when the gate flips rather than every frame.
+    ///
+    /// The gate moves on three different keys — `W`, `3`, and the source
+    /// selector — and syncing on each of their handlers would be three places
+    /// to forget.  Watching the derived value instead cannot miss one.
+    probe_gate: bool,
 
     // Frequency viewport (pan + zoom) — shared across all panes
     pub(super) freq_view: FreqView,
@@ -269,7 +291,11 @@ impl ViewApp {
                 s.set_time_range(cfg.spec_time_range_secs());
                 s
             },
-            waterfall_mode: WaterfallMode::Vertical,
+            constellation: ConstellationDisplay::new(),
+            correction: CorrectionMap::default(),
+            pane3_mode: Pane3Mode::Waterfall,
+            pane3_frozen: false,
+            probe_gate: false,
 
             freq_view: FreqView::new(SAMPLE_RATE / 2.0),
             markers: [
@@ -384,6 +410,11 @@ impl ViewApp {
         self.decode_ticker.reset();
         self.last_block_was_signal = false;
         self.spectrogram.clear();
+        // The decoder rasters are per-link: a restart changes the numerology,
+        // so an accumulated cloud and a half-scrolled map belong to a signal
+        // that no longer exists.
+        self.constellation.clear();
+        self.correction.clear();
         self.ft8_view.reset();
         while self.decode_rx.try_recv().is_ok() {}
         self.decode_seq = self.decode_seq.wrapping_add(1);
@@ -413,6 +444,8 @@ impl ViewApp {
         self.waterfall.clear();
         self.persistence.clear();
         self.spectrogram.clear();
+        self.constellation.clear();
+        self.correction.clear();
         if let Ok(mut cfg) = self.decode_config.lock() {
             cfg.fs = fs;
         }
@@ -474,6 +507,13 @@ impl ViewApp {
         pane: crate::utils::script::Pane,
         label: Option<&str>,
     ) -> std::io::Result<Option<std::path::PathBuf>> {
+        // The constellation raster is rebuilt lazily on the render tick, so a
+        // headless script that captures without drawing would otherwise write
+        // the previous rebuild.  Forcing it here keeps the file equal to what
+        // the pane *would* show, which is `pane_raster`'s whole contract.
+        if pane == crate::utils::script::Pane::Constellation {
+            self.constellation.sync_raster();
+        }
         let scene = self.scene_info();
         let seq = self.capture.next_pane_seq();
         super::capture::write_pane(
@@ -924,7 +964,7 @@ impl ViewApp {
                 }
             }
             if i.key_pressed(egui::Key::W) {
-                self.waterfall_mode = self.waterfall_mode.next();
+                self.pane3_mode = self.pane3_mode.next();
             }
             if i.key_pressed(egui::Key::H) {
                 self.show_help ^= true;
@@ -953,6 +993,12 @@ impl ViewApp {
                         // a / b: toggle visibility and select/deselect as active marker
                         "a" => toggle_marker_a = true,
                         "b" => toggle_marker_b = true,
+                        // "Full stop": hold pane 3's decoder view.  A bare key
+                        // like the other toggles, and scope-neutral — nothing
+                        // in the binding says "pane 3", so it can widen later.
+                        // Settings input returns before this block runs, so it
+                        // cannot collide with a text row.
+                        "." => self.pane3_frozen ^= true,
                         _ => {}
                     }
                 }
@@ -1401,6 +1447,26 @@ impl ViewApp {
             ));
         }
 
+        // **A gap empties the constellation.**  The cloud is a picture of what
+        // is arriving *now*, so holding the last burst's across a silence shows
+        // a link that is not there — and the off-scale tally underneath it
+        // would go on quoting a denominator from a transmission that ended.
+        // Back to the bare grid: axes, unit circle and ideal points, which are
+        // the frame of reference rather than data.
+        //
+        // The correction map is deliberately **not** cleared: its rows are
+        // scrollback, and how the link failed on the way down is exactly what
+        // should still be on screen once it has.  It bands instead.
+        //
+        // On the loop timer's edge rather than on a `Gap` *result*, which only
+        // exists while the decode bar is visible.
+        if self.loop_timer.gap_onset {
+            self.constellation.clear();
+            // Counters only — the map's *rows* are scrollback and survive.
+            // Without this the two halves quoted different epochs side by side.
+            self.correction.reset_counters();
+        }
+
         if !self.loop_timer.in_signal && self.decode_bar.is_visible() {
             // Push Gap when the loop timer considers us in a real gap (after
             // any holdoff has expired).  This avoids flooding the ticker with
@@ -1455,8 +1521,52 @@ impl ViewApp {
             spec_delta,
             self.freq_view.nyquist,
         );
-        if self.waterfall_mode == WaterfallMode::Horizontal {
+        if self.pane3_mode == Pane3Mode::Spectrogram {
             self.spectrogram.update_texture(ctx);
+        }
+
+        // Pane 3's decoder mode.  The probe only arrives while the pane is
+        // asking for it, so this is a no-op otherwise — and the ring/density
+        // accumulate, so the batch is *drained* rather than read: reading it
+        // twice would double-count the density and re-scroll the map.
+        // Held: drop what arrived rather than queueing it, so resuming is live
+        // rather than a fast-forward through the backlog.
+        if self.pane3_frozen {
+            self.decode_ticker.pending_probe.clear();
+        }
+        let want_probe = self.pane3_wants_probe();
+        if want_probe != self.probe_gate {
+            self.probe_gate = want_probe;
+            self.sync_decode_config();
+            if !want_probe {
+                // Nothing will arrive now, and a held picture would be stale
+                // rather than paused — the cloud and the scroll both mean
+                // "recently", so reopening the pane starts empty.
+                self.constellation.clear();
+                self.correction.clear();
+            }
+        }
+        if !self.pane3_frozen {
+            self.drain_probe();
+        }
+        // The map keeps scrolling through a silence, banded, at the codeword
+        // pace it last observed — a frozen picture reads as a link that is
+        // still delivering.
+        //
+        // **The loop timer, not `decode_ticker.in_gap`.**  That flag is a
+        // *decode-bar* concept: it is only ever set when `Di`/`Dt` is visible,
+        // because the `Gap` result that sets it is gated on
+        // `decode_bar.is_visible()` to keep from flooding the ticker.  Reading
+        // it here made pane 3's gap band silently depend on an unrelated
+        // toggle — with the bar off, which is the default, a silence looked
+        // exactly like a frozen link.  Found by looking at a capture, not by a
+        // test.
+        if !self.pane3_frozen {
+            self.correction.tick(dt, !self.loop_timer.in_signal);
+        }
+        if self.pane3_mode == Pane3Mode::Constellation {
+            self.constellation.update_texture(ctx);
+            self.correction.update_texture(ctx);
         }
 
         // Persistence is a 2D histogram that changes everywhere each frame, so
@@ -1580,6 +1690,24 @@ impl ViewApp {
         &self.spectrogram
     }
 
+    /// Pane 3's constellation raster, for the CPU-side pixel assertions and the
+    /// headless capture path.
+    pub fn constellation(&self) -> &ConstellationDisplay {
+        &self.constellation
+    }
+
+    /// Mutable, for the headless capture path: the raster is rebuilt lazily on
+    /// the render tick, and a script that captures without drawing has to force
+    /// it up to date first.
+    pub fn constellation_mut(&mut self) -> &mut ConstellationDisplay {
+        &mut self.constellation
+    }
+
+    /// Pane 3's correction map, on the same terms.
+    pub fn correction(&self) -> &CorrectionMap {
+        &self.correction
+    }
+
     /// The decode ticker — the Di/Dt bar's text, last `Info` and last
     /// instrument reading.  This is what the replay driver dumps, so the dump
     /// and the panel are reading the same values by construction.
@@ -1606,6 +1734,42 @@ impl ViewApp {
     /// [`samples_consumed`](Self::samples_consumed).
     pub fn samples_consumed(&self) -> u64 {
         self.samples_consumed
+    }
+
+    /// Whether pane 3 is currently drawing the decoder mode for a source that
+    /// has a receiver — the gate on the whole probe path.
+    ///
+    /// All three conditions matter.  The pane being on another mode, or hidden
+    /// entirely, means nothing would be drawn; a source other than COFDM has no
+    /// demodulator to probe, so upstream would produce nothing anyway and the
+    /// receiver itself does not exist.
+    pub(super) fn pane3_wants_probe(&self) -> bool {
+        self.pane_visible[2]
+            && self.pane3_mode == Pane3Mode::Constellation
+            && self.source_mode == SourceMode::Cofdm
+    }
+
+    /// Fold whatever probe frames arrived into pane 3's two rasters.
+    ///
+    /// A **decoded** frame contributes its symbols to the constellation and its
+    /// map to the correction ring.  A frame that did not decode contributes its
+    /// symbols and a "no ground truth" band — the constellation is precisely
+    /// where an operator looks when frames stop decoding, and a map that froze
+    /// instead of banding would read as "everything is fine" exactly when it is
+    /// not.
+    fn drain_probe(&mut self) {
+        if self.decode_ticker.pending_probe.is_empty() {
+            return;
+        }
+        for f in std::mem::take(&mut self.decode_ticker.pending_probe) {
+            self.constellation.push_symbols(&f.symbols, f.constellation);
+            if f.decoded {
+                self.correction
+                    .push_frame(&f.correction, f.codeword_bits, f.codeword_info_bits);
+            } else {
+                self.correction.push_no_truth();
+            }
+        }
     }
 
     /// Take this frame's decode results, in the order the ticker saw them.

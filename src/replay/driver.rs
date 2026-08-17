@@ -723,6 +723,11 @@ fn emit<W: Write>(
                 decoded,
             },
             DecodeResult::NoSignal => Record::NoSignal { t, samples },
+            // Bulk pane pixels, not a reading: a dump is a record of what was
+            // *measured*, and the probe's symbols and correction map are drawn
+            // rather than reported.  `pane constellation` / `pane correction`
+            // capture them as rasters, which is the assertable form.
+            DecodeResult::Probe(_) => continue,
         };
         dump.write(&record)?;
     }

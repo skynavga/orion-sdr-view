@@ -154,6 +154,13 @@ impl ViewApp {
             if self.source_mode == SourceMode::Cofdm {
                 cfg.cofdm_bw_hz = cofdm::occupied_bw_hz(&self.settings);
                 cfg.cofdm_shaping = cofdm::effective_shaping(&self.settings);
+                // **The only decode-config field driven by display state.**
+                // Everything else here comes from settings; this one asks
+                // "is anyone looking?", because the probe's cost is only
+                // worth paying while pane 3 is drawing it.  Reading `self`
+                // rather than `self.settings` is what that costs, and the
+                // block already reads `self.source_mode`.
+                cfg.cofdm_probe = self.pane3_wants_probe();
             }
         }
     }

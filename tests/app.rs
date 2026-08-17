@@ -585,3 +585,144 @@ view:
          would have cleared the instrument"
     );
 }
+
+// ── Pane 3's decoder mode across a burst boundary ───────────────────────────
+
+#[test]
+fn a_gap_empties_the_constellation_and_bands_the_correction_map() {
+    // **The two halves answer a silence differently, on purpose.** The cloud is
+    // a picture of what is arriving *now*, so it resets — holding the last
+    // burst's across a gap shows a link that is not there, and the off-scale
+    // tally under it would go on quoting a denominator from a transmission that
+    // ended. The map is scrollback, so it keeps scrolling and bands instead:
+    // how the link failed on the way down is what should still be on screen.
+    //
+    // This is an *integration* test on purpose. The unit tests in `panes.rs`
+    // prove the mechanism; what they cannot see is whether the app's notion of
+    // "in a gap" reaches it. It did not, at first: the pane read
+    // `decode_ticker.in_gap`, which is only ever set while the `Di`/`Dt` bar is
+    // visible — so with the bar off, which is the default, a silence looked
+    // exactly like a frozen link.
+    use orion_sdr_view::app::correction::CorrectionMap;
+
+    // The colour a silence paints, read back through the public surface rather
+    // than duplicated here.
+    let no_signal = {
+        let mut m = CorrectionMap::new(8);
+        m.tick(1.0, true);
+        m.rows_in_display_order().next().expect("a row")[0]
+    };
+
+    let mut h = Harness::with_defaults();
+    h.select_source(SourceMode::Cofdm);
+    h.key_n(egui::Key::W, 2); // waterfall -> spectrogram -> constellation
+
+    // Run until the source has decoded something, so there is a cloud and a
+    // pace to lose.
+    for _ in 0..900 {
+        h.idle(1);
+        if !h.app.constellation().is_empty() && h.app.correction().committed() > 0 {
+            break;
+        }
+    }
+    assert!(
+        !h.app.constellation().is_empty(),
+        "the receiver should have produced symbols before the first gap"
+    );
+
+    // Then run until the burst ends, and catch the pane in the silence.
+    let mut banded = false;
+    let mut emptied = false;
+    for _ in 0..1800 {
+        h.idle(1);
+        if h.app.constellation().is_empty() {
+            emptied = true;
+        }
+        if h.app
+            .correction()
+            .rows_in_display_order()
+            .next()
+            .is_some_and(|r| r[0] == no_signal)
+        {
+            banded = true;
+        }
+        if emptied && banded {
+            break;
+        }
+    }
+    assert!(emptied, "a gap must empty the constellation");
+    assert!(
+        banded,
+        "a gap must keep the correction map scrolling in its own colour"
+    );
+    assert_eq!(
+        h.app.constellation().off_scale(),
+        (0, 0),
+        "and reset the off-scale readout with it"
+    );
+}
+
+#[test]
+fn full_stop_holds_pane_threes_decoder_view() {
+    // `.` — "full stop" — holds the decoder view so a burst can be read at
+    // leisure. At the wide bandwidth fractions the map scrolls a full pane in
+    // seconds, so being able to stop it is the difference between seeing an
+    // event and knowing one went past.
+    //
+    // **A hold, not a pause.** The receiver keeps running and the probe keeps
+    // arriving; it is simply not folded in. Resuming therefore shows live data
+    // rather than fast-forwarding through a backlog, which is what "freeze the
+    // picture" means to anyone who presses it.
+    let mut h = Harness::with_defaults();
+    h.select_source(SourceMode::Cofdm);
+    h.key_n(egui::Key::W, 2);
+
+    for _ in 0..900 {
+        h.idle(1);
+        if h.app.correction().committed() > 0 && !h.app.constellation().is_empty() {
+            break;
+        }
+    }
+    assert!(
+        h.app.correction().committed() > 0,
+        "the map should be scrolling before we try to stop it"
+    );
+
+    h.text(".");
+    let (rows, symbols) = (
+        h.app.correction().committed(),
+        h.app.constellation().off_scale().1,
+    );
+    h.idle(120);
+    assert_eq!(
+        h.app.correction().committed(),
+        rows,
+        "held: the map must not scroll"
+    );
+    assert_eq!(
+        h.app.constellation().off_scale().1,
+        symbols,
+        "held: the cloud must not accumulate either — both halves stop together"
+    );
+
+    // **Poll rather than idle a fixed count.**  This harness runs the real
+    // decode worker, and `try_send`/`try_recv` deliver when the scheduler gets
+    // to them — so under parallel test load a fixed wait can pass with no probe
+    // frames delivered at all.  Held-ness is safe to assert after a fixed idle
+    // because it is an absence; resumption is not.
+    h.text(".");
+    let mut resumed_map = false;
+    let mut resumed_cloud = false;
+    for _ in 0..900 {
+        h.idle(1);
+        resumed_map |= h.app.correction().committed() > rows;
+        // Not `>`: a gap inside the window resets the cloud's counters, and
+        // "different" is the claim — that it is live, not that it only grows.
+        resumed_cloud |= h.app.constellation().off_scale().1 != symbols;
+        if resumed_map && resumed_cloud {
+            break;
+        }
+    }
+    assert!(resumed_map, "released: the map resumes");
+    assert!(resumed_cloud, "released: so does the cloud");
+}
