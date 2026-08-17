@@ -2,18 +2,20 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! The correction-map half of pane 3: what the inner decoder did with each
-//! coded bit, scrolling by codeword.
+//! coded bit, scrolling by time.
 //!
-//! The `WaterfallDisplay` idiom with one substitution — rows are committed by
-//! *event* rather than by wall clock, because a codeword is a thing that
-//! happened rather than a moment that passed.
+//! The `WaterfallDisplay` idiom, wall-clock paced like its model.  X is the bit
+//! index within a *single* codeword, and the codewords in a slice are overlaid
+//! on those same columns rather than laid end to end — so a cell is "the worst
+//! thing that happened at this bit position in this slice", and per-codeword
+//! identity is what the overlay trades for a readable scroll rate.
 //!
 //! **The Y axis is time**, at a fixed [`ROWS_PER_SEC`], with each row the union
 //! of every codeword in its slice.  It was codeword index, one row per
 //! codeword, and that is a correction: at the 7/8 bandwidth fraction the
 //! receiver produces ~580 codewords/s, so the pane turned over in 0.44 s and
 //! nothing could be tracked.  See [`ROWS_PER_SEC`] for the measurement and
-//! [`severity`] for why the slice is a union rather than a sample.
+//! `severity` for why the slice is a union rather than a sample.
 //!
 //! **A frame that fails to decode still commits a row.**  There is no ground
 //! truth for a payload that did not verify, so its map is empty — which means
@@ -25,8 +27,9 @@
 use eframe::egui;
 use orion_sdr::demodulate::BitOutcome;
 
-/// Rows kept in the ring.  At the measured codeword rates (79/s at the 1/8
-/// bandwidth fraction to 513/s at 7/8) this is 3.2 s of history down to 0.5 s.
+/// Rows kept in the ring — 4.3 s of history at [`ROWS_PER_SEC`], and the same
+/// 4.3 s at every bandwidth fraction now that rows are time-paced rather than
+/// one per codeword.
 pub const CORR_ROWS: usize = 256;
 
 /// Row width when the inner code has no block structure to report — the
@@ -48,7 +51,7 @@ pub const DEFAULT_ROW_BITS: usize = 512;
 /// rows and a failed one committed a single band, so a *worse* link scrolled
 /// *slower*.  At 60/s the scroll is independent of both bandwidth fraction and
 /// link quality, and 256 rows is 4.3 s of history everywhere.
-const ROWS_PER_SEC: f32 = 60.0;
+pub const ROWS_PER_SEC: f32 = 60.0;
 
 /// Four flat colours, not a ramp.  These are categories: a ramp would imply an
 /// ordering between "the decoder broke it" and "the decoder could not fix it"

@@ -21,7 +21,7 @@ use num_complex::Complex32 as C32;
 use orion_sdr::demodulate::BitOutcome;
 use orion_sdr::modulate::ConstellationOrder;
 use orion_sdr_view::app::constellation::{ConstellationDisplay, ideal_points};
-use orion_sdr_view::app::correction::{CORR_ROWS, CorrectionMap, DEFAULT_ROW_BITS};
+use orion_sdr_view::app::correction::{CORR_ROWS, CorrectionMap, DEFAULT_ROW_BITS, ROWS_PER_SEC};
 use orion_sdr_view::app::spectrogram::SpectrogramDisplay;
 use orion_sdr_view::app::waterfall::WaterfallDisplay;
 
@@ -292,8 +292,8 @@ fn a_constellation_change_discards_the_old_cloud() {
 
 // ── Correction map: rows are time slices, not codewords ─────────────────────
 
-/// One slice at [`ROWS_PER_SEC`].
-const SLICE: f32 = 1.0 / 60.0;
+/// One slice, from the pane's own constant rather than a copy of it.
+const SLICE: f32 = 1.0 / ROWS_PER_SEC;
 
 /// A codeword's worth of outcomes, all the same state, so a row is
 /// identifiable by its colour alone.
