@@ -9,6 +9,46 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.31] - 2026-08-18
+
+### Added
+
+- **A `set` directive for headless scripts**, reaching the app's own settings
+  rows in the config file's spelling: `set cofdm.cn_db 10`. Untimed it is that
+  config file, in the recipe — applied before the first frame and moving each
+  row's default, so an `R` reset returns to it. Timed it is an edit during the
+  run, which makes a C/N sweep across the FEC cliff one run and one dump
+  instead of one run per point. Sources may be named as the config writes them
+  or as the HUD shows them, since the two fold alike.
+- **Recipes for the README screenshots**, one per image under `scripts/docs/`,
+  with `scripts/docs/regen-docs-images.sh` to run them. Adding an image is
+  adding one file; the driver needs no edit.
+
+### Changed
+
+- **The five run settings are now `set run.<key>`** — `duration`, `dump`,
+  `capture`, `size`, `scale`. One rule now tells the two line shapes apart: a
+  line beginning with `set` is untimed, every other line begins with a time.
+  That retires a list of reserved words, each of which had to be kept from
+  colliding with anything else the format might want to say. **This breaks
+  existing scripts**; the bare spellings are no longer recognised, and a bare
+  `duration 30` now reports that it is not a time in seconds.
+- **The README screenshots are headless captures**, replacing two hand-taken
+  window shots. All three are uniform at 2400x1656, reproducible run to run,
+  and regenerated in one command rather than drifting until someone notices.
+- **`scripts/degraded.yaml` and `scripts/continuous.yaml` are gone.** Their
+  recipes state the same thing with an untimed `set`, so neither needs a config
+  file remembered beside it.
+
+### Notes
+
+- A `set` writes settings rows rather than config fields, so it cannot reach a
+  state no user could — a test drives the same C/N change through the settings
+  popover and through `set`, and requires the two measurement streams to agree.
+  `sources.cofdm.fs_hz` and `display.time_zone` have no rows and stay
+  `--config` keys; naming either in a `set` is an error rather than a silent
+  no-op. Every value is checked before the first frame, timed ones included.
+
 ## [0.0.30] - 2026-08-16
 
 ### Added
