@@ -1,6 +1,7 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use super::common::SetKey;
 use super::field::{NumField, Row, RowDrawCtx, TextField, ToggleField};
 use crate::config::ViewConfig;
 use eframe::egui;
@@ -14,6 +15,17 @@ const MSG_MODE: usize = 4;
 const MSG: usize = 5;
 const CUSTOM_MSG: usize = 6;
 const REPEAT: usize = 7;
+
+/// The rows a script's `set` may name, in the config file's spelling.
+pub(in crate::app) const SET_KEYS: &[SetKey] = &[
+    SetKey::new("mode", MODE),
+    SetKey::new("canned_text", MSG),
+    SetKey::new("custom_text", CUSTOM_MSG),
+    SetKey::new("msg_repeat", REPEAT),
+    SetKey::new("carrier_hz", CARRIER),
+    SetKey::new("gap_secs", GAP),
+    SetKey::new("cn_db", CN),
+];
 
 pub(super) struct Psk31Rows {
     pub rows: Vec<Row>,

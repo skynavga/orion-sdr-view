@@ -9,7 +9,7 @@
 # that reads as "33 ms into the run" and repeats exactly.  The interactive app
 # uses the system clock, where the same field is a real time of day.
 
-duration 15
+set run.duration 15
 
 0.00 source CW
 0.50 key D         # decode bar: off -> Di

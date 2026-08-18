@@ -73,6 +73,14 @@ impl super::SourceFactory for Factory {
         settings.set_psk31_carrier_hz(hz);
     }
 
+    fn apply_message(&self, source: &mut dyn SignalSource, settings: &SettingsState) {
+        apply_message(source, settings);
+    }
+
+    fn set_keys(&self) -> &'static [crate::app::settings::SetKey] {
+        crate::app::settings::PSK31_SET_KEYS
+    }
+
     fn cn_db(&self, settings: &SettingsState) -> f32 {
         settings.psk31_cn_db()
     }

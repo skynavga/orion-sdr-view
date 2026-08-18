@@ -296,6 +296,7 @@ fn to_run_error(e: DriveError, path: &Path) -> RunError {
         DriveError::Io(e) => RunError::Io(path.to_path_buf(), e),
         DriveError::Dropped(n) => RunError::DroppedChunks(n),
         DriveError::Capture(m) => RunError::Capture(m),
+        DriveError::Set(e) => RunError::Script(e),
     }
 }
 
@@ -303,6 +304,10 @@ enum DriveError {
     Io(std::io::Error),
     Dropped(u64),
     Capture(String),
+    /// A `set` whose value the row it names will not take.  Raised before the
+    /// first frame for every `set` in the script, so it reads as a script error
+    /// rather than a run that died half way.
+    Set(crate::utils::script::ScriptError),
 }
 
 impl From<std::io::Error> for DriveError {
@@ -351,6 +356,9 @@ fn drive<W: Write>(
         .unwrap_or_else(|| cfg.capture_dir());
 
     let mut app = ViewApp::new_replay(&ctx, cfg);
+    if let Some(script) = script {
+        apply_script_sets(&mut app, script)?;
+    }
 
     let script_end = script
         .and_then(|s| s.steps.last())
@@ -432,6 +440,23 @@ fn drive<W: Write>(
                 // what the pass *draws*, so it has to happen inside one.
                 Action::Still { label } => {
                     still_this_frame = Some(label.clone());
+                    continue;
+                }
+                // Written straight in rather than delivered as input, for the
+                // same reason `pane` is: there is no key that carries a value,
+                // and nothing to wait a frame for.  Pre-flighted above, so the
+                // only failure left here is one an earlier `set` created.
+                Action::Set { target, value } => {
+                    match app.apply_set(*target, value, false) {
+                        Ok(Some(clamped)) => note_clamp(step.line, target, value, clamped),
+                        Ok(None) => {}
+                        Err(m) => {
+                            return Err(DriveError::Set(crate::utils::script::ScriptError {
+                                line: step.line,
+                                message: m,
+                            }));
+                        }
+                    }
                     continue;
                 }
                 Action::Pane { pane, label } => {
@@ -534,6 +559,51 @@ fn drive<W: Write>(
         records: dump.records(),
         captures,
     })
+}
+
+/// Apply a script's untimed `set`s, then pre-flight its timed ones.
+///
+/// **Both before the first frame.**  The untimed ones are a configuration, so
+/// they land the way `--config` lands: value and default together, and the
+/// source rebuilt from them.  The timed ones are only *read* here, against the
+/// rows the untimed ones just produced — a misspelled option 30 seconds in would
+/// otherwise waste 30 seconds of run before saying so, and this format's whole
+/// stance on a bad line is that the run stops before it starts.
+///
+/// A clamp is not an error and does not stop anything.  It is what the row would
+/// do to a nudge, so refusing would be the divergence; but it is said out loud,
+/// because a script that asked for 200 s of burst and got 100 should not have to
+/// infer that from the output.
+fn apply_script_sets(app: &mut ViewApp, script: &Script) -> Result<(), DriveError> {
+    let err = |line: usize, message: String| {
+        DriveError::Set(crate::utils::script::ScriptError { line, message })
+    };
+    for s in &script.settings.sets {
+        match app.apply_set(s.target, &s.value, true) {
+            Ok(Some(clamped)) => note_clamp(s.line, &s.target, &s.value, clamped),
+            Ok(None) => {}
+            Err(m) => return Err(err(s.line, m)),
+        }
+    }
+    for step in &script.steps {
+        if let Action::Set { target, value } = &step.action
+            && let Err(m) = app.settings().check_set(*target, value)
+        {
+            return Err(err(step.line, m));
+        }
+    }
+    Ok(())
+}
+
+/// Say that a row took a different value from the one asked for.
+fn note_clamp(line: usize, target: &crate::app::settings::SetTarget, asked: &str, took: f32) {
+    eprintln!(
+        "{}",
+        crate::utils::term::notice(
+            crate::utils::term::Level::Info,
+            &format!("line {line}: {target} clamped `{asked}` to {took}"),
+        )
+    );
 }
 
 /// One complete pass, returning the samples the source consumed.

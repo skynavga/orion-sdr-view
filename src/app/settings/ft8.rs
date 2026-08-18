@@ -1,6 +1,7 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use super::common::SetKey;
 use super::field::{NumField, Row, RowDrawCtx, TextField, ToggleField};
 use crate::config::ViewConfig;
 use eframe::egui;
@@ -15,6 +16,18 @@ const CALL_TO: usize = 5;
 const CALL_DE: usize = 6;
 const GRID: usize = 7;
 const FREE_TEXT: usize = 8;
+
+/// The rows a script's `set` may name, in the config file's spelling.
+pub(in crate::app) const SET_KEYS: &[SetKey] = &[
+    SetKey::new("mode", MODE),
+    SetKey::new("call_to", CALL_TO),
+    SetKey::new("call_de", CALL_DE),
+    SetKey::new("grid", GRID),
+    SetKey::new("free_text", FREE_TEXT),
+    SetKey::new("carrier_hz", CARRIER),
+    SetKey::new("gap_secs", GAP),
+    SetKey::new("cn_db", CN),
+];
 
 pub(super) struct Ft8Rows {
     pub rows: Vec<Row>,

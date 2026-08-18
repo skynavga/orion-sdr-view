@@ -1,6 +1,7 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use super::common::SetKey;
 use super::field::{CoarseStep, NumField, Row, ToggleField};
 use crate::config::ViewConfig;
 use crate::source::cofdm::{
@@ -21,6 +22,24 @@ const MASK: usize = 6;
 const SIGNAL: usize = 7;
 const GAP: usize = 8;
 const CN: usize = 9;
+
+/// The rows a script's `set` may name, in the config file's spelling.
+///
+/// `fs_hz` is absent because it is not a row — see `CofdmConfig::fs_hz` for why
+/// a live rate knob would be wrong.  It stays a `--config` key, which is the
+/// honest answer: a script cannot set what the UI cannot.
+pub(in crate::app) const SET_KEYS: &[SetKey] = &[
+    SetKey::new("center_hz", CENTER),
+    SetKey::new("bandwidth", BANDWIDTH),
+    SetKey::new("shaping", SHAPING),
+    SetKey::new("edge_guard", EDGE_GUARD),
+    SetKey::new("include_dc", INCLUDE_DC),
+    SetKey::new("taper", TAPER),
+    SetKey::new("mask", MASK),
+    SetKey::new("sig_secs", SIGNAL),
+    SetKey::new("gap_secs", GAP),
+    SetKey::new("cn_db", CN),
+];
 
 /// Toggle option labels, in `CofdmBwFraction::ALL` order.
 const BW_OPTIONS: &[&str] = &["1/8", "1/4", "1/3", "1/2", "2/3", "3/4", "7/8"];

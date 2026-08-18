@@ -31,6 +31,24 @@ pub(in crate::app) trait SourceFactory: Sync {
     /// (called by the source-locked center-frequency tracker).
     fn set_carrier_hz(&self, settings: &mut SettingsState, hz: f32);
 
+    /// Push this source's committed message text into the live source.
+    ///
+    /// The path Enter in the settings popover already takes, reached here by
+    /// dispatch so a `set` on a text row commits the same way rather than
+    /// through a second copy of the mapping.  Sources with no message text rely
+    /// on the no-op default.
+    fn apply_message(&self, _source: &mut dyn SignalSource, _settings: &SettingsState) {}
+
+    /// The rows a script's `set` directive may name for this source, in the
+    /// config file's spelling.  Defined beside the row indices they point at,
+    /// in `app::settings::<S>`, and surfaced here because the script parser
+    /// resolves a key before any `SettingsState` exists.
+    ///
+    /// Required rather than defaulted to empty: a source whose settings no
+    /// script can reach is a decision, and it should be made rather than
+    /// inherited.
+    fn set_keys(&self) -> &'static [crate::app::settings::SetKey];
+
     /// Requested carrier-to-noise ratio (dB) for this source, read from
     /// settings.  Shown in the top HUD.
     ///

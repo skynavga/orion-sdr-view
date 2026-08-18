@@ -809,7 +809,7 @@ fn a_pane_with_no_pixels_yet_writes_nothing_and_says_so() {
 
 /// A script that reaches a steady COFDM display, then captures.
 const STILL_SCRIPT: &str = "
-size 640x480
+set run.size 640x480
 
 0.00 source COFDM
 0.50 key D
@@ -916,7 +916,7 @@ fn a_script_without_a_still_is_unaffected_by_the_capture_path() {
     // The zero-cost claim, made checkable: with no `still` the driver builds no
     // capturer, so it never draws and never tessellates.  If that ever changed,
     // the dump would be the first thing to notice.
-    let plain = "size 640x480\n0.00 source CW\n";
+    let plain = "set run.size 640x480\n0.00 source CW\n";
     let opts = |script: &str| orion_sdr_view::replay::RunOptions {
         script: Some(script.to_owned()),
         duration: Some(1.0),
@@ -947,7 +947,7 @@ fn a_still_carries_its_label_into_the_filename_and_sidecar() {
     let dir = tempfile::tempdir().expect("tempdir");
     let paths = run_still(
         dir.path(),
-        "size 640x480\n0.00 source COFDM\n1.50 still band_edge\n",
+        "set run.size 640x480\n0.00 source COFDM\n1.50 still band_edge\n",
     );
     let name = paths[0].file_name().unwrap_or_default().to_string_lossy();
     assert!(name.ends_with("-band_edge.png"), "{name}");

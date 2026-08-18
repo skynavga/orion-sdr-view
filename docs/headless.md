@@ -18,22 +18,28 @@ machine-readable records.
 Plain text, times in absolute seconds:
 
 ```text
-duration 30                    # run settings: no time column, at most one each
-dump     run.jsonl
+set run.duration 30            # untimed: how the run is conducted
+set run.dump     run.jsonl
+set cofdm.cn_db  10            # untimed: a settings row, before frame 0
 
 # t(s)   directive
 0.00     source COFDM          # select a source by name
 0.50     key ArrowUp x3        # zoom in
 1.00     key L                 # lock the band to the viewport centre
 1.50     text a                # markers arrive as Text, not Key
+2.00     set cofdm.cn_db 5     # ...and timed, as an edit during the run
 2.00     assert center_hz 520000
 ```
+
+**One rule tells the two shapes apart**: a line beginning with `set` is untimed, and every other
+line begins with a time.
 
 | Directive | What it does |
 | --- | --- |
 | `key <[mod+]Name>` | Press and release one key within a single pass. Modifiers are spelled out: `shift+`, `ctrl+`, `alt+`, `cmd+` |
 | `source <name>` | Select a source by name, case- and punctuation-insensitively |
 | `text <literal>` | Deliver a text event — the only way to reach the marker, help and dB-reference bindings |
+| `set <scope>.<key> <value>` | Write a run setting or one of the app's settings rows; see [below](#set) |
 | `still [label]` | Capture the whole window to the capture directory |
 | `pane <name> [label]` | Write one pane's raster to the capture directory |
 | `assert <name> [args]` | A property for the *test harness* to check; the replay driver parses it and ignores it |
@@ -70,25 +76,80 @@ whatever was already active, and nothing downstream could tell.
 Naming the source that is already active does nothing at all — no presses, no reset. Re-selecting is
 not free, since it flushes the decode pipeline and restarts the burst.
 
-## Run settings, and what overrides what
+## `set`
+
+One directive over three scopes, and the scope says which kind of thing is being written.
+
+### `run.` — how the run is conducted
 
 | Setting | Meaning |
 | --- | --- |
-| `duration <secs>` | How long to run |
-| `dump <path>` | Where the measurement stream goes; `-` is stdout |
-| `capture <dir>` | Where `pane` captures are written |
-| `size <W>x<H>` | Logical window size, in points |
-| `scale <n>` | Pixels per point; `2` is a Retina-class display |
+| `set run.duration <secs>` | How long to run |
+| `set run.dump <path>` | Where the measurement stream goes; `-` is stdout |
+| `set run.capture <dir>` | Where `still` and `pane` captures are written |
+| `set run.size <W>x<H>` | Logical window size, in points |
+| `set run.scale <n>` | Pixels per point; `2` is a Retina-class display |
 
-They take no time column, because they configure the run rather than happen during
-it. They let a script be a complete recipe — what to press, how long for, and where the answer goes
-— instead of a file that needs a remembered command line beside it.
+These take no time column, because they configure the run rather than happen during it — a `run.`
+key with a time is a parse error. They let a script be a complete recipe — what to press, how long
+for, and where the answer goes — instead of a file that needs a remembered command line beside it.
 
-**The command line overrides either**, which is what keeps that recipe reusable: the same script can
-be run longer or written elsewhere without being edited. Paths are taken verbatim, so a relative
-`dump` resolves against the working directory exactly as `--dump` does.
+**The command line overrides every one of them**, which is what keeps that recipe reusable: the same
+script can be run longer or written elsewhere without being edited. Paths are taken verbatim, so a
+relative `dump` resolves against the working directory exactly as `--dump` does.
 
-With neither naming a value:
+### `display.` and a source name — the app's own settings
+
+The rows the `S` popover shows, named as [the config file](configuration.md) names them:
+
+```text
+set cofdm.cn_db     10        # sources.cofdm.cn_db
+set cofdm.sig_secs  1.0e9     # ...and its Signal row reads `cont`
+set display.db_min  -90       # display.db_min
+```
+
+A source may be spelled as the config writes it or as the HUD shows it — `am_dsb` and `AM DSB` fold
+alike, so there is one spelling of a source in this format rather than one per directive. A toggle
+takes its option as shown or any unambiguous prefix, which is why the `Mask` row's `60 dB` is
+reachable as the config's `60`.
+
+**Untimed it is a configuration; timed it is an interaction.** Untimed, a `set` is applied before the
+first frame and moves the row's *default* as well as its value, so an `R` reset returns to it —
+exactly what `--config` does, and the reason three example recipes no longer carry a YAML file
+beside them. Timed, it is applied at that instant and moves the value only, so a reset discards it
+like any other edit. That is also what makes a sweep expressible:
+
+```text
+set run.duration 40
+set cofdm.cn_db 20.0          # start above the FEC cliff
+0.00   source COFDM
+10.00  set cofdm.cn_db 12.0
+20.00  set cofdm.cn_db  8.0   # walk it down
+30.00  set cofdm.cn_db  5.0
+```
+
+One run and one dump for the whole cliff, where before it was one run per point.
+
+### What `set` deliberately cannot reach
+
+**A row, not a config field.** A `set` writes the settings row a popover edit writes, and is read
+back by the same accessors — so it cannot reach a state no user could. A test drives the same C/N
+change twice, once by opening the popover and nudging and once by naming the value, and requires the
+two measurement streams to agree.
+
+Two consequences look like omissions and are not. `cofdm.fs_hz` is a config key with **no row** — a
+live sample rate would re-derive Nyquist underneath the viewport — so it stays a `--config` key and
+naming it in a `set` is an error rather than a silent no-op. And the rows with no config key, such as
+AM-DSB's audio selection and the message-mode toggles, are reached with `key` and `text` instead.
+Between the two halves every row is reachable, each exactly once.
+
+A key that does not exist is a **parse error** listing the ones that do, and a *value* no row will
+take stops the run before the first frame — timed ones included, since a misspelled toggle option
+thirty seconds in would otherwise waste thirty seconds before saying so. A value outside a row's
+range is **clamped rather than refused**, because that is what the row does to a nudge; the clamp is
+reported on stderr rather than applied silently.
+
+### With no value named
 
 - **no duration** → the run ends **one second past the last scripted step**. Without that margin it
   would stop on the very frame the last action lands on, and whatever that action was for would
@@ -115,7 +176,7 @@ asked for.
 ### Dumping to stdout
 
 **A dump path of `-` means standard output**, the same spelling `curl -o -` and `tar -f -` use, in
-both `--dump` and the script's own `dump` directive:
+both `--dump` and the script's own `set run.dump`:
 
 ```sh
 orion-sdr-view --headless --script scripts/cofdm-link.txt --dump - \
@@ -137,9 +198,9 @@ ordinary files.
 no window, no renderer and no GPU:
 
 ```text
-capture ./shots
-size 1200x828
-duration 8
+set run.capture  ./shots
+set run.size     1200x828
+set run.duration 8
 
 0.00 source COFDM
 1.00 key D
@@ -187,8 +248,8 @@ video path here for that reason.
 sidecar beside it:
 
 ```text
-capture ./shots
-duration 8
+set run.capture  ./shots
+set run.duration 8
 
 0.00 source COFDM
 5.00 pane waterfall locked
@@ -219,7 +280,7 @@ they become part of a filename; anything else is a parse error rather than a sil
 clock, so a `pane` at t = 5 s is always `20260101T000005.000Z-waterfall.png` — on any machine, at
 any hour.
 
-`--capture <dir>` overrides the `capture` setting, the same precedence as `--dump` over `dump`.
+`--capture <dir>` overrides `set run.capture`, the same precedence as `--dump` over `set run.dump`.
 With neither, captures go to `capture.dir` from the config, which defaults to `./capture`.
 
 A pane with no pixels yet — a script capturing before any spectrum has been processed — writes

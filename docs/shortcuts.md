@@ -82,6 +82,8 @@ Overlays are mutually exclusive: opening one closes the others.
 ## Driving them from a script
 
 Every binding here is reachable from a timed key script, which is what the headless replay driver
-and the test harness both replay. Note that `a`/`b`, `A`/`B`, `?` and `[`/`]` are read from text
+and the test harness both replay. Settings the keyboard reaches only by opening the popover and
+counting arrow presses have a `set` directive instead — `set cofdm.cn_db 10` rather than eleven
+`ArrowDown`s and five `ArrowLeft`s — and the two land in the same place. Note that `a`/`b`, `A`/`B`, `?` and `[`/`]` are read from text
 input rather than key events, so a script reaches them with `text` rather than `key`. See
 [headless.md](headless.md).

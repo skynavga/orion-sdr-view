@@ -225,6 +225,131 @@ impl Row {
             f.default = clamped;
         }
     }
+
+    /// Write a value spelled the way a config file or a script spells it.
+    ///
+    /// `as_default` moves the row's *default* as well, which is the difference
+    /// between a configured value and an edited one: an `R` reset returns to the
+    /// former and discards the latter.  It is what separates a script's untimed
+    /// `set` — applied before the run, like a config file — from a timed one,
+    /// which is an interaction and should be undone by a reset like any other.
+    ///
+    /// Returns the value actually taken when the row clamped it, so a caller can
+    /// say so.  Clamping rather than refusing is deliberate: a row bounds a
+    /// nudge and a config key the same way, and `sig_secs: 1.0e9` meaning "the
+    /// top of the range" is a documented spelling, not a mistake.
+    pub fn set_from_str(&mut self, raw: &str, as_default: bool) -> Result<Option<f32>, String> {
+        let value = self.parse_value(raw)?;
+        Ok(self.write_value(value, as_default))
+    }
+
+    /// Read a value without writing it.
+    ///
+    /// Split from the write so a run can be **pre-flighted**: the driver parses
+    /// every `set` in a script, timed ones included, before the first frame.  A
+    /// misspelled toggle option 30 seconds into a run would otherwise fail 30
+    /// seconds of work in, which is the one way this format is allowed to waste
+    /// a reader's time and does not elsewhere.
+    ///
+    /// What it cannot foresee is a *bound*, since those move: COFDM's edge guard
+    /// re-derives its minimum from the band centre.  Bounds clamp rather than
+    /// refuse, so nothing checked here can become an error later.
+    pub fn parse_value(&self, raw: &str) -> Result<RowValue, String> {
+        match self {
+            Row::Num(_) => {
+                let v: f32 = raw
+                    .parse()
+                    .map_err(|_| format!("`{raw}` is not a number"))?;
+                if !v.is_finite() {
+                    return Err(format!("`{raw}` is not a finite number"));
+                }
+                Ok(RowValue::Num(v))
+            }
+            Row::Toggle(f) => Ok(RowValue::Toggle(match_option(f.options, raw)?)),
+            Row::Text(_) => Ok(RowValue::Text(raw.to_owned())),
+            // Not reachable through a `set`: no key table names a time-zone row,
+            // because its three modes and `±HH:MM` offset are a grammar of their
+            // own rather than a value.  Answered rather than ignored, so adding
+            // one to a table fails loudly instead of silently doing nothing.
+            Row::TimeZone(_) => Err("a time-zone row cannot be set from a script".to_owned()),
+        }
+    }
+
+    /// Write a parsed value, returning what the row settled on if it clamped.
+    ///
+    /// A mismatched kind writes nothing: `parse_value` produced the value from
+    /// this same row, so the pairing holds by construction.
+    pub fn write_value(&mut self, value: RowValue, as_default: bool) -> Option<f32> {
+        match (self, value) {
+            (Row::Num(f), RowValue::Num(v)) => {
+                let clamped = v.clamp(f.min, f.max);
+                f.value = clamped;
+                if as_default {
+                    f.default = clamped;
+                }
+                (clamped != v).then_some(clamped)
+            }
+            (Row::Toggle(f), RowValue::Toggle(i)) => {
+                f.index = i;
+                if as_default {
+                    f.default = i;
+                }
+                None
+            }
+            (Row::Text(f), RowValue::Text(s)) => {
+                f.status = None;
+                if as_default {
+                    f.default_value = s.clone();
+                }
+                f.value = s;
+                None
+            }
+            _ => None,
+        }
+    }
+}
+
+/// A value read from a script, checked against a row but not yet written.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RowValue {
+    Num(f32),
+    Toggle(usize),
+    Text(String),
+}
+
+/// Resolve a toggle option written in a script: the label as shown, or any
+/// unambiguous prefix of it.
+///
+/// Folded like a source name, so `1/4` and `1-4` are one option, and the prefix
+/// rule is what lets the config file's spelling through: the `Mask` row's
+/// options read `60 dB` on screen while the YAML writes `60`, and one vocabulary
+/// was the point.  An ambiguous prefix is an error listing the options rather
+/// than a silent pick of the first.
+fn match_option(options: &[&'static str], raw: &str) -> Result<usize, String> {
+    let want = crate::utils::script::fold_name(raw);
+    let listed = || options.join(", ");
+    if want.is_empty() {
+        return Err(format!("expected one of: {}", listed()));
+    }
+    let folded: Vec<String> = options
+        .iter()
+        .map(|o| crate::utils::script::fold_name(o))
+        .collect();
+    if let Some(i) = folded.iter().position(|o| *o == want) {
+        return Ok(i);
+    }
+    let mut hits = folded
+        .iter()
+        .enumerate()
+        .filter(|(_, o)| o.starts_with(&want));
+    match (hits.next(), hits.next()) {
+        (Some((i, _)), None) => Ok(i),
+        (Some(_), Some(_)) => Err(format!(
+            "`{raw}` is an ambiguous abbreviation (of: {})",
+            listed()
+        )),
+        _ => Err(format!("`{raw}` is not one of: {}", listed())),
+    }
 }
 
 // ── Drawing helpers ────────────────────────────────────────────────────────

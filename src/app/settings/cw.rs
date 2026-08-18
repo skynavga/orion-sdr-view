@@ -1,6 +1,7 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use super::common::SetKey;
 use super::field::{NumField, Row, RowDrawCtx, TextField, ToggleField};
 use crate::config::ViewConfig;
 use eframe::egui;
@@ -20,6 +21,23 @@ const REPEAT: usize = 10;
 const CARRIER: usize = 11;
 const GAP: usize = 12;
 const CN: usize = 13;
+
+/// The rows a script's `set` may name, in the config file's spelling.
+pub(in crate::app) const SET_KEYS: &[SetKey] = &[
+    SetKey::new("wpm", WPM),
+    SetKey::new("jitter_pct", JITTER),
+    SetKey::new("dash_weight", DASH_WEIGHT),
+    SetKey::new("char_space", CHAR_SPACE),
+    SetKey::new("word_space", WORD_SPACE),
+    SetKey::new("rise_ms", RISE),
+    SetKey::new("fall_ms", FALL),
+    SetKey::new("canned_text", MSG),
+    SetKey::new("custom_text", CUSTOM_MSG),
+    SetKey::new("msg_repeat", REPEAT),
+    SetKey::new("carrier_hz", CARRIER),
+    SetKey::new("gap_secs", GAP),
+    SetKey::new("cn_db", CN),
+];
 
 pub(super) struct CwRows {
     pub rows: Vec<Row>,

@@ -90,3 +90,19 @@ ignored rather than refused.
 - **`sources.cofdm.*`** — [cofdm.md](cofdm.md), which covers band placement, burst timing and
   the three spectral-shaping levers
 - **`capture.*`** — [capture.md](capture.md)
+
+## The same keys from a script
+
+A headless script's `set` directive names these keys in the same spelling, dropping the leading
+`view.` and `sources.`:
+
+```text
+set cofdm.cn_db    10       # sources.cofdm.cn_db
+set display.db_min -90      # display.db_min
+```
+
+Untimed it is this file, in the recipe: applied before the first frame, and moving each row's
+default so an `R` reset returns to it. Timed, it is an edit during the run. Two keys here have no
+settings row and so no `set` — `sources.cofdm.fs_hz`, because a live sample rate would re-derive
+Nyquist underneath the viewport, and `display.time_zone`, whose three modes are a grammar rather
+than a value. Both remain `--config` keys. See [headless.md](headless.md#set).

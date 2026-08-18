@@ -108,6 +108,10 @@ impl super::SourceFactory for Factory {
         settings.set_cofdm_center_hz(hz);
     }
 
+    fn set_keys(&self) -> &'static [crate::app::settings::SetKey] {
+        crate::app::settings::COFDM_SET_KEYS
+    }
+
     fn cn_db(&self, settings: &SettingsState) -> f32 {
         settings.cofdm_cn_db()
     }
