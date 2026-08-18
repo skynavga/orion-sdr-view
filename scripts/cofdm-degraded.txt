@@ -1,7 +1,10 @@
-# A COFDM link below the FEC cliff.  Needs scripts/degraded.yaml:
+# A COFDM link below the FEC cliff.
 #
-#   orion-sdr-view --headless --config scripts/degraded.yaml \
-#     --script scripts/cofdm-degraded.txt --dump run.jsonl
+#   orion-sdr-view --headless --script scripts/cofdm-degraded.txt --dump run.jsonl
+#
+# 5 dB is below the cliff at every bandwidth fraction: no frame gets through, so
+# the BER rungs report `null` rather than a rate.  It used to need a `--config`
+# beside it; an untimed `set` is that config file, in the recipe.
 #
 # What to look for in the dump: `cber`, `iber` and `mer_db` all carry
 #   {"v": null, "prov": "unavailable"}
@@ -11,6 +14,7 @@
 # reading is absent because no provider could supply it, not because a receiver
 # looked and found nothing.
 
-duration 20
+set run.duration 20
+set cofdm.cn_db  5.0
 
 0.00 source COFDM

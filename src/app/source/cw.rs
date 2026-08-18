@@ -84,6 +84,14 @@ impl super::SourceFactory for Factory {
         settings.set_cw_carrier_hz(hz);
     }
 
+    fn apply_message(&self, source: &mut dyn SignalSource, settings: &SettingsState) {
+        apply_message(source, settings);
+    }
+
+    fn set_keys(&self) -> &'static [crate::app::settings::SetKey] {
+        crate::app::settings::CW_SET_KEYS
+    }
+
     fn cn_db(&self, settings: &SettingsState) -> f32 {
         settings.cw_cn_db()
     }

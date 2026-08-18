@@ -183,3 +183,11 @@ pub(super) fn source_mode_factory(
 ) -> &'static (dyn super::source::SourceFactory + Sync) {
     super::source::FACTORIES[mode.index()]
 }
+
+/// The keys a script's `set` directive may name for a source.
+///
+/// Through the factory table for the same reason everything else here is: a new
+/// source brings its own keys with it, and no list needs editing.
+pub(super) fn source_set_keys(mode: SourceMode) -> &'static [super::settings::SetKey] {
+    source_mode_factory(mode).set_keys()
+}

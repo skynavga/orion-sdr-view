@@ -124,6 +124,149 @@ pub(super) struct TextOutcome {
 
 // ── Row routing ────────────────────────────────────────────────────────────
 
+// ── Script-settable rows ───────────────────────────────────────────────────
+
+/// A settings row a script's `set` directive may name.
+///
+/// **The config file's vocabulary, not a second one.**  `name` is the key the
+/// YAML uses for the same quantity, so `set cofdm.cn_db 10` and a `cn_db: 10`
+/// under `sources.cofdm` say the same thing in the same words.  A row the
+/// config has no key for is deliberately absent from these tables: it is
+/// reachable with `key` or `text`, which is the other half of the same rule —
+/// `set` is the config file's surface, the keyboard directives are the
+/// keyboard's, and between them every row is reachable exactly once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetKey {
+    /// The key as the config file spells it, e.g. `cn_db`.
+    pub name: &'static str,
+    /// Index into the owning container's rows.
+    pub(super) row: usize,
+}
+
+impl SetKey {
+    pub(super) const fn new(name: &'static str, row: usize) -> Self {
+        Self { name, row }
+    }
+}
+
+/// The container half of a `set` key path: a source, or the display block.
+///
+/// Sources are named exactly as [`Action::Source`](crate::utils::script::Action)
+/// names them, which costs nothing to allow and is worth stating: folding drops
+/// case and punctuation, so the config file's `am_dsb` and the HUD's `AM DSB`
+/// are already the same word.  There is one spelling of a source in this format,
+/// not one per directive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetScope {
+    /// The `display:` block — one set of rows, whatever source is active.
+    Display,
+    /// One source's rows.  Written to whether or not it is the active source,
+    /// exactly as the config file patches every source at startup.
+    Source(crate::app::SourceMode),
+}
+
+/// A resolved `<container>.<key>` path, ready to apply.
+///
+/// Resolved at **parse** time, so a script naming a key that does not exist
+/// fails before the run starts rather than part way through it — the same
+/// promise a misspelled source name already keeps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetTarget {
+    scope: SetScope,
+    key: SetKey,
+}
+
+/// The name of the display container, as a script writes it.
+const DISPLAY_SCOPE: &str = "display";
+
+impl SetTarget {
+    /// Resolve `<container>.<key>`.  The error is the finished diagnostic,
+    /// listing what does exist — a `set` typo should not need a second lookup
+    /// in the docs to fix.
+    pub fn resolve(spec: &str) -> Result<Self, String> {
+        let Some((scope_name, key_name)) = spec.split_once('.') else {
+            return Err(format!(
+                "`{spec}` is not a settings key; write it as \
+                 <source>.<key> or display.<key>, e.g. cofdm.cn_db"
+            ));
+        };
+        let scope = if crate::utils::script::names_match(scope_name, DISPLAY_SCOPE) {
+            SetScope::Display
+        } else {
+            let mode = crate::utils::script::source_mode_by_name(scope_name).ok_or_else(|| {
+                let mut names: Vec<&str> = vec![DISPLAY_SCOPE];
+                names.extend(crate::app::SourceMode::ALL.iter().map(|m| m.label()));
+                format!(
+                    "`{scope_name}` names nothing settable (expected one of: {})",
+                    names.join(", ")
+                )
+            })?;
+            SetScope::Source(mode)
+        };
+        let keys = scope.keys();
+        let key = keys
+            .iter()
+            .copied()
+            .find(|k| k.name == key_name)
+            .ok_or_else(|| {
+                let names: Vec<&str> = keys.iter().map(|k| k.name).collect();
+                format!(
+                    "`{key_name}` is not a settable key of `{scope_name}` \
+                     (expected one of: {})",
+                    names.join(", ")
+                )
+            })?;
+        Ok(Self { scope, key })
+    }
+
+    pub fn scope(&self) -> SetScope {
+        self.scope
+    }
+
+    pub fn key(&self) -> SetKey {
+        self.key
+    }
+}
+
+impl std::fmt::Display for SetTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.scope {
+            SetScope::Display => write!(f, "{DISPLAY_SCOPE}.{}", self.key.name),
+            SetScope::Source(m) => write!(f, "{}.{}", m.label(), self.key.name),
+        }
+    }
+}
+
+impl SetScope {
+    /// The keys this container accepts.
+    ///
+    /// Per-source tables come through the factory table rather than a `match`
+    /// here, so a new source brings its own keys with it.
+    fn keys(self) -> &'static [SetKey] {
+        match self {
+            SetScope::Display => super::display::SET_KEYS,
+            SetScope::Source(mode) => crate::app::common::source_set_keys(mode),
+        }
+    }
+}
+
+/// What applying a `set` implied beyond the row itself.
+pub struct SetOutcome {
+    /// The value the row actually took, when it differs from the one asked
+    /// for.  A row clamps at its own bounds exactly as a nudge does — that is
+    /// fidelity, not a failure — but a silent clamp would make a script read as
+    /// though it had asked for something it did not get.
+    pub clamped_to: Option<f32>,
+    /// True when the row is a text field, so the source's own message-commit
+    /// path has to run — the same one Enter in the popover reaches.  Writing
+    /// the row is not enough: a live source holds a rendered waveform of the
+    /// old message.
+    pub is_text: bool,
+    /// True when the write landed on the source that is currently active, so
+    /// the caller knows whether anything live has to be re-synced.
+    pub is_active_source: bool,
+}
+
 /// Routes a visual row position to the correct sub-struct and local index.
 /// `ActiveSource(local)` means "the local-th visible row of the source that
 /// `source_mode_idx()` selects" — the per-source variant is implicit, since
@@ -371,6 +514,74 @@ impl SettingsState {
             source.discard_pending();
             source.reset_extras();
         }
+    }
+
+    // ── Script `set` ──────────────────────────────────────────────────────
+
+    /// Read a `set`'s value against the row it names, without writing it.
+    ///
+    /// The pre-flight half: a driver checks every `set` a script contains before
+    /// the first frame, so a value no row will take stops the run rather than
+    /// ending one part way through.
+    pub fn check_set(&self, target: SetTarget, value: &str) -> Result<(), String> {
+        let row_idx = target.key().row;
+        let row = match target.scope() {
+            SetScope::Display => &self.display.rows[row_idx],
+            SetScope::Source(mode) => &self.sources[mode.index()].rows()[row_idx],
+        };
+        row.parse_value(value).map(|_| ())
+    }
+
+    /// Write one row named by a script's `set` directive.
+    ///
+    /// **The row, not the config.**  A `set` lands where a popover edit lands
+    /// and is read back by the same accessors, so it cannot reach a state no
+    /// user could — which is the failure a harness that wrote past the UI
+    /// produced once already, silently measuring a configuration nobody could
+    /// select.  The caller then does what the popover's key handler does with
+    /// the outcome: re-sync, and commit a text field through its own path.
+    ///
+    /// The target source need not be the active one.  A config file patches
+    /// every source at startup and a script may likewise arrange a source
+    /// before selecting it; [`SetOutcome::is_active_source`] tells the caller
+    /// which case it is.
+    pub fn apply_set(
+        &mut self,
+        target: SetTarget,
+        value: &str,
+        as_default: bool,
+    ) -> Result<SetOutcome, String> {
+        let row_idx = target.key().row;
+        let active_idx = self.source_index();
+        let (row, is_active_source) = match target.scope() {
+            SetScope::Display => (&mut self.display.rows[row_idx], false),
+            SetScope::Source(mode) => {
+                let idx = mode.index();
+                (
+                    &mut self.sources[idx].rows_mut()[row_idx],
+                    idx == active_idx,
+                )
+            }
+        };
+        let is_text = matches!(row, Row::Text(_));
+        let clamped_to = row.set_from_str(value, as_default)?;
+        // The same re-derivation a nudge triggers — COFDM's edge guard re-seeds
+        // from the bandwidth toggle and re-bounds against the centre, and a
+        // `set` that skipped it would leave the guard row describing a band the
+        // source will not render.
+        if let SetScope::Source(mode) = target.scope() {
+            self.sources[mode.index()].after_nudge(row_idx);
+        }
+        Ok(SetOutcome {
+            clamped_to,
+            // Written whatever the row's focus gate says, because that gate
+            // belongs to the *keyboard*: a config file patches `free_text`
+            // whether or not the message toggle is on it, and `set` is that
+            // file's surface.  Which of the two texts the source then renders
+            // stays the toggle's decision, exactly as before.
+            is_text,
+            is_active_source,
+        })
     }
 
     /// Get a reference to the Row for a given RowTarget.

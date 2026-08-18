@@ -9,6 +9,6 @@
 # Add `dump run.jsonl` here instead if you would rather the recipe name its own
 # output.
 
-duration 20
+set run.duration 20
 
 0.00 source COFDM

@@ -51,6 +51,45 @@ impl ViewApp {
         self.sync_decode_config();
     }
 
+    /// Apply a script's `set` directive, and flow it through the same paths a
+    /// popover edit flows through.
+    ///
+    /// `as_default` is the difference between the two spellings: an untimed
+    /// `set` is a *configuration*, so it moves the row's default too and the
+    /// source is rebuilt from it exactly as `--config` would have built it; a
+    /// timed one is an *interaction*, so it moves the value and re-syncs, which
+    /// is what a nudge does.  Rebuilding on a mid-run edit would be wrong rather
+    /// than merely heavy — it resets the burst timer and flushes the decode
+    /// pipeline, so a C/N sweep would restart the waveform at every step and
+    /// measure a sequence of first bursts instead of one degrading link.
+    ///
+    /// Returns the value the row settled on when it clamped, for the caller to
+    /// report.
+    pub fn apply_set(
+        &mut self,
+        target: crate::app::settings::SetTarget,
+        value: &str,
+        as_default: bool,
+    ) -> Result<Option<f32>, String> {
+        let outcome = self.settings.apply_set(target, value, as_default)?;
+        if outcome.is_text && outcome.is_active_source {
+            // A live source holds a *rendered* waveform of the old message, so
+            // the row alone changes nothing audible.  This is the path Enter in
+            // the popover takes, dispatched rather than re-derived.
+            source_mode_factory(self.source_mode)
+                .apply_message(self.source.as_mut(), &self.settings);
+            self.restart_source();
+        } else if as_default {
+            self.restart_source();
+        } else {
+            self.sync_settings();
+        }
+        // The `Zoom` row is a live control the viewport owns rather than reads,
+        // so it is pushed exactly where the popover's key handler pushes it.
+        self.freq_view.set_zoom_ratio(self.settings.zoom_ratio());
+        Ok(outcome.clamped_to)
+    }
+
     /// Reload audio after the AM audio toggle changes (Morse / Voice / Custom).
     /// No-op if source is not AM DSB.
     pub(super) fn reload_builtin_audio(&mut self) {

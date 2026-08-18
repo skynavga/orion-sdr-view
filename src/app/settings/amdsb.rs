@@ -1,6 +1,7 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use super::common::SetKey;
 use super::field::{NumField, Row, RowDrawCtx, TextField, ToggleField};
 use crate::config::ViewConfig;
 use eframe::egui;
@@ -13,6 +14,18 @@ const GAP: usize = 3;
 const CN: usize = 4;
 const WAV_FILE: usize = 5;
 const REPEAT: usize = 6;
+
+/// The rows a script's `set` may name, in the config file's spelling.
+///
+/// The audio selection and the WAV path are absent: neither is a config key,
+/// and both are reachable from the keyboard — `N` cycles the built-in audio.
+pub(in crate::app) const SET_KEYS: &[SetKey] = &[
+    SetKey::new("carrier_hz", CARRIER),
+    SetKey::new("mod_index", MOD_IDX),
+    SetKey::new("msg_repeat", REPEAT),
+    SetKey::new("gap_secs", GAP),
+    SetKey::new("cn_db", CN),
+];
 
 pub(super) struct AmDsbRows {
     pub rows: Vec<Row>,

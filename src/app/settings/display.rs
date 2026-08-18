@@ -1,6 +1,7 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use super::common::SetKey;
 use super::field::{NumField, Row, RowDrawCtx, TimeZoneField, ToggleField};
 use crate::config::{TzMode, ViewConfig, format_offset_min};
 use eframe::egui;
@@ -12,6 +13,19 @@ const ZOOM: usize = 2;
 const SPEC_TIME_RANGE: usize = 3;
 const PAN_DIR: usize = 4;
 const TIME_ZONE: usize = 5;
+
+/// The rows a script's `set` may name, in the config file's spelling.
+///
+/// `time_zone` is absent: its three modes and `±HH:MM` offset are a grammar
+/// rather than a value, and a `set` that took only two of the three would be a
+/// worse answer than none.
+pub(in crate::app) const SET_KEYS: &[SetKey] = &[
+    SetKey::new("db_min", DB_MIN),
+    SetKey::new("db_max", DB_MAX),
+    SetKey::new("zoom", ZOOM),
+    SetKey::new("spec_time_range_secs", SPEC_TIME_RANGE),
+    SetKey::new("pan", PAN_DIR),
+];
 
 /// Pan-direction toggle options, in enum order.  "spectrum" = arrow scrolls the
 /// spectrum (panadapter convention; a fixed signal appears to move opposite the

@@ -9,7 +9,7 @@
 # the band, and at full span that leaves it nowhere to go.  An unlocked pan
 # needs no such preparation — see `overscan.txt`.
 
-duration 8
+set run.duration 8
 
 0.00 source COFDM
 1.00 key ArrowUp x3        # zoom in

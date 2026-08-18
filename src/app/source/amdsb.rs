@@ -135,6 +135,10 @@ impl super::SourceFactory for Factory {
         settings.set_am_carrier_hz(hz);
     }
 
+    fn set_keys(&self) -> &'static [crate::app::settings::SetKey] {
+        crate::app::settings::AMDSB_SET_KEYS
+    }
+
     fn cn_db(&self, settings: &SettingsState) -> f32 {
         settings.am_cn_db()
     }

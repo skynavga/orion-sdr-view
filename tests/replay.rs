@@ -398,7 +398,7 @@ fn a_scripts_own_duration_bounds_the_run() {
     // A script that names its duration needs no `--duration` to be bounded —
     // that is what makes it a complete recipe rather than half of one.
     let (_, s) = run(
-        Some("duration 1.0\n0.00 key I\n"),
+        Some("set run.duration 1.0\n0.00 key I\n"),
         ViewConfig::empty(),
         None,
     );
@@ -409,7 +409,7 @@ fn a_scripts_own_duration_bounds_the_run() {
 fn the_command_line_duration_overrides_the_scripts() {
     // Override, not merge or conflict: the recipe stays reusable, so the same
     // script can be run longer or shorter without being edited.
-    let script = "duration 1.0\n0.00 key I\n";
+    let script = "set run.duration 1.0\n0.00 key I\n";
     let (_, longer) = run(Some(script), ViewConfig::empty(), Some(2.0));
     let (_, shorter) = run(Some(script), ViewConfig::empty(), Some(0.5));
     assert_eq!(longer.frames, 120, "--duration should extend the script's");
@@ -421,7 +421,7 @@ fn a_duration_shorter_than_the_script_still_runs_every_step() {
     // The loop waits on the step iterator as well as the clock, so cutting a run
     // short cannot silently drop the actions that were asked for — it would
     // otherwise measure a configuration that was never reached.
-    let script = "duration 0.1\n0.00 key I x5\n0.50 key ArrowUp\n";
+    let script = "set run.duration 0.1\n0.00 key I x5\n0.50 key ArrowUp\n";
     let (bytes, _) = run(Some(script), ViewConfig::empty(), None);
     let rs = records(&bytes);
     let switches = of_kind(&rs, "source");
@@ -480,7 +480,7 @@ fn a_scripts_own_dump_is_written() {
     let dumped = dir.path().join("out.jsonl");
     std::fs::write(
         &script,
-        format!("dump {}\n0.00 key I x5\n", dumped.display()),
+        format!("set run.dump {}\n0.00 key I x5\n", dumped.display()),
     )
     .expect("write");
 
@@ -517,7 +517,7 @@ fn dumping_to_stdout_writes_no_file_called_dash() {
     // means.  The dump itself goes to the test harness's stdout.
     let dir = tempfile::tempdir().expect("tempdir");
     let script = dir.path().join("demo.txt");
-    std::fs::write(&script, format!("dump {STDOUT_PATH}\n0.00 key Q\n")).expect("write");
+    std::fs::write(&script, format!("set run.dump {STDOUT_PATH}\n0.00 key Q\n")).expect("write");
 
     let summary =
         run_file(ViewConfig::empty(), Some(&script), None, Some(0.05), None).expect("run");
@@ -541,7 +541,7 @@ fn the_command_line_dump_overrides_the_scripts() {
     let elsewhere = dir.path().join("elsewhere.jsonl");
     std::fs::write(
         &script,
-        format!("dump {}\n0.00 key I x5\n", from_script.display()),
+        format!("set run.dump {}\n0.00 key I x5\n", from_script.display()),
     )
     .expect("write");
 
@@ -778,7 +778,7 @@ fn a_headless_pass_lays_out_at_a_real_window_size() {
 fn the_command_line_size_and_scale_override_the_scripts() {
     // Same precedence as `duration` and `dump`: command line over script over
     // default, so one script can be re-run at another size without editing.
-    let script = "size 800x600\nscale 1\n0.0 key Q\n";
+    let script = "set run.size 800x600\nset run.scale 1\n0.0 key Q\n";
     let opts = RunOptions {
         script: Some(script.to_owned()),
         duration: Some(0.1),
@@ -813,4 +813,157 @@ fn a_size_change_does_not_disturb_the_measurement_stream() {
     run_into(ViewConfig::empty(), &at_default, &mut a).expect("run");
     run_into(ViewConfig::empty(), &at_other, &mut b).expect("run");
     assert_eq!(records(&a), records(&b), "layout must not reach the dump");
+}
+
+// ── `set` ───────────────────────────────────────────────────────────────────
+//
+// The directive's whole claim is that it writes what the popover writes.  The
+// test that matters is therefore not "does the value arrive" but "does it arrive
+// where a keystroke would have put it" — so the comparison below drives the same
+// change twice, once through the settings overlay and once through `set`, and
+// requires the measurement streams to agree.
+
+/// A C/N the COFDM source will show plainly in `info.snr_db`.
+const CN_SCRIPT_TAIL: &str = "
+0.00 source COFDM
+";
+
+fn snr_series(script: &str) -> Vec<f32> {
+    let (bytes, _) = run(Some(script), ViewConfig::empty(), None);
+    of_kind(&records(&bytes), "info")
+        .iter()
+        .filter_map(|r| r["snr_db"].as_f64().map(|v| v as f32))
+        .collect()
+}
+
+#[test]
+fn a_timed_set_lands_where_a_keystroke_would_have_put_it() {
+    // Both routes take the C/N row from its 35 dB default down to 30: one by
+    // opening the popover and nudging five times, the other by naming the value.
+    // Identical readings are the fidelity claim — `set` is the settings UI with
+    // the arrow-counting done for you, not a second way into the source.
+    let keyboard = "
+set run.duration 40
+0.00 source COFDM
+1.00 key S
+2.00 key ArrowDown x11
+3.00 key ArrowLeft x5
+4.00 key Escape
+";
+    let directive = "
+set run.duration 40
+0.00 source COFDM
+3.00 set cofdm.cn_db 30.0
+";
+    let (a, b) = (snr_series(keyboard), snr_series(directive));
+    assert!(a.len() > 30, "the run should measure something");
+    assert_eq!(a.len(), b.len());
+    // Compared once both have settled.  The two disagree in exactly one reading
+    // — the nudge route walks 35 → 30 over five frames and is briefly caught at
+    // 32, where the directive arrives in one — and that difference is the whole
+    // of what `set` does differently: it states a value instead of counting
+    // presses to it.  Everything downstream of the transition must match.
+    let settled = 20;
+    assert_eq!(
+        a[settled..],
+        b[settled..],
+        "a settled `set` must read exactly as a settled nudge does"
+    );
+    assert!(
+        a[..settled] != b[..settled],
+        "...and the ramp is expected to differ; if it stopped, this test proves less \
+         than it claims"
+    );
+}
+
+#[test]
+fn an_untimed_set_configures_the_run_from_the_first_frame() {
+    // The other half of the pair: untimed, it is the config file, so the very
+    // first reading already reflects it rather than the built-in default.
+    let at_default = snr_series(&format!("set run.duration 6{CN_SCRIPT_TAIL}"));
+    let configured = snr_series(&format!(
+        "set run.duration 6\nset cofdm.cn_db 15.0{CN_SCRIPT_TAIL}"
+    ));
+    let (d0, c0) = (at_default[0], configured[0]);
+    assert!(
+        (d0 - c0) > 10.0,
+        "the first reading should already be the configured C/N: {d0} vs {c0}"
+    );
+}
+
+#[test]
+fn a_value_no_row_will_take_stops_the_run_before_it_starts() {
+    // Pre-flighted, timed ones included.  A misspelled toggle option 30 seconds
+    // into a run would otherwise waste 30 seconds before saying so — and this
+    // format's stance on a bad line is that nothing runs.
+    for (script, needle) in [
+        (
+            "set run.duration 5\nset cofdm.bandwidth 9/9\n0.0 key Q\n",
+            "is not one of",
+        ),
+        (
+            "set run.duration 5\n0.0 source COFDM\n4.0 set cofdm.bandwidth 1\n",
+            "ambiguous",
+        ),
+        (
+            "set run.duration 5\nset cofdm.cn_db nope\n0.0 key Q\n",
+            "is not a number",
+        ),
+    ] {
+        let opts = RunOptions {
+            script: Some(script.to_owned()),
+            ..Default::default()
+        };
+        let mut out = Vec::new();
+        let e = run_into(ViewConfig::empty(), &opts, &mut out).expect_err("should refuse");
+        let msg = e.to_string();
+        assert!(msg.contains(needle), "expected {needle:?}, got {msg:?}");
+        assert!(msg.contains("line"), "the diagnostic names its line: {msg}");
+    }
+}
+
+#[test]
+fn a_toggle_takes_the_option_as_shown_or_an_unambiguous_prefix() {
+    // The `Mask` row reads `60 dB` on screen and `60` in the config file, and one
+    // vocabulary was the point — so a prefix resolves against the label.
+    for spec in ["60", "60-dB", "off", "80"] {
+        let script = format!("set run.duration 2\nset cofdm.mask {spec}\n0.0 source COFDM\n");
+        let opts = RunOptions {
+            script: Some(script),
+            ..Default::default()
+        };
+        let mut out = Vec::new();
+        run_into(ViewConfig::empty(), &opts, &mut out)
+            .unwrap_or_else(|e| panic!("`{spec}` should resolve: {e}"));
+    }
+}
+
+#[test]
+fn a_set_beyond_a_rows_range_clamps_rather_than_refusing() {
+    // A row bounds a nudge and a config key the same way, so refusing here would
+    // be the divergence — and `sig_secs: 1.0e9` meaning "the top of the range"
+    // is a documented spelling rather than a mistake.
+    let script = "set run.duration 3\nset cofdm.sig_secs 1.0e9\n0.0 source COFDM\n";
+    let opts = RunOptions {
+        script: Some(script.to_owned()),
+        ..Default::default()
+    };
+    let mut out = Vec::new();
+    run_into(ViewConfig::empty(), &opts, &mut out).expect("a clamp is not an error");
+}
+
+#[test]
+fn a_set_leaves_the_run_reproducible() {
+    // The directive writes settings rows, which are ordinary state — but a
+    // feature that reached the source by another route could have introduced an
+    // impure read, and this is the property the whole driver exists to keep.
+    let script = "
+set run.duration 6
+set cofdm.cn_db 25.0
+0.00 source COFDM
+3.00 set cofdm.cn_db 12.0
+";
+    let (a, _) = run(Some(script), ViewConfig::empty(), None);
+    let (b, _) = run(Some(script), ViewConfig::empty(), None);
+    assert_eq!(a, b, "two runs of one script must produce the same bytes");
 }

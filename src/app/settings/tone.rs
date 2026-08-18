@@ -1,6 +1,7 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use super::common::SetKey;
 use super::field::{NumField, Row};
 
 // ── Row indices (local) ───────────────────────────────────────────────────
@@ -9,6 +10,15 @@ const CN: usize = 1;
 const AMP_MAX: usize = 2;
 const RAMP: usize = 3;
 const PAUSE: usize = 4;
+
+/// The rows a script's `set` may name, in the config file's spelling.
+pub(in crate::app) const SET_KEYS: &[SetKey] = &[
+    SetKey::new("freq_hz", FREQ),
+    SetKey::new("amp_max", AMP_MAX),
+    SetKey::new("ramp_secs", RAMP),
+    SetKey::new("pause_secs", PAUSE),
+    SetKey::new("cn_db", CN),
+];
 
 pub(super) struct ToneRows {
     pub rows: Vec<Row>,

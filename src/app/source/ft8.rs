@@ -96,6 +96,14 @@ impl super::SourceFactory for Factory {
         settings.set_ft8_carrier_hz(hz);
     }
 
+    fn apply_message(&self, source: &mut dyn SignalSource, settings: &SettingsState) {
+        apply_free_text(source, settings);
+    }
+
+    fn set_keys(&self) -> &'static [crate::app::settings::SetKey] {
+        crate::app::settings::FT8_SET_KEYS
+    }
+
     fn cn_db(&self, settings: &SettingsState) -> f32 {
         settings.ft8_cn_db()
     }

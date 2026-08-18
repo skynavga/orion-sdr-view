@@ -284,8 +284,8 @@ fn a_script_can_carry_its_own_duration_and_dump() {
     // report that needs a remembered command line alongside it is not one.
     let s = Script::parse(
         "
-duration 30
-dump     run.jsonl
+set run.duration 30
+set run.dump     run.jsonl
 
 0.00 key I x5
 ",
@@ -300,7 +300,7 @@ dump     run.jsonl
 fn settings_may_appear_anywhere_and_are_not_timed() {
     // No time column, because they configure the run rather than happen during
     // it.  Convention is to put them at the top; nothing enforces it.
-    let s = Script::parse("0.0 key Q\nduration 5\n").expect("parses");
+    let s = Script::parse("0.0 key Q\nset run.duration 5\n").expect("parses");
     assert_eq!(s.settings.duration, Some(5.0));
     assert_eq!(s.steps.len(), 1);
     assert_eq!(s.duration_secs(), 0.0, "`duration` is not a step time");
@@ -311,7 +311,7 @@ fn a_repeated_setting_is_an_error_rather_than_last_wins() {
     // Two `duration` lines mean the author believed one of them.  Silently
     // taking the other is the kind of thing only noticed after a run has
     // produced the wrong answer.
-    let e = Script::parse("duration 5\nduration 10\n").expect_err("should refuse");
+    let e = Script::parse("set run.duration 5\nset run.duration 10\n").expect_err("should refuse");
     assert_eq!(e.line, 2);
     assert!(e.message.contains("more than once"), "{}", e.message);
 }
@@ -322,11 +322,20 @@ fn a_bad_setting_names_itself() {
     // a mistake, and a run that silently did nothing would be worse than one
     // that would not start.
     for (src, line, needle) in [
-        ("duration nope\n", 1, "not a duration"),
-        ("duration -1\n", 1, "greater than 0"),
-        ("duration 0\n", 1, "greater than 0"),
-        ("0.0 key Q\nduration\n", 2, "exactly one argument"),
-        ("dump a b\n", 1, "exactly one argument"),
+        ("set run.duration nope\n", 1, "not a duration"),
+        ("set run.duration -1\n", 1, "greater than 0"),
+        ("set run.duration 0\n", 1, "greater than 0"),
+        (
+            "0.0 key Q\nset run.duration\n",
+            2,
+            "one whitespace-free value",
+        ),
+        ("set run.dump a b\n", 1, "one whitespace-free value"),
+        // `duration` is no longer a reserved word, so a bare one is read as a
+        // line that should have started with a time.  Worth pinning: it is the
+        // whole of what folding the run settings into `set` cost.
+        ("duration 30\n", 1, "not a time in seconds"),
+        ("set run.nope 1\n", 1, "is not a run setting"),
     ] {
         let e = Script::parse(src).unwrap_err();
         assert_eq!(e.line, line, "wrong line for {src:?}");
@@ -364,7 +373,7 @@ fn a_dump_path_is_taken_verbatim_whether_relative_or_absolute() {
         "/tmp/run.jsonl",
         "../up.jsonl",
     ] {
-        let s = Script::parse(&format!("dump {spec}\n0.0 key Q\n")).expect("parses");
+        let s = Script::parse(&format!("set run.dump {spec}\n0.0 key Q\n")).expect("parses");
         assert_eq!(s.settings.dump, Some(PathBuf::from(spec)));
     }
 }
@@ -383,7 +392,7 @@ fn a_script_can_state_the_size_and_scale_it_lays_out_at() {
     // A headless pass supplies no `screen_rect` unless something sets one, and
     // egui's fallback is 10000 x 10000 — a size no window has, and one that
     // would make a capture 400 MB.
-    let s = Script::parse("size 1600x900\nscale 2\n0.0 key Q\n").expect("parses");
+    let s = Script::parse("set run.size 1600x900\nset run.scale 2\n0.0 key Q\n").expect("parses");
     assert_eq!(s.settings.size, Some((1600.0, 900.0)));
     assert_eq!(s.settings.scale, Some(2.0));
     assert_eq!(s.steps.len(), 1, "a setting is not a step");
@@ -396,7 +405,7 @@ fn a_size_is_written_the_way_every_other_tool_writes_one() {
         ("1200X828", (1200.0, 828.0)),
         ("640x480", (640.0, 480.0)),
     ] {
-        let s = Script::parse(&format!("size {spec}\n0.0 key Q\n")).expect("parses");
+        let s = Script::parse(&format!("set run.size {spec}\n0.0 key Q\n")).expect("parses");
         assert_eq!(s.settings.size, Some(want), "{spec}");
     }
 }
@@ -407,15 +416,18 @@ fn a_bad_size_or_scale_names_itself() {
     // 10000 x 10000 fallback is what it exists to replace, so accepting it back
     // through the front door would be absurd.
     for (src, needle) in [
-        ("size 1200\n", "not a size"),
-        ("size axb\n", "not a size"),
-        ("size 10000x10000\n", "not a size"),
-        ("size 4x4\n", "not a size"),
-        ("scale nope\n", "not a scale factor"),
-        ("scale 0\n", "between 0.1 and 8.0"),
-        ("scale 99\n", "between 0.1 and 8.0"),
-        ("size 800x600\nsize 640x480\n", "more than once"),
-        ("scale 1\nscale 2\n", "more than once"),
+        ("set run.size 1200\n", "not a size"),
+        ("set run.size axb\n", "not a size"),
+        ("set run.size 10000x10000\n", "not a size"),
+        ("set run.size 4x4\n", "not a size"),
+        ("set run.scale nope\n", "not a scale factor"),
+        ("set run.scale 0\n", "between 0.1 and 8.0"),
+        ("set run.scale 99\n", "between 0.1 and 8.0"),
+        (
+            "set run.size 800x600\nset run.size 640x480\n",
+            "more than once",
+        ),
+        ("set run.scale 1\nset run.scale 2\n", "more than once"),
     ] {
         let e = Script::parse(src).expect_err(&format!("`{src}` should not parse"));
         assert!(
@@ -437,7 +449,7 @@ fn a_script_with_no_viewport_settings_carries_none() {
 
 #[test]
 fn a_script_can_say_where_captures_go() {
-    let s = Script::parse("capture ./shots\n0.0 pane waterfall\n").expect("parses");
+    let s = Script::parse("set run.capture ./shots\n0.0 pane waterfall\n").expect("parses");
     assert_eq!(s.settings.capture.as_deref(), Some(Path::new("./shots")));
     assert_eq!(s.steps.len(), 1, "a setting is not a step");
 }
@@ -531,4 +543,115 @@ fn a_bad_still_directive_names_itself() {
             e.message
         );
     }
+}
+
+// ── `set` ───────────────────────────────────────────────────────────────────
+//
+// One directive over three scopes, and the scope is the whole of what tells a
+// run setting from an app setting.  What is worth pinning is the boundary: that
+// a key which does not exist stops the parse, that `run.` refuses a time, and
+// that a source may be spelled either of the two ways the project spells one.
+
+#[test]
+fn an_untimed_set_is_a_setting_and_a_timed_one_is_a_step() {
+    let s = Script::parse(
+        "
+set run.duration 30
+set cofdm.cn_db  10
+
+0.00 source COFDM
+5.00 set cofdm.cn_db 5
+",
+    )
+    .expect("parses");
+    assert_eq!(s.settings.duration, Some(30.0));
+    assert_eq!(s.settings.sets.len(), 1, "the app setting is not a step");
+    assert_eq!(s.settings.sets[0].value, "10");
+    assert_eq!(s.steps.len(), 2, "and the timed one is not a setting");
+    assert!(matches!(s.steps[1].action, Action::Set { .. }));
+}
+
+#[test]
+fn a_source_is_spelled_the_same_way_everywhere() {
+    // The config file writes `am_dsb`, the HUD shows `AM DSB`, and folding makes
+    // them one word — so `set` and `source` accept the same name.  The point is
+    // that this format has one spelling of a source, not one per directive.
+    for spec in [
+        "am_dsb.cn_db",
+        "AM-DSB.cn_db",
+        "amdsb.cn_db",
+        "AM_dsb.cn_db",
+    ] {
+        let src = format!("set {spec} 20\n0.0 key Q\n");
+        let s = Script::parse(&src).unwrap_or_else(|e| panic!("`{spec}`: {e}"));
+        assert_eq!(s.settings.sets.len(), 1, "`{spec}` should resolve");
+    }
+}
+
+#[test]
+fn a_set_of_a_key_that_does_not_exist_lists_the_ones_that_do() {
+    // The same courtesy a bad source name gets: the diagnostic carries the
+    // answer, so a typo does not send the reader back to the docs.
+    let e = Script::parse("set cofdm.cn-db 10\n").expect_err("should refuse");
+    assert!(e.message.contains("not a settable key"), "{}", e.message);
+    assert!(e.message.contains("cn_db"), "{}", e.message);
+
+    let e = Script::parse("set nosuch.cn_db 10\n").expect_err("should refuse");
+    assert!(
+        e.message.contains("names nothing settable"),
+        "{}",
+        e.message
+    );
+    assert!(e.message.contains("COFDM"), "{}", e.message);
+    assert!(e.message.contains("display"), "{}", e.message);
+}
+
+#[test]
+fn a_config_key_with_no_row_is_refused_rather_than_ignored() {
+    // `fs_hz` is a real config key, and deliberately not a row — a live sample
+    // rate would re-derive Nyquist underneath the viewport.  Saying so is the
+    // point: silently accepting it would be a `set` that does nothing.
+    let e = Script::parse("set cofdm.fs_hz 960000\n").expect_err("should refuse");
+    assert!(e.message.contains("not a settable key"), "{}", e.message);
+}
+
+#[test]
+fn a_run_setting_refuses_a_time_and_an_app_setting_accepts_one() {
+    let e = Script::parse("0.0 source COFDM\n5.0 set run.duration 10\n").expect_err("refuse");
+    assert!(e.message.contains("takes no time"), "{}", e.message);
+    assert_eq!(e.line, 2);
+
+    Script::parse("5.0 set display.zoom 4\n").expect("a display row may be set mid-run");
+}
+
+#[test]
+fn a_bad_set_directive_names_itself() {
+    for (src, needle) in [
+        ("0.0 set cofdm.cn_db 10 x3", "takes no repeat count"),
+        ("0.0 set cofdm.cn_db", "one whitespace-free value"),
+        ("set cofdm 10\n", "not a settings key"),
+        (
+            "set cofdm.cn_db 10\nset cofdm.cn_db 20\n",
+            "set more than once",
+        ),
+    ] {
+        let e = Script::parse(src).expect_err(&format!("`{src}` should not parse"));
+        assert!(
+            e.message.contains(needle),
+            "`{src}` gave `{}`, expected `{needle}`",
+            e.message
+        );
+    }
+}
+
+#[test]
+fn the_parser_resolves_the_key_but_not_the_value() {
+    // The split that keeps this layer honest: a key path is static, so it
+    // resolves here; a value is checked against the *row*, which only exists
+    // once an app does.  The driver pre-flights every value before frame 0, so
+    // the format's promise — a bad line stops the run before it starts — is kept
+    // either way; see `a_value_no_row_will_take_stops_the_run_before_it_starts`
+    // in `tests/replay.rs`.
+    let s = Script::parse("set cofdm.bandwidth 9/9\n0.0 key Q\n").expect("the key resolves");
+    assert_eq!(s.settings.sets[0].value, "9/9");
 }

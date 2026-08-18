@@ -5,16 +5,23 @@
 //! human at the keyboard.
 //!
 //! ```text
-//! duration 30                    # run settings: no time, at most one each
-//! dump     run.jsonl
+//! set run.duration 30            # untimed: configures the run
+//! set run.dump     run.jsonl
+//! set cofdm.cn_db  10            # untimed: an app setting, before frame 0
 //!
 //! # t(s)   directive
 //! 0.00     source COFDM          # select a source by name
 //! 0.50     key L                 # lock the source to the viewport centre
 //! 0.75     key shift+ArrowRight
 //! 0.80     text a                # markers arrive as Text, not Key
+//! 1.00     set cofdm.cn_db 5     # ...and timed, as an edit during the run
 //! 1.00     assert center_hz 520000
 //! ```
+//!
+//! **One rule tells the two apart**: a line beginning with `set` is untimed,
+//! and every other line begins with a time.  That replaced a list of reserved
+//! words — `duration`, `dump`, `capture`, `size`, `scale` — which each had to be
+//! kept from colliding with anything else the format might want to say.
 //!
 //! **One format, two readers.**  A test harness replays the `key`/`text`
 //! directives and *executes* the `assert` ones; the headless replay driver
@@ -43,29 +50,55 @@
 //! Names are case- and punctuation-insensitive, so `AM DSB`, `AM-DSB`, `AM_DSB`
 //! and `amdsb` are one source.  See [`source_mode_by_name`].
 //!
-//! # Run settings
+//! # `set`
 //!
-//! `duration` and `dump` take **no time**, because they configure the run rather
-//! than happen during it.  That is also what makes them unambiguous to parse: a
-//! line beginning with one of those two words is a setting, and anything else
-//! must begin with a time exactly as before, so no existing diagnostic changes.
+//! One directive, three scopes, and the scope is what says which kind of thing
+//! is being written:
 //!
-//! They exist so a script can be a **self-contained recipe** — one file that
-//! says what to press, how long for, and where the answer goes.  The command
-//! line overrides either, which is what keeps that recipe reusable: the same
-//! script can be run longer, or dumped somewhere else, without editing it.
+//! - **`run.`** — how the run is conducted: `duration`, `dump`, `capture`,
+//!   `size`, `scale`.  Never timed, because they configure the run rather than
+//!   happen during it, and **the command line overrides every one of them**.
+//!   That is what keeps a recipe reusable: the same script can be run longer, or
+//!   dumped somewhere else, without being edited.
+//! - **`display.`** and **a source name** — the app's own settings rows, in the
+//!   config file's spelling.  `set cofdm.cn_db 10` and a `cn_db: 10` under
+//!   `sources.cofdm` say the same thing in the same words, and a source may be
+//!   named as the config writes it or as the HUD shows it, since the two fold
+//!   alike.
 //!
-//! A `dump` path may be absolute or relative, and a relative one resolves
-//! **against the viewer's working directory** — the same as `--dump` and as any
-//! other path a shell hands a program.  The directive is a default for the flag,
-//! so the two must mean the same thing given the same string.  That includes
-//! `-`, which means standard output in both; see
+//! An app setting may be written either way round, and the two are not the same
+//! statement.  **Untimed it is a configuration**: applied before the first
+//! frame, moving the row's default as well as its value, so an `R` reset returns
+//! to it — exactly what `--config` does.  **Timed it is an interaction**:
+//! applied at that instant, moving the value only, so a reset discards it like
+//! any other edit.  A `run.` key timed is a parse error; there is no instant at
+//! which "where the dump goes" could take effect.
+//!
+//! A `dump` or `capture` path may be absolute or relative, and a relative one
+//! resolves **against the viewer's working directory** — the same as `--dump`
+//! and as any other path a shell hands a program.  The directive is a default
+//! for the flag, so the two must mean the same thing given the same string.
+//! That includes `-`, which means standard output in both; see
 //! [`STDOUT_PATH`](crate::replay::STDOUT_PATH).
+//!
+//! # What `set` deliberately cannot reach
+//!
+//! **A row, not a config field.**  A `set` writes the settings row a popover
+//! edit writes and is read back by the same accessors, so it cannot reach a
+//! state no user could — the failure a harness that wrote past the UI produced
+//! once already, silently measuring a configuration nobody could select.
+//!
+//! Two consequences worth stating, because both look like omissions:
+//! `cofdm.fs_hz` is a config key with no row, so it stays a `--config` key; and
+//! the rows with no config key — AM-DSB's audio selection, the message-mode
+//! toggles — are reached with `key` and `text` instead.  Between the two halves
+//! every row is reachable, each exactly once.
 
 use std::fmt;
 use std::path::PathBuf;
 
 use crate::app::SourceMode;
+use crate::app::settings::SetTarget;
 
 /// A parse failure, carrying the 1-based source line so the diagnostic can name
 /// it.  A headless run must fail loudly on an unparsable script rather than
@@ -130,6 +163,17 @@ pub enum Action {
         /// Appended to the filename, so a script taking several is readable.
         label: Option<String>,
     },
+    /// Write one of the app's settings rows, mid-run.
+    ///
+    /// **An interaction, not a configuration.**  It lands where a popover edit
+    /// lands and moves the row's value only, so an `R` reset discards it exactly
+    /// as it discards a nudge.  The untimed spelling of the same line is the
+    /// configuration — see the module docs.
+    ///
+    /// What it buys that no other directive can: a quantity swept *during* a
+    /// run.  Walking `cofdm.cn_db` down through the FEC cliff is one run and one
+    /// dump, where before it was one run per point and a script apiece.
+    Set { target: SetTarget, value: String },
     /// A property for the *test harness* to check.  The replay driver parses it
     /// — so a typo is still an error — and then ignores it.
     Assert { name: String, args: Vec<String> },
@@ -200,8 +244,11 @@ impl Action {
             // needs is the reader's business, not the event's.
             Self::Source { .. } => key_events(egui::Key::I, egui::Modifiers::default()),
             Self::Text { text } => vec![egui::Event::Text(text.clone())],
-            // None delivers input: two write a file, the third is checked.
-            Self::Still { .. } | Self::Pane { .. } | Self::Assert { .. } => Vec::new(),
+            // None delivers input: two write a file, one is checked, and `set`
+            // writes the row the keyboard would have nudged to.
+            Self::Still { .. } | Self::Pane { .. } | Self::Set { .. } | Self::Assert { .. } => {
+                Vec::new()
+            }
         }
     }
 
@@ -289,10 +336,21 @@ pub fn source_mode_by_name(name: &str) -> Option<SourceMode> {
         .find(|m| fold_name(m.label()) == want)
 }
 
+/// Whether two names are the same once folded.  An empty fold matches nothing,
+/// so punctuation alone is not a name.
+pub fn names_match(a: &str, b: &str) -> bool {
+    let a = fold_name(a);
+    !a.is_empty() && a == fold_name(b)
+}
+
 /// Fold a source name to its comparison form: ASCII letters and digits only,
 /// lowercased.  Spacing and punctuation carry no meaning in these labels, so
 /// two spellings that differ only there are the same name.
-fn fold_name(s: &str) -> String {
+///
+/// It is also what makes the config file's source keys and the HUD's labels one
+/// vocabulary rather than two: `am_dsb` and `AM DSB` fold alike, so a `set`
+/// naming a source and a `source` directive naming one accept the same word.
+pub fn fold_name(s: &str) -> String {
     s.chars()
         .filter(char::is_ascii_alphanumeric)
         .map(|c| c.to_ascii_lowercase())
@@ -340,6 +398,13 @@ pub struct ScriptSettings {
     /// Where captures are written.  Absolute or relative, exactly as `dump` is,
     /// and overridden by `--capture`.
     pub capture: Option<PathBuf>,
+    /// Untimed `set`s on the app's settings, in source order.
+    ///
+    /// A `Vec` rather than an `Option` per key, because several are the norm and
+    /// order matters where rows are coupled — COFDM's edge guard re-seeds from
+    /// the bandwidth toggle, so a `set` of both means the later one wins on the
+    /// guard, exactly as two nudges in that order would.
+    pub sets: Vec<ScriptSet>,
 }
 
 /// A parsed script: run settings plus steps in ascending time order.
@@ -362,7 +427,22 @@ impl Script {
             }
             match parse_line(text, line)? {
                 Line::Step(s) => steps.push(s),
-                Line::Setting(set) => set.apply(&mut settings, line)?,
+                Line::Run(set) => set.apply(&mut settings, line)?,
+                Line::Set(s) => {
+                    // The same rule the run settings follow: naming one key
+                    // twice means the author believed one of them, and picking
+                    // silently is only noticed after a run has answered wrongly.
+                    if let Some(prev) = settings.sets.iter().find(|p| p.target == s.target) {
+                        return Err(ScriptError {
+                            line,
+                            message: format!(
+                                "`{}` is set more than once (already on line {})",
+                                s.target, prev.line
+                            ),
+                        });
+                    }
+                    settings.sets.push(s);
+                }
             }
         }
         // Sort by time so a script may be written out of order, but keep equal
@@ -399,10 +479,20 @@ fn strip_comment(line: &str) -> &str {
     }
 }
 
-/// One non-blank line: either a timed step or a run setting.
+/// One non-blank line: a timed step, a run setting, or an untimed app setting.
 enum Line {
     Step(Step),
-    Setting(Setting),
+    Run(Setting),
+    Set(ScriptSet),
+}
+
+/// An untimed `set` on the app's own settings, applied before the first frame.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScriptSet {
+    pub target: SetTarget,
+    pub value: String,
+    /// 1-based source line, so a value the target refuses names its line.
+    pub line: usize,
 }
 
 /// A parsed run-setting line, before it is folded into [`ScriptSettings`].
@@ -461,33 +551,82 @@ impl Setting {
     }
 }
 
-/// Words that begin a run-setting line rather than a time.
+/// The verb that begins every untimed line.
 ///
 /// Dispatching on the *first word* rather than on "does it parse as a number"
 /// is deliberate: a mistyped time like `0.O5 key Q` still reports "not a time in
 /// seconds" instead of "not a directive", so no existing diagnostic gets worse.
-const SETTING_VERBS: [&str; 5] = ["capture", "dump", "duration", "scale", "size"];
+const SET_VERB: &str = "set";
+
+/// The scope naming the run itself rather than anything the app draws.
+const RUN_SCOPE: &str = "run";
+
+/// Keys under [`RUN_SCOPE`].  Listed for the diagnostic; the match below is
+/// what resolves them.
+const RUN_KEYS: [&str; 5] = ["capture", "dump", "duration", "scale", "size"];
 
 fn parse_line(text: &str, line: usize) -> Result<Line, ScriptError> {
     let first = text.split_whitespace().next().unwrap_or_default();
-    if SETTING_VERBS.contains(&first) {
-        return parse_setting(text, line).map(Line::Setting);
+    if first == SET_VERB {
+        let (spec, value) = split_set(text.split_whitespace().skip(1), line)?;
+        return match parse_scope(&spec, line)? {
+            Scope::Run(key) => parse_run_setting(&key, &value, line).map(Line::Run),
+            Scope::App(target) => Ok(Line::Set(ScriptSet {
+                target,
+                value,
+                line,
+            })),
+        };
     }
     parse_step(text, line).map(Line::Step)
 }
 
-fn parse_setting(text: &str, line: usize) -> Result<Setting, ScriptError> {
-    let err = |message: String| ScriptError { line, message };
-    let mut words = text.split_whitespace();
-    let verb = words.next().unwrap_or_default();
+/// What a `set` key path names.
+enum Scope {
+    /// A run setting, carrying the key after `run.`.
+    Run(String),
+    /// An app settings row, already resolved.
+    App(SetTarget),
+}
+
+/// Split `set`'s two arguments, which are always a key path and one value.
+///
+/// One whitespace-free value, the same restriction `text` carries and for the
+/// same reason: a quoted argument would need an escaping grammar this format
+/// does not have, and refusing is better than silently taking the first word.
+fn split_set<'a>(
+    words: impl Iterator<Item = &'a str>,
+    line: usize,
+) -> Result<(String, String), ScriptError> {
     let rest: Vec<&str> = words.collect();
-    let [arg] = rest[..] else {
-        return Err(err(format!(
-            "`{verb}` takes exactly one argument, got {}",
-            rest.len()
-        )));
+    let [spec, value] = rest[..] else {
+        return Err(ScriptError {
+            line,
+            message: format!(
+                "`set` takes a key path and one whitespace-free value, got {} \
+                 — e.g. `set cofdm.cn_db 10`",
+                rest.len()
+            ),
+        });
     };
-    match verb {
+    Ok((spec.to_owned(), value.to_owned()))
+}
+
+/// Resolve a `set` key path to the run or to a settings row.
+fn parse_scope(spec: &str, line: usize) -> Result<Scope, ScriptError> {
+    if let Some(key) = spec.strip_prefix(concat!("run", ".")) {
+        return Ok(Scope::Run(key.to_owned()));
+    }
+    // Everything else is the app's own settings, which own their key tables —
+    // so a source added later becomes settable with no edit here.
+    SetTarget::resolve(spec)
+        .map(Scope::App)
+        .map_err(|message| ScriptError { line, message })
+}
+
+fn parse_run_setting(key: &str, arg: &str, line: usize) -> Result<Setting, ScriptError> {
+    let err = |message: String| ScriptError { line, message };
+    match key {
         "dump" => Ok(Setting::Dump(PathBuf::from(arg))),
         "capture" => Ok(Setting::Capture(PathBuf::from(arg))),
         "duration" => {
@@ -517,7 +656,10 @@ fn parse_setting(text: &str, line: usize) -> Result<Setting, ScriptError> {
             }
             Ok(Setting::Scale(s))
         }
-        other => Err(err(format!("`{other}` is not a run setting"))),
+        other => Err(err(format!(
+            "`{other}` is not a run setting (expected one of: {})",
+            RUN_KEYS.join(", ")
+        ))),
     }
 }
 
@@ -551,7 +693,7 @@ fn parse_step(text: &str, line: usize) -> Result<Step, ScriptError> {
     }
 
     let verb = words.next().ok_or_else(|| {
-        err("expected `key`, `source`, `still`, `pane`, `text` or `assert`".to_owned())
+        err("expected `key`, `source`, `still`, `pane`, `text`, `set` or `assert`".to_owned())
     })?;
     let rest: Vec<&str> = words.collect();
 
@@ -646,6 +788,27 @@ fn parse_step(text: &str, line: usize) -> Result<Step, ScriptError> {
                 text: literal.to_owned(),
             }
         }
+        SET_VERB => {
+            if repeat != 1 {
+                return Err(err(
+                    "`set` takes no repeat count; writing the same value twice \
+                     changes nothing the first did not"
+                        .to_owned(),
+                ));
+            }
+            let (spec, value) = split_set(rest.iter().copied(), line)?;
+            match parse_scope(&spec, line)? {
+                Scope::App(target) => Action::Set { target, value },
+                // Not "unknown key": the key is real, and saying so is what
+                // stops the reader hunting for a typo that is not there.
+                Scope::Run(key) => {
+                    return Err(err(format!(
+                        "`{RUN_SCOPE}.{key}` takes no time; it configures the run \
+                         rather than happens during it"
+                    )));
+                }
+            }
+        }
         "assert" => {
             let Some((name, args)) = rest.split_first() else {
                 return Err(err("`assert` needs a property name".to_owned()));
@@ -658,7 +821,7 @@ fn parse_step(text: &str, line: usize) -> Result<Step, ScriptError> {
         other => {
             return Err(err(format!(
                 "`{other}` is not a directive \
-                 (expected `key`, `source`, `still`, `pane`, `text` or `assert`)"
+                 (expected `key`, `source`, `still`, `pane`, `text`, `set` or `assert`)"
             )));
         }
     };

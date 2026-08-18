@@ -16,7 +16,7 @@
 # The `assert` lines are the machine-checkable half.  The driver parses and
 # ignores them; the harness in `tests/` executes them.
 
-duration 10
+set run.duration 10
 
 0.00 source COFDM
 1.00 key ArrowUp x4          # 3.0x — a third of the band on screen

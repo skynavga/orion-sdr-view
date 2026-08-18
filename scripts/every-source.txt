@@ -9,7 +9,7 @@
 # exactly the one a new or reordered source would break, and it would break
 # quietly: `key I` still parses and still runs, just onto a different source.
 
-duration 40
+set run.duration 40
 
 0.00  source CW
 6.00  source AM DSB
