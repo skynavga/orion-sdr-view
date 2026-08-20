@@ -18,6 +18,7 @@ pub use display::{DisplayConfig, TzMode, format_offset_min};
 pub use crate::source::amdsb::AmDsbConfig;
 pub use crate::source::cofdm::CofdmConfig;
 pub use crate::source::cw::CwConfig;
+pub use crate::source::dvbt::DvbTConfig;
 pub use crate::source::ft8::Ft8Config;
 pub use crate::source::psk31::Psk31Config;
 pub use crate::source::tone::TestToneConfig;

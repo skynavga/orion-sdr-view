@@ -6,6 +6,7 @@ mod common;
 pub mod amdsb;
 pub mod cofdm;
 pub mod cw;
+pub mod dvbt;
 pub mod ft8;
 pub mod psk31;
 pub mod tone;
@@ -26,5 +27,13 @@ pub use cofdm::{
     cofdm_spacing_hz,
 };
 pub use cw::CwSource;
+pub use dvbt::{
+    DVBT_DEFAULT_BANDWIDTH, DVBT_DEFAULT_CN_DB, DVBT_DEFAULT_CODE_RATE,
+    DVBT_DEFAULT_CONSTELLATION, DVBT_DEFAULT_GUARD, DVBT_DISPLAY_OVERSAMPLE,
+    DVBT_DISPLAY_RMS_DBFS, DVBT_RX_WINDOW_BACKOFF, DVBT_SHAPING_SLACK, DVBT_SYMBOLS_PER_FRAME,
+    DvbTBandwidth, DvbTMask, DvbTRx, DvbTRxFacts, DvbTRxStats, DvbTShaping, DvbTSource, DvbTTaper,
+    dvbt_center_bounds, dvbt_clamp_center, dvbt_default_center_hz, dvbt_frame_payload_bytes,
+    dvbt_super_frame_samples,
+};
 pub use ft8::{Ft8Mode, Ft8MsgType, Ft8Source};
 pub use psk31::{Psk31Mode, Psk31Source};

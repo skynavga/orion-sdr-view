@@ -8,6 +8,7 @@ use super::display::DisplayConfig;
 use crate::source::amdsb::AmDsbConfig;
 use crate::source::cofdm::CofdmConfig;
 use crate::source::cw::CwConfig;
+use crate::source::dvbt::DvbTConfig;
 use crate::source::ft8::Ft8Config;
 use crate::source::psk31::Psk31Config;
 use crate::source::tone::TestToneConfig;
@@ -20,6 +21,7 @@ pub struct SourcesConfig {
     pub psk31: Option<Psk31Config>,
     pub ft8: Option<Ft8Config>,
     pub cofdm: Option<CofdmConfig>,
+    pub dvbt: Option<DvbTConfig>,
 }
 
 /// The `view:` block of a config file.
