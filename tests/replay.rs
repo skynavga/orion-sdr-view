@@ -683,6 +683,7 @@ fn a_name_reaches_its_source_from_wherever_the_run_already_is() {
             "PSK31",
             "FT8",
             "COFDM", // named
+            "DVB-T",
             "Test Tone",
             "CW",
             "AM DSB", // named, wrapping round

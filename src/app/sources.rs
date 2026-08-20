@@ -11,7 +11,7 @@ use crate::source::amdsb::AmDsbSource;
 use super::SourceMode;
 use super::common::source_mode_factory;
 use super::settings::{AmDsbSettings, CwSettings, Ft8Settings, ToneSettings};
-use super::source::{amdsb, cofdm, cw, ft8, psk31, tone};
+use super::source::{amdsb, cofdm, cw, dvbt, ft8, psk31, tone};
 use super::view::ViewApp;
 
 impl ViewApp {
@@ -38,6 +38,7 @@ impl ViewApp {
         amdsb::sync(self.source.as_mut(), &self.settings);
         psk31::sync(self.source.as_mut(), &self.settings);
         cofdm::sync(self.source.as_mut(), &self.settings);
+        dvbt::sync(self.source.as_mut(), &self.settings);
         if let Some(flags) = cw::sync(self.source.as_mut(), &self.settings)
             && flags.wpm_or_word_space_changed
         {
@@ -46,6 +47,22 @@ impl ViewApp {
         if let Some((mode, msg_type)) = ft8::sync(self.source.as_mut(), &self.settings) {
             self.ft8_view.mode = mode;
             self.ft8_view.msg_type = msg_type;
+        }
+
+        // A source whose settings can move its *rate* needs the display
+        // re-derived, not just the waveform re-rendered.  DVB-T's `Bandwidth`
+        // toggle is the first that can: it spans 24x, and without this the
+        // frequency axis, the `Zoom` bound and every bin-indexed pane would keep
+        // drawing against the outgoing Nyquist.
+        //
+        // Guarded on the rate having actually moved, because
+        // `apply_source_sample_rate` clears the waterfall, persistence,
+        // spectrogram and the two decoder rasters — history at the old scaling
+        // cannot be redrawn at the new one, but neither should a `C/N` nudge
+        // wipe it.  Uniform rather than per-source: it asks what the constructed
+        // source reports, which is the same rule the method itself follows.
+        if self.source.sample_rate() != self.applied_fs {
+            self.apply_source_sample_rate();
         }
 
         self.sync_decode_config();
@@ -177,6 +194,11 @@ impl ViewApp {
         let factory = source_mode_factory(self.source_mode);
         let mode = factory.decode_mode(&self.settings, &self.ft8_view);
         let carrier_hz = factory.decode_carrier_hz(&self.settings);
+        // Read off the live source before the lock, since it needs `&mut self`:
+        // the DVB-T receiver's frame trim length and the source's full-scale
+        // reference are both render-time quantities, so settings cannot supply
+        // them.  `None` whenever the active source is not DVB-T.
+        let dvbt_frame_facts = dvbt::frame_facts(self.source.as_mut());
         if let Ok(mut cfg) = self.decode_config.lock() {
             cfg.mode = mode;
             cfg.carrier_hz = carrier_hz;
@@ -200,6 +222,15 @@ impl ViewApp {
                 // rather than `self.settings` is what that costs, and the
                 // block already reads `self.source_mode`.
                 cfg.cofdm_probe = self.pane3_wants_probe();
+            }
+            if self.source_mode == SourceMode::DvbT {
+                cfg.dvbt_bw_hz = dvbt::occupied_bw_hz(&self.settings);
+                cfg.dvbt_link = dvbt::link(&self.settings);
+                if let Some((payload_len, full_scale)) = dvbt_frame_facts {
+                    cfg.dvbt_frame_payload_len = payload_len;
+                    cfg.dvbt_full_scale = full_scale;
+                }
+                cfg.dvbt_probe = self.pane3_wants_probe();
             }
         }
     }

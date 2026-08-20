@@ -4,7 +4,7 @@
 use eframe::egui;
 
 use super::settings::AmDsbSettings;
-use super::source::{amdsb, cofdm, cw, ft8, psk31};
+use super::source::{amdsb, cofdm, cw, dvbt, ft8, psk31};
 use super::utils::dashed_hline;
 use super::view::ViewApp;
 use super::{DecodeBarMode, HUD_DATA_COL, PANE_BG, Pane3Mode, SourceMode};
@@ -98,6 +98,7 @@ impl ViewApp {
                 SourceMode::Psk31 => psk31::hud_submode_str(&self.settings),
                 SourceMode::Ft8 => ft8::hud_submode_str(&self.ft8_view),
                 SourceMode::Cofdm => cofdm::hud_submode_str(&self.settings),
+                SourceMode::DvbT => dvbt::hud_submode_str(&self.settings),
                 SourceMode::TestTone => String::new(),
             };
             // Injected noise amplitude. Every source has the setting, and it

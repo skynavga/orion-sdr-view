@@ -8,6 +8,7 @@ use super::amdsb::{AmDsbRows, AmDsbSettings};
 use super::cofdm::CofdmRows;
 use super::cw::CwRows;
 use super::display::{self, DisplayRows};
+use super::dvbt::DvbTRows;
 use super::field::{Row, RowDrawCtx, ToggleField, draw_num, draw_toggle};
 use super::ft8::Ft8Rows;
 use super::psk31::Psk31Rows;
@@ -356,6 +357,7 @@ impl SettingsState {
             Box::new(Psk31Rows::new()),
             Box::new(Ft8Rows::new()),
             Box::new(CofdmRows::new()),
+            Box::new(DvbTRows::new()),
         ];
         // Belt-and-suspenders: panic loudly at startup if the per-source
         // `Vec` order ever drifts from the `SourceMode` enum.  If this fires,
@@ -385,13 +387,22 @@ impl SettingsState {
                 .as_any()
                 .is::<CofdmRows>()
         );
+        debug_assert!(sources[SourceMode::DvbT as usize].as_any().is::<DvbTRows>());
         Self {
             visible: false,
             active_tab: TAB_SOURCE,
             focused_row: None,
             source_selector: Row::Toggle(ToggleField {
                 label: "Source",
-                options: &["Test Tone", "CW", "AM DSB", "PSK31", "FT8", "COFDM"],
+                options: &[
+                    "Test Tone",
+                    "CW",
+                    "AM DSB",
+                    "PSK31",
+                    "FT8",
+                    "COFDM",
+                    "DVB-T",
+                ],
                 index: 0,
                 default: 0,
             }),

@@ -178,12 +178,17 @@ pub const DVBT_DISPLAY_RMS_DBFS: f32 = -18.0;
 ///
 /// COFDM sits 21 dB below its burst RMS.  DVB-T's power spreads over 1705 active
 /// carriers filling 83% of the display span, against COFDM's 64 filling 25% at
-/// the default fraction, so the same total RMS lands ~5 dB lower per bin — hence
-/// 26 dB below the RMS rather than 21.  Stated rather than inherited:
-/// `SourceFactory::preferred_ref_db` defaults to the shared `Defaults::DB_MAX`,
-/// and a source declaring no preference would draw its spectrum against whatever
-/// the last wideband source set.
-pub const DVBT_PREFERRED_REF_DB: f32 = -44.0;
+/// the default fraction, so the same total RMS lands several dB lower per bin.
+///
+/// **Set against a rendered capture, not derived.**  The analytic estimate came
+/// out at -44, which put the peak-hold trace hard against the top gridline;
+/// measured, the live trace's per-bin mean sits near -50 dBFS, so -41 leaves the
+/// same ~9 dB of headroom COFDM's picture has and the two sources read alike.
+///
+/// Stated rather than inherited: `SourceFactory::preferred_ref_db` defaults to
+/// the shared `Defaults::DB_MAX`, and a source declaring no preference would
+/// draw its spectrum against whatever the last wideband source set.
+pub const DVBT_PREFERRED_REF_DB: f32 = -41.0;
 
 /// Default signal-burst duration, in **wall-clock seconds**.
 pub const DVBT_DEFAULT_SIG_SECS: f32 = 10.0;

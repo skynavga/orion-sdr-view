@@ -56,6 +56,18 @@ pub struct ViewApp {
     // Active signal source (Box<dyn SignalSource> for easy future extension)
     pub(super) source_mode: SourceMode,
     pub(super) source: Box<dyn SignalSource>,
+    /// The sample rate the display was last derived for.
+    ///
+    /// **Because a settings row can now move the rate.**  Until DVB-T, the only
+    /// way `SignalSource::sample_rate` could change was a source switch or a
+    /// rebuild, both of which call `apply_source_sample_rate` on their own —
+    /// COFDM's `fs` is deliberately config-only for exactly this reason.  DVB-T's
+    /// `Bandwidth` toggle *is* its rate, so a nudge re-renders the waveform at a
+    /// new rate while the display keeps drawing against the old Nyquist: the
+    /// frequency axis is wrong by up to 24x and every bin-indexed pane holds
+    /// history at a scaling that no longer applies.  Nothing about that
+    /// announces itself.
+    pub(super) applied_fs: f32,
 
     // Test tone generator — kept alive so its state (cycling, settings) persists
     // across source switches. TestToneSource borrows it when active.
@@ -273,6 +285,7 @@ impl ViewApp {
 
             source_mode: SourceMode::TestTone,
             source,
+            applied_fs: SAMPLE_RATE,
             signal_gen,
 
             ring_buf: RingBuffer::new(FFT_SIZE),
@@ -437,8 +450,9 @@ impl ViewApp {
     /// The rate now varies *within* a source too, not just between them: COFDM
     /// reads `sources.cofdm.fs_hz`.  Nothing here changes for that — the value
     /// has always come from the constructed source rather than from a table.
-    fn apply_source_sample_rate(&mut self) {
+    pub(super) fn apply_source_sample_rate(&mut self) {
         let fs = self.source.sample_rate();
+        self.applied_fs = fs;
         self.freq_view.set_nyquist(fs / 2.0);
         self.settings.set_zoom_max(self.freq_view.max_zoom_ratio());
         self.waterfall.clear();
@@ -1277,7 +1291,15 @@ impl ViewApp {
                 self.restart_source();
             }
             SourceMode::Ft8 => self.cycle_ft8_mode(),
-            SourceMode::TestTone | SourceMode::Cw | SourceMode::AmDsb | SourceMode::Cofdm => {}
+            // DVB-T has no submode `M` could cycle: its five waveform knobs are
+            // five settings toggles, and picking one to bind to a global key
+            // would be arbitrary.  Stated rather than inherited, as the doc
+            // comment above requires.
+            SourceMode::TestTone
+            | SourceMode::Cw
+            | SourceMode::AmDsb
+            | SourceMode::Cofdm
+            | SourceMode::DvbT => {}
         }
     }
 
@@ -1300,8 +1322,8 @@ impl ViewApp {
                 self.apply_psk31_message();
             }
             SourceMode::Ft8 => self.cycle_ft8_msg_type(),
-            // Test Tone and COFDM carry no audio or message.
-            SourceMode::TestTone | SourceMode::Cofdm => {}
+            // Test Tone, COFDM and DVB-T carry no audio or message.
+            SourceMode::TestTone | SourceMode::Cofdm | SourceMode::DvbT => {}
         }
     }
 
