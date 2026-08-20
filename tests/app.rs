@@ -726,3 +726,116 @@ fn full_stop_holds_pane_threes_decoder_view() {
     assert!(resumed_map, "released: the map resumes");
     assert!(resumed_cloud, "released: so does the cloud");
 }
+
+// ── F. DVB-T selectability ──────────────────────────────────────────────────
+
+/// DVB-T reports a display rate twice its waveform's, and the app has to adopt
+/// *that* one.
+///
+/// The band is 83% of the waveform's own rate, so at 1× it does not fit the
+/// one-sided span the viewer draws and folds over itself.  If
+/// `apply_source_sample_rate` ever read the waveform rate instead, the spectrum
+/// would still render — aliased — which is exactly the failure that does not
+/// announce itself.
+#[test]
+fn selecting_dvbt_adopts_the_oversampled_display_rate() {
+    use orion_sdr_view::app::settings::DvbTSettings;
+    let mut h = Harness::with_defaults();
+    h.select_source(SourceMode::DvbT);
+
+    let bw = h.app.settings().dvbt_bandwidth();
+    assert_eq!(h.app.source_sample_rate(), bw.display_fs());
+    assert_eq!(h.app.source_sample_rate(), bw.fs() * 2.0);
+
+    // The viewport is reframed to the new Nyquist, and the whole occupied band
+    // fits inside it with room to spare.
+    let nyquist = bw.display_fs() / 2.0;
+    assert!((h.app.freq_view().nyquist - nyquist).abs() < 1.0);
+    assert!(
+        bw.occupied_hz() < nyquist,
+        "the band must fit the one-sided span"
+    );
+}
+
+/// The `L` key retunes the DVB-T band, as it does every other source.
+///
+/// Worth its own test rather than trusting the COFDM one: DVB-T's centre range
+/// is far tighter — the band width is fixed, so there is no narrower fallback to
+/// fall back on — and a clamp that collapsed the range to a point would make
+/// `L` silently inert, which is the state COFDM's was in until 0.0.24.
+#[test]
+fn the_lock_key_retunes_the_dvbt_band() {
+    use orion_sdr_view::app::settings::DvbTSettings;
+    let mut h = Harness::with_defaults();
+    h.select_source(SourceMode::DvbT);
+
+    let (lo, hi) = orion_sdr_view::source::dvbt_center_bounds(h.app.source_sample_rate());
+    assert!(hi > lo, "the centre range must not be a point");
+
+    let before = h.app.settings().dvbt_center_hz();
+    h.key_n(egui::Key::ArrowUp, 4);
+    h.key(egui::Key::L);
+    assert!(h.app.source_locked());
+
+    h.key_n(egui::Key::ArrowRight, 6);
+    let viewport = h.app.freq_view().center_hz;
+    let band = h.app.settings().dvbt_center_hz();
+    assert!(
+        viewport > before,
+        "the viewport should have panned up-band: {viewport} vs {before}"
+    );
+    assert!(
+        (band - FreqView::snap_hz(viewport, 10.0).clamp(lo, hi)).abs() < 1.0,
+        "locked band centre {band} should track the viewport centre {viewport}"
+    );
+}
+
+/// A bandwidth change moves the rate by up to 24×, and everything derived from
+/// the rate has to move with it.
+///
+/// **The first settings row in the app that can change a source's sample
+/// rate.**  Until DVB-T the only ways `SignalSource::sample_rate` could move
+/// were a source switch and a rebuild, both of which re-derive the display on
+/// their own — COFDM's `fs` is config-only precisely to avoid this.  Without the
+/// re-derivation in `sync_settings`, the waveform re-renders at the new rate
+/// while the frequency axis keeps the old Nyquist: measured before the fix, the
+/// source went to 4.80 MS/s while `FreqView` stayed at 1.20 MHz, so the spectrum
+/// was drawn against a scale off by 2× with nothing on screen to say so.
+#[test]
+fn a_dvbt_bandwidth_change_moves_the_rate_and_the_display_together() {
+    use orion_sdr_view::app::settings::DvbTSettings;
+    let mut h = Harness::with_defaults();
+    h.select_source(SourceMode::DvbT);
+    let rate_before = h.app.source_sample_rate();
+
+    // Open settings and walk to the Bandwidth row.  The first row of the
+    // overlay is the *source selector*, so the source's own rows start one
+    // below it: Source, Center, Bandwidth.
+    h.key(egui::Key::S);
+    h.key_n(egui::Key::ArrowDown, 3);
+    h.key(egui::Key::ArrowRight);
+    h.key(egui::Key::S);
+
+    let bw = h.app.settings().dvbt_bandwidth();
+    assert_eq!(h.app.source_mode(), SourceMode::DvbT, "still on DVB-T");
+    assert_ne!(h.app.source_sample_rate(), rate_before, "the rate moved");
+    assert_eq!(h.app.source_sample_rate(), bw.display_fs());
+    assert!(
+        (h.app.freq_view().nyquist - bw.display_fs() / 2.0).abs() < 1.0,
+        "the display Nyquist must follow the rate, not lag it"
+    );
+
+    // And the band lands back mid-display rather than pinned to whichever edge
+    // the clamp left it against — stepping the toggle should look like a mode
+    // change, not like the band walking off to one side.
+    let center = h.app.settings().dvbt_center_hz();
+    let (lo, hi) = orion_sdr_view::source::dvbt_center_bounds(bw.display_fs());
+    assert!(
+        (lo..=hi).contains(&center),
+        "centre {center} outside {lo}..{hi}"
+    );
+    assert!(
+        (center - bw.display_fs() / 4.0).abs() < 1.0,
+        "a mode change should land the band mid-display"
+    );
+}

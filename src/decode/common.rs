@@ -30,9 +30,11 @@ use num_complex::Complex32 as C32;
 use orion_sdr::demodulate::BitOutcome;
 use orion_sdr::modulate::ConstellationOrder;
 
+use orion_sdr::waveform::dvb_t::DvbTLinkParams;
+
 use crate::decode::instrument::CofdmInstrument;
 use crate::source::cofdm::CofdmShaping;
-use crate::source::{amdsb, cofdm, cw, ft8, psk31, tone};
+use crate::source::{amdsb, cofdm, cw, dvbt, ft8, psk31, tone};
 
 /// One block of samples on its way to the decode worker.
 ///
@@ -122,6 +124,8 @@ pub enum DecodeMode {
     Ft4,
     /// Wideband COFDM — info-only spectral analysis (no text decode).
     Cofdm,
+    /// Conformant DVB-T 2K — info-only spectral analysis (no text decode).
+    DvbT,
 }
 
 #[derive(Clone, Debug)]
@@ -151,6 +155,27 @@ pub struct DecodeConfig {
     /// Off, upstream's plain `feed` is called and nothing is computed, allocated
     /// or sent; the gate is the choice of method rather than a branch inside it.
     pub cofdm_probe: bool,
+    /// DVB-T occupied bandwidth (Hz): `fs · 1705/2048` against the *waveform's*
+    /// rate, which is a fixed property of the bandwidth mode rather than
+    /// something to measure.
+    pub dvbt_bw_hz: f32,
+    /// The DVB-T link's guard / constellation / code rate.  The receiver builds
+    /// its numerology from this, so a field differing from the transmitter's
+    /// means the demodulator never acquires — indistinguishable from a dead
+    /// signal.
+    pub dvbt_link: DvbTLinkParams,
+    /// TS payload bytes per frame, read off the **live source** rather than
+    /// re-derived here.  A streaming DVB-T receiver trims each frame's recovered
+    /// payload to a length it is told, so a value that disagreed with what was
+    /// rendered would silently truncate rather than fail.
+    pub dvbt_frame_payload_len: usize,
+    /// The amplitude DVB-T counts as 0 dBFS — its rendered peak swing, not 1.0.
+    /// See `DvbTSource::full_scale`: a 29-33 dB crest factor means an RMS that
+    /// clears the shared signal threshold necessarily peaks past unity.
+    pub dvbt_full_scale: f32,
+    /// Whether to run the DVB-T receiver's diagnostic probe.  Display-driven,
+    /// like `cofdm_probe`.
+    pub dvbt_probe: bool,
     /// Block RMS at or above which the source counts as transmitting.  Must
     /// match the main thread's `LoopTimer` threshold, or the two disagree about
     /// where a burst ends: the decode side keeps emitting into a gap the loop
@@ -174,6 +199,15 @@ impl DecodeConfig {
             cofdm_bw_hz: 0.0,
             cofdm_shaping: CofdmShaping::derived(crate::source::cofdm::COFDM_DEFAULT_BW_FRACTION),
             cofdm_probe: false,
+            dvbt_bw_hz: 0.0,
+            dvbt_link: DvbTLinkParams {
+                guard: crate::source::DVBT_DEFAULT_GUARD,
+                constellation: crate::source::DVBT_DEFAULT_CONSTELLATION,
+                code_rate: crate::source::DVBT_DEFAULT_CODE_RATE,
+            },
+            dvbt_frame_payload_len: 0,
+            dvbt_full_scale: 1.0,
+            dvbt_probe: false,
             signal_threshold: SIGNAL_THRESHOLD,
             cw_message: String::new(),
             cw_wpm: 0.0,
@@ -454,6 +488,7 @@ pub struct DecodeState {
     testtone: tone::ToneState,
     ft8: ft8::Ft8State,
     cofdm: cofdm::CofdmState,
+    dvbt: dvbt::DvbTState,
 }
 
 impl Default for DecodeState {
@@ -476,6 +511,7 @@ impl DecodeState {
             testtone: tone::ToneState::new(),
             ft8: ft8::Ft8State::new(),
             cofdm: cofdm::CofdmState::new(),
+            dvbt: dvbt::DvbTState::new(),
         }
     }
 
@@ -520,6 +556,7 @@ impl DecodeState {
         {
             self.dropped += chunk.seq.wrapping_sub(prev).wrapping_sub(1);
             self.cofdm.reset();
+            self.dvbt.reset();
         }
         self.last_seq = Some(chunk.seq);
 
@@ -588,6 +625,30 @@ impl DecodeState {
                     chunk.iq.as_deref(),
                     fs,
                     cfg.cofdm_probe,
+                    tx,
+                );
+            }
+            DecodeMode::DvbT => {
+                self.dvbt.process(
+                    samples,
+                    is_signal,
+                    gap_edge,
+                    carrier_hz,
+                    cfg.dvbt_bw_hz,
+                    cfg.dvbt_link,
+                    cfg.dvbt_frame_payload_len,
+                    cfg.dvbt_full_scale,
+                    chunk.iq.as_deref(),
+                    // `cfg.fs` is the *display* rate the source reports, which
+                    // for DVB-T is twice the waveform's — the band is 83% of its
+                    // own rate and would not otherwise fit the one-sided span.
+                    // The spectral estimator wants the former (it runs on the
+                    // real block) and the instrument's symbol rate and guard
+                    // duration want the latter, so both are passed rather than
+                    // one being re-derived at the far end.
+                    fs,
+                    fs / crate::source::DVBT_DISPLAY_OVERSAMPLE as f32,
+                    cfg.dvbt_probe,
                     tx,
                 );
             }

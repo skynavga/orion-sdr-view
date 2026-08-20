@@ -15,6 +15,7 @@ pub(super) mod amdsb;
 pub(super) mod cofdm;
 mod common;
 pub(super) mod cw;
+pub(super) mod dvbt;
 pub(super) mod ft8;
 pub(super) mod psk31;
 pub(super) mod tone;

@@ -58,7 +58,14 @@ impl crate::config::ViewConfig {
     /// bandwidth's rate.  Derived from `dvbt_bandwidth` rather than from a
     /// constant, so configuring only the bandwidth still centres the band.
     pub fn dvbt_center_hz(&self) -> f32 {
-        let fs = self.dvbt_bandwidth().fs();
+        // **The display rate, not the waveform's.**  The centre is a position on
+        // the frequency axis the viewer draws, and that axis runs to
+        // `display_fs / 2`.  Passing the waveform's rate here computed the
+        // bounds for a half-width window: the default landed below the real
+        // lower bound, the source clamped it up, and the band drew hard against
+        // the left edge of the display instead of centred — a wrong picture with
+        // nothing to say so.
+        let fs = self.dvbt_bandwidth().display_fs();
         let (lo, hi) = dvbt_center_bounds(fs);
         self.dvbt()
             .and_then(|c| c.center_hz)

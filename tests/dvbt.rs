@@ -388,6 +388,42 @@ fn the_centre_is_clamped_to_where_the_whole_band_fits() {
     }
 }
 
+/// The config's default centre and the source's must be the same number.
+///
+/// They are computed by different code from the same intent — "mid-display" —
+/// and the two rates in play make that easy to get wrong.  It was: the config
+/// accessor derived its bounds from the *waveform's* rate, so its default landed
+/// below the real lower bound, the source clamped it up, and the band drew hard
+/// against the left edge of the display with nothing on screen to say so.
+#[test]
+fn the_configured_default_centre_is_mid_display() {
+    use orion_sdr_view::config::ViewConfig;
+    let cfg = ViewConfig::empty();
+    let bw = DvbTBandwidth::Bw1MHz; // the config default
+    let want = dvbt_default_center_hz(bw.display_fs());
+    assert!(
+        (cfg.dvbt_center_hz() - want).abs() < 1.0,
+        "config centre {} vs mid-display {want}",
+        cfg.dvbt_center_hz()
+    );
+    // And it survives the source, which clamps independently.
+    let src = make_with(bw, link(), DvbTShaping::off());
+    assert!((src.center_hz() - want).abs() < 1.0);
+    // Which means the band is symmetric about mid-display: both edges land the
+    // same distance inside the window.
+    let half = bw.occupied_hz() / 2.0;
+    let (lo_edge, hi_edge) = (src.center_hz() - half, src.center_hz() + half);
+    assert!(
+        lo_edge > 0.0,
+        "lower band edge {lo_edge} is off the display"
+    );
+    assert!(
+        (lo_edge - (bw.display_fs() / 2.0 - hi_edge)).abs() < 1.0,
+        "band is not symmetric in the window: {lo_edge} vs {}",
+        bw.display_fs() / 2.0 - hi_edge
+    );
+}
+
 // ── Timing ─────────────────────────────────────────────────────────────────
 
 /// Phase durations are wall-clock, driven by `advance_time`, so they do not

@@ -142,6 +142,7 @@ pub enum SourceMode {
     Psk31,
     Ft8,
     Cofdm,
+    DvbT,
 }
 
 impl SourceMode {
@@ -152,6 +153,7 @@ impl SourceMode {
         SourceMode::Psk31,
         SourceMode::Ft8,
         SourceMode::Cofdm,
+        SourceMode::DvbT,
     ];
 
     pub fn label(self) -> &'static str {
@@ -162,6 +164,7 @@ impl SourceMode {
             SourceMode::Psk31 => "PSK31",
             SourceMode::Ft8 => "FT8",
             SourceMode::Cofdm => "COFDM",
+            SourceMode::DvbT => "DVB-T",
         }
     }
 
