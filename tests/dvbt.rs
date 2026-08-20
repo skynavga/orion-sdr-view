@@ -181,7 +181,11 @@ fn the_crest_factor_is_the_interleaver_fill_and_drain() {
             .log10()
     };
 
-    assert!(crest(0) > 25.0, "the fill should peak: symbol 0 at {}", crest(0));
+    assert!(
+        crest(0) > 25.0,
+        "the fill should peak: symbol 0 at {}",
+        crest(0)
+    );
     assert!(
         crest(DVBT_SYMBOLS_PER_FRAME - 1) > 25.0,
         "the drain should peak: symbol 67 at {}",
@@ -243,15 +247,7 @@ fn a_super_frame_is_four_frames_of_the_guards_symbol_length() {
 #[test]
 fn even_display_samples_are_the_waveforms_own() {
     let bw = DvbTBandwidth::Bw1MHz;
-    let mut src = DvbTSource::new(
-        60.0,
-        1.0,
-        30.0,
-        bw,
-        link(),
-        DvbTShaping::off(),
-        center(bw),
-    );
+    let mut src = DvbTSource::new(60.0, 1.0, 30.0, bw, link(), DvbTShaping::off(), center(bw));
     // An independent rotator run over the *display* stream, exactly as the
     // source's is — so this checks the projection rather than re-deriving the
     // oscillator's phase convention.
@@ -383,7 +379,10 @@ fn the_centre_is_clamped_to_where_the_whole_band_fits() {
         // The default centre is inside, and out-of-range requests pin.
         assert_eq!(dvbt_clamp_center(-1.0e9, fs_d), lo);
         assert_eq!(dvbt_clamp_center(1.0e9, fs_d), hi);
-        assert_eq!(dvbt_clamp_center(f32::NAN, fs_d), dvbt_default_center_hz(fs_d));
+        assert_eq!(
+            dvbt_clamp_center(f32::NAN, fs_d),
+            dvbt_default_center_hz(fs_d)
+        );
         let src = make_with(bw, link(), DvbTShaping::off());
         assert!((lo..=hi).contains(&src.center_hz()));
     }

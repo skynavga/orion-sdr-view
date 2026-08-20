@@ -164,7 +164,11 @@ impl DvbTState {
             .as_ref()
             .is_none_or(|(l, p, _)| *l != link || *p != frame_payload_len);
         if stale {
-            self.rx = Some((link, frame_payload_len, DvbTRx::new(link, frame_payload_len)));
+            self.rx = Some((
+                link,
+                frame_payload_len,
+                DvbTRx::new(link, frame_payload_len),
+            ));
         }
         if is_signal && let Some((.., rx)) = self.rx.as_mut() {
             rx.process(iq, want_probe);

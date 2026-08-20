@@ -1023,8 +1023,11 @@ impl DvbTSource {
         // side, where the two factors of two cancel exactly.
         let signal_power = mean_power_even(&iq);
         let fs_wave = self.waveform_fs();
-        self.noise
-            .set_reference(cn_reference(signal_power, dvb_t_occupied_bw(fs_wave), fs_wave));
+        self.noise.set_reference(cn_reference(
+            signal_power,
+            dvb_t_occupied_bw(fs_wave),
+            fs_wave,
+        ));
 
         self.iq = iq;
         self.pos = 0;

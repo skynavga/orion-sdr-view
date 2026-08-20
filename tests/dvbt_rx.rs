@@ -161,7 +161,10 @@ fn the_default_cn_decodes_cleanly_at_every_mode() {
                 stats.failed, 0,
                 "{constellation:?} {code_rate:?} at {DVBT_DEFAULT_CN_DB} dB: {stats:?}"
             );
-            assert!(stats.decoded >= 3, "{constellation:?} {code_rate:?}: {stats:?}");
+            assert!(
+                stats.decoded >= 3,
+                "{constellation:?} {code_rate:?}: {stats:?}"
+            );
         }
     }
 }
@@ -246,7 +249,10 @@ fn the_taper_costs_the_dense_constellations() {
         "QPSK absorbs the taper"
     );
     assert_eq!(
-        decoded(ConstellationOrder::Qam64, orion_sdr::fec::PunctureRate::R3_4),
+        decoded(
+            ConstellationOrder::Qam64,
+            orion_sdr::fec::PunctureRate::R3_4
+        ),
         0,
         "64-QAM does not — if this now decodes, the taper became transparent \
          and DVBT_DEFAULT_TAPER should be revisited"
@@ -282,8 +288,13 @@ fn a_clean_link_measures_a_clean_ladder() {
     );
     assert_eq!(rx.stats().corrected_bytes, 0);
 
-    let score = f.sync_score.expect("guard-interval acquisition reports a score");
-    assert!((0.0..=1.0).contains(&score) && score > 0.5, "sync score {score}");
+    let score = f
+        .sync_score
+        .expect("guard-interval acquisition reports a score");
+    assert!(
+        (0.0..=1.0).contains(&score) && score > 0.5,
+        "sync score {score}"
+    );
 
     // The TPS word is what arrived, and it must match what was transmitted.
     let tps = f.tps.expect("TPS is decoded before the payload");
@@ -333,9 +344,11 @@ fn error_rates_break_decoding_upstream() {
     let plain = DvbTFrameDemod::new(params).decode(&frame.iq, frame.n_symbols, payload.len());
     assert!(plain.is_ok(), "the ungated path decodes: {plain:?}");
 
-    let measured = DvbTFrameDemod::new(params)
-        .with_error_rates(true)
-        .decode(&frame.iq, frame.n_symbols, payload.len());
+    let measured = DvbTFrameDemod::new(params).with_error_rates(true).decode(
+        &frame.iq,
+        frame.n_symbols,
+        payload.len(),
+    );
     assert!(
         measured.is_ok(),
         "with_error_rates(true) must not break a noiseless decode: {measured:?}"
