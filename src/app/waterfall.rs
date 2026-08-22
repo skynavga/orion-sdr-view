@@ -79,9 +79,7 @@ impl WaterfallDisplay {
     /// forces a full re-upload of the cleared buffer on the next update, so no
     /// stale rows from the previous source linger.
     pub fn clear(&mut self) {
-        for p in &mut self.pixels {
-            *p = egui::Color32::BLACK;
-        }
+        self.pixels.fill(egui::Color32::BLACK);
         self.head = 0;
         self.filled = 0;
         self.accum_secs = 0.0;

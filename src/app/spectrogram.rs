@@ -88,9 +88,7 @@ impl SpectrogramDisplay {
 
     /// Clear history (e.g. on source switch).
     pub fn clear(&mut self) {
-        for p in &mut self.pixels {
-            *p = egui::Color32::BLACK;
-        }
+        self.pixels.fill(egui::Color32::BLACK);
         self.head = 0;
         self.filled = 0;
         self.accum_secs = 0.0;

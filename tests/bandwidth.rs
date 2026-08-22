@@ -69,7 +69,9 @@ fn measure_bw_via_source(audio: Vec<f32>, audio_rate: f32) -> f32 {
     let mut src = AmDsbSource::new(audio, audio_rate, CARRIER_HZ, 1.0, 0.0, MAX_CN_DB, 1, FS);
     let signal = src.next_samples(total);
     signal
-        .chunks_exact(SPECTRUM_WINDOW_SAMPLES)
+        .as_chunks::<SPECTRUM_WINDOW_SAMPLES>()
+        .0
+        .iter()
         .filter(|w| {
             let rms = (w.iter().map(|&s| s * s).sum::<f32>() / w.len() as f32).sqrt();
             rms >= SIGNAL_THRESHOLD
