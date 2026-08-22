@@ -618,8 +618,8 @@ pub const SIM_BADGE: &str = "SIM";
 /// changes a field's rendered width.  See [`CofdmInstrument::di_bar_str`].
 const DB_W: usize = 5; // "-99.9" / "100.0"
 const BER_W: usize = 6; // "1.0E-4"; "<1E-9" and "0.0E0" are shorter
-const HZ_W: usize = 8; // "-9999 Hz"
-const DBFS_W: usize = 11; // "-100.0 dBFS"
+const HZ_W: usize = 7; // "-9999Hz"
+const DBFS_W: usize = 10; // "-100.0dBFS"
 
 /// One Di-bar field: its padded rendering, whether it is a placeholder, and
 /// whether it is pinned to the end of the line.
@@ -679,6 +679,19 @@ impl CofdmInstrument {
                 at_end: false,
             })
         }
+        // Units closed up, unlike the `X` panel's `fmt_signed_hz` / `fmt_dbfs`.
+        // The bar separates fields by a single space, so a value carrying an
+        // internal one would read as two fields — `Δf +4 Hz` as a `Δf` of `+4`
+        // followed by something called `Hz`.  The panel keeps the spaced form
+        // because its columns are aligned by position, where the space is free
+        // and reads better.  Two characters saved on a line that drops fields
+        // when the window narrows is the incidental benefit.
+        fn di_hz(hz: f32) -> String {
+            format!("{hz:+.0}Hz")
+        }
+        fn di_dbfs(db: f32) -> String {
+            format!("{db:.1}dBFS")
+        }
         let mut fields: Vec<DiField> = Vec::new();
         fields.extend(field(
             "C/N",
@@ -721,13 +734,13 @@ impl CofdmInstrument {
         }
         fields.extend(field(
             "\u{394}f",
-            self.freq_error_hz.value.map(fmt_signed_hz),
+            self.freq_error_hz.value.map(di_hz),
             HZ_W,
             self.freq_error_hz.is_simulated(),
         ));
         fields.extend(field(
             "lvl",
-            self.level_dbfs.value.map(fmt_dbfs),
+            self.level_dbfs.value.map(di_dbfs),
             DBFS_W,
             self.level_dbfs.is_simulated(),
         ));
@@ -736,16 +749,16 @@ impl CofdmInstrument {
         // the end, so its width must be reserved on *every* step from the first
         // simulated field onward — reserving it only when that field is
         // admitted lets the fields after it spend the room it needs.
-        let badge_w = 2 + SIM_BADGE.chars().count();
+        let badge_w = 1 + SIM_BADGE.chars().count();
         let mut width = line.chars().count();
         let mut any_sim = false;
         let mut admitted: Vec<DiField> = Vec::new();
         for f in fields {
             let reserve = if any_sim || f.sim { badge_w } else { 0 };
-            if width + 2 + f.text.chars().count() + reserve > budget_chars {
+            if width + 1 + f.text.chars().count() + reserve > budget_chars {
                 break;
             }
-            width += 2 + f.text.chars().count();
+            width += 1 + f.text.chars().count();
             any_sim |= f.sim;
             admitted.push(f);
         }
@@ -754,13 +767,13 @@ impl CofdmInstrument {
         // before the badge however many fields survived ahead of it.
         let mut out = line;
         for f in admitted.iter().filter(|f| !f.at_end) {
-            let _ = write!(out, "  {}", f.text);
+            let _ = write!(out, " {}", f.text);
         }
         for f in admitted.iter().filter(|f| f.at_end) {
-            let _ = write!(out, "  {}", f.text);
+            let _ = write!(out, " {}", f.text);
         }
         if any_sim {
-            let _ = write!(out, "  {SIM_BADGE}");
+            let _ = write!(out, " {SIM_BADGE}");
         }
         out.trim_end().to_owned()
     }

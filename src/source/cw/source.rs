@@ -11,10 +11,10 @@ use crate::source::{CnNoise, CnReference, NoiseDomain, SignalSource, keyed_carri
 // ── CW HUD helpers ───────────────────────────────────────────────────────────
 
 /// Format the CW submode string shown in the top HUD line:
-/// `"  msg n  13wpm"` (canned message) or `"  msg c  13wpm"` (custom).
+/// `" msg n 13wpm"` (canned message) or `" msg c 13wpm"` (custom).
 pub fn hud_submode_str(msg_is_custom: bool, wpm: f32) -> String {
     let msg_ch = if msg_is_custom { "c" } else { "n" };
-    format!("  msg {msg_ch}  {}wpm", wpm as u32)
+    format!(" msg {msg_ch} {}wpm", wpm as u32)
 }
 
 // ── CW timing helpers ────────────────────────────────────────────────────────

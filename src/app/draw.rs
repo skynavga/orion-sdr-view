@@ -49,7 +49,7 @@ impl ViewApp {
                 } else {
                     "A"
                 };
-                marker_str.push_str(&format!("  {} {}", tag, fmt_hz(m_a.hz)));
+                marker_str.push_str(&format!(" {} {}", tag, fmt_hz(m_a.hz)));
             }
             if m_b.enabled {
                 let tag = if self.active_marker == Some(2) {
@@ -57,11 +57,11 @@ impl ViewApp {
                 } else {
                     "B"
                 };
-                marker_str.push_str(&format!("  {} {}", tag, fmt_hz(m_b.hz)));
+                marker_str.push_str(&format!(" {} {}", tag, fmt_hz(m_b.hz)));
             }
             if m_a.enabled && m_b.enabled {
                 let diff = m_b.hz - m_a.hz;
-                marker_str.push_str(&format!("  B-A {}", fmt_hz(diff.abs())));
+                marker_str.push_str(&format!(" B-A {}", fmt_hz(diff.abs())));
             }
             // Active mode flags: only show user-togglable states.
             // C = amplitude cycling (Test Tone only; AM DSB loops structurally, not flagged).
@@ -104,10 +104,10 @@ impl ViewApp {
             // Injected noise amplitude. Every source has the setting, and it
             // is the one knob that changes what the decoders see rather than
             // how the signal is drawn — worth reading without opening settings.
-            let noise_str = format!("  c/n {:.0}dB", self.hud_cn_db());
+            let noise_str = format!(" c/n {:.0}dB", self.hud_cn_db());
 
             let status = format!(
-                "{}{}{}  ctr {}  span {}{}  zoom {}  ref {:.0}dB{}",
+                "{}{}{} ctr {} span {}{} zoom {} ref {:.0}dB{}",
                 self.source_mode.label(),
                 modes,
                 submode_str,
@@ -292,7 +292,7 @@ impl ViewApp {
                 format!("{:.0}Hz", bw_hz)
             };
             format!(
-                "{modulation}  ctr {:.1}kHz  bw {bw_str}  snr {snr_db:.1}dB",
+                "{modulation} ctr {:.1}kHz bw {bw_str} snr {snr_db:.1}dB",
                 center_hz / 1000.0
             )
         };

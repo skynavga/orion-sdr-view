@@ -47,7 +47,7 @@ use crate::source::{
 /// bits, one per symbol, so the frame length *is* the signalling block length.
 pub const DVBT_SYMBOLS_PER_FRAME: usize = TPS_SYMBOLS_PER_FRAME;
 
-/// Ratio between the rate the viewer displays at and the waveform's own rate.
+/// Smallest display oversampling factor that keeps the band from folding.
 ///
 /// **This is the one place DVB-T cannot follow COFDM, and it is forced by the
 /// standard.**  DVB-T occupies `1705/2048` — 83.25% — of its own sample rate.
@@ -57,15 +57,39 @@ pub const DVBT_SYMBOLS_PER_FRAME: usize = TPS_SYMBOLS_PER_FRAME;
 /// one and the spectrum on screen is an alias of itself.  COFDM never meets this
 /// because its widest bandwidth fraction is 7/8 of Nyquist, i.e. 0.44·fs.
 ///
-/// So the source runs its display stream at `2 · fs`, which is what a real
+/// So the source runs its display stream at `L · fs`, which is what a real
 /// panadapter does anyway — a tuner watching a 1 MHz DATV channel samples well
-/// above 1.2 MS/s.  The occupied band then fills 83% of the display width, and
-/// the interpolation that produces the extra samples is exact on the ones the
-/// decoder reads (see [`DvbTSource::render`]).
+/// above 1.2 MS/s.  Two is the smallest `L` that works: `0.8325·fs <
+/// fs_display/2` requires `fs_display > 1.665·fs`.  The interpolation that
+/// produces the extra samples is exact on the ones the decoder reads at every
+/// `L` (see [`DvbTSource::render`]).
 ///
-/// Two is the smallest integer that works: `0.8325·fs < fs_display/2` requires
-/// `fs_display > 1.665·fs`.
-pub const DVBT_DISPLAY_OVERSAMPLE: usize = 2;
+/// **`L` is not the same for every bandwidth**, and that is what
+/// [`DvbTBandwidth::display_oversample`] is for: the display *width* is held
+/// fixed across a group of modes, so the narrow modes oversample harder to reach
+/// it.  This constant is the floor each of them is checked against.
+pub const DVBT_MIN_DISPLAY_OVERSAMPLE: usize = 2;
+
+/// Display width (Hz) shared by the three narrowband (amateur DATV) modes.
+///
+/// **A fixed axis across a group of modes, which is what a panadapter has and
+/// what `fs`-derived spans do not.**  Tying the displayed width to each mode's
+/// own rate rescaled the frequency axis on every `Bandwidth` press — 333k, 1M
+/// and 2M each drew their band at the same 83% of a *different* window, so the
+/// one thing a bandwidth toggle exists to show, that these are different widths,
+/// was the one thing invisible.  Held fixed, 333k occupies 14.5% of the window,
+/// 1M occupies 43.5%, and 2M occupies 87.0%.
+///
+/// 2.3 MHz is chosen so the widest mode in the group fills **7/8** of it — the
+/// margin COFDM's widest bandwidth setting leaves, so the two wideband sources
+/// read alike at their respective extremes.  A round number rather than the
+/// exact `2 MHz · 8/7`, because it is a display choice and 2300.0 kHz reads
+/// better on the axis than 2285.7 does.
+pub const DVBT_NARROW_SPAN_HZ: f32 = 2_300_000.0;
+
+/// Display width (Hz) shared by the three broadcast modes.  Exactly 4×
+/// [`DVBT_NARROW_SPAN_HZ`], and chosen on the same rule: 8M fills 7/8 of it.
+pub const DVBT_BROADCAST_SPAN_HZ: f32 = 4.0 * DVBT_NARROW_SPAN_HZ;
 
 /// Kaiser stop-band target for the ×2 interpolator, in dB.
 ///
@@ -132,12 +156,30 @@ pub const DVBT_BUFFER_TARGET_SECS: f32 = 0.25;
 ///
 /// Two rather than COFDM's forty, because a DVB-T super-frame is four 68-symbol
 /// frames of 2048-point IFFTs and the display buffer holds
-/// [`DVBT_DISPLAY_OVERSAMPLE`] samples for each: at G1/4 that is 22 MB of
-/// `Complex32` and ~100 ms of render at the ceiling.
+/// [`DvbTBandwidth::display_oversample`] samples for each.
 ///
-/// The cap binds only at the broadcast widths, where it delivers 0.145 s of
-/// native signal against the 0.25 s target — and that is fine, because playback
-/// is heavily non-realtime.  The app consumes at most `MAX_SAMPLES_PER_FRAME`
+/// **The oversampling factor is what makes this cost money**, and it is largest
+/// exactly where the cap does *not* bind.  Measured at G1/4, the worst case for
+/// each mode:
+///
+/// | mode | L | super-frames | buffer | render |
+/// | --- | ---: | ---: | ---: | ---: |
+/// | 333k | 12 | 1 | 66.8 MB | 117 ms |
+/// | 1M | 4 | 1 | 22.3 MB | 53 ms |
+/// | 2M | 2 | 1 | 11.1 MB | 36 ms |
+/// | 6M | 3 | 2 | 33.4 MB | 87 ms |
+/// | 7M | 3 | 2 | 33.4 MB | 87 ms |
+/// | 8M | 2 | 2 | 22.3 MB | 71 ms |
+///
+/// 333k is the ceiling on both counts and cannot be reduced by this constant: it
+/// already renders the minimum of one super-frame, which at its rate is 1.44 s
+/// of signal against a 0.25 s target.  The floor is structural — a super-frame
+/// is the unit `DvbTSuperFrameMod` produces, and its four frames are what cycle
+/// the TPS frame number.
+///
+/// The cap itself binds only at the broadcast widths, where it delivers 0.145 s
+/// of native signal against the target — and that is fine, because playback is
+/// heavily non-realtime.  The app consumes at most `MAX_SAMPLES_PER_FRAME`
 /// (4096) per frame, so even the shortest buffer here takes several seconds of
 /// wall clock to play through once.
 pub const DVBT_MAX_BUFFER_SUPER_FRAMES: usize = 2;
@@ -174,11 +216,14 @@ pub const DVBT_MAX_BUFFER_SUPER_FRAMES: usize = 2;
 /// [`SIGNAL_THRESHOLD`]: orion_sdr::util::SIGNAL_THRESHOLD
 pub const DVBT_DISPLAY_RMS_DBFS: f32 = -18.0;
 
-/// Display reference level (dBFS, spectrum-scale top) preferred by DVB-T.
+/// Display reference level (dBFS, spectrum-scale top) at the **minimum**
+/// oversampling factor.  Use [`dvbt_preferred_ref_db`], which lifts this by the
+/// factor the mode actually renders at.
 ///
 /// COFDM sits 21 dB below its burst RMS.  DVB-T's power spreads over 1705 active
-/// carriers filling 83% of the display span, against COFDM's 64 filling 25% at
-/// the default fraction, so the same total RMS lands several dB lower per bin.
+/// carriers filling 83% of the display span at `L = 2`, against COFDM's 64
+/// filling 25% at the default fraction, so the same total RMS lands several dB
+/// lower per bin.
 ///
 /// **Set against a rendered capture, not derived.**  The analytic estimate came
 /// out at -44, which put the peak-hold trace hard against the top gridline;
@@ -189,6 +234,55 @@ pub const DVBT_DISPLAY_RMS_DBFS: f32 = -18.0;
 /// the shared `Defaults::DB_MAX`, and a source declaring no preference would
 /// draw its spectrum against whatever the last wideband source set.
 pub const DVBT_PREFERRED_REF_DB: f32 = -41.0;
+
+/// Display reference level (dBFS) for `bandwidth` — the base level lifted by
+/// `10·log10(L/2)`.
+///
+/// **The reference cannot be a constant once the oversampling factor varies**,
+/// and this is the correction that was missing when it started to: at 333k the
+/// peak-hold trace ran off the top of the spectrum pane.
+///
+/// The burst's *total* power is normalised to [`DVBT_DISPLAY_RMS_DBFS`] in every
+/// mode, but the spectrum draws power **per bin**, and the number of bins the
+/// band covers is `1.665/L` of the FFT — 83.25% at `L = 2` and 13.9% at `L = 12`.
+/// The same total spread over a sixth as many bins sits 7.8 dB higher in each of
+/// them.  So the trace climbs with the factor, by exactly the ratio this
+/// restates, and the scale has to climb with it or the narrow modes clip.
+///
+/// **Only the top moves.**  The noise floor is flat across the whole Nyquist and
+/// its total power is pinned by the C/N reference to a fixed multiple of the
+/// signal's, so its per-bin level is the same in every mode —
+/// [`DVBT_PREFERRED_FLOOR_DB`] stays put and the window simply grows taller at
+/// the narrow modes, from 49 dB to 57.  That is the honest picture: a
+/// concentrated band against an unchanged noise floor genuinely has more
+/// dynamic range to show.
+pub fn dvbt_preferred_ref_db(bandwidth: DvbTBandwidth) -> f32 {
+    let l = bandwidth.display_oversample() as f32;
+    DVBT_PREFERRED_REF_DB + 10.0 * (l / DVBT_MIN_DISPLAY_OVERSAMPLE as f32).log10()
+}
+
+/// Display floor (dBFS, spectrum-scale bottom) preferred by DVB-T.
+///
+/// **The one source that has to state a floor, and for the same reason it has to
+/// state a low reference.**  The shared floor is -80 dBFS, which suits a signal
+/// whose per-bin level sits near -42 — COFDM's, with its power concentrated into
+/// a quarter of the display span.  DVB-T's spreads over 83% of it, so the same
+/// burst RMS lands ~10 dB lower per bin (measured: -52 dBFS mean, -48 peak-hold),
+/// and the noise floor at the default 35 dB C/N lands near **-88 dBFS** — eight
+/// dB below the bottom of the scale.
+///
+/// The failure that hides behind is worth stating plainly, because it is the
+/// same shape as the one the centre bug had: nothing looks broken.  The band
+/// draws correctly, the C/N reads correctly, and the out-of-band region simply
+/// sits pinned at the floor — which is what a *noiseless* channel looks like.
+/// An operator who reached for the `C/N` row to see the noise move would find it
+/// did not.
+///
+/// -90 rather than -88, so the noise floor sits just clear of the bottom the way
+/// COFDM's does (-78 against -80) rather than riding on it.  That makes the scale
+/// 49 dB tall against COFDM's 44 — both comfortably inside what the spectrum,
+/// persistence and waterfall panes share.
+pub const DVBT_PREFERRED_FLOOR_DB: f32 = -90.0;
 
 /// Default signal-burst duration, in **wall-clock seconds**.
 pub const DVBT_DEFAULT_SIG_SECS: f32 = 10.0;
@@ -263,10 +357,70 @@ impl DvbTBandwidth {
         dvb_t_fs_for_bandwidth(self.occupied_hz())
     }
 
-    /// The rate the viewer displays at: [`DVBT_DISPLAY_OVERSAMPLE`] times the
-    /// waveform's own, so the 83%-occupied band fits the one-sided span.
+    /// Display oversampling factor for this mode.
+    ///
+    /// Not a constant, and not a free choice: it is the smallest integer that
+    /// makes the display Nyquist reach this mode's group span
+    /// ([`display_span_hz`](Self::display_span_hz)), floored at
+    /// [`DVBT_MIN_DISPLAY_OVERSAMPLE`] so the band cannot fold.  Written out
+    /// rather than computed, because the six answers are fixed by the standard's
+    /// own rate table and a reader deserves to see them:
+    ///
+    /// | mode | `fs` (S/s) | L | display Nyquist | span | fill |
+    /// | --- | ---: | ---: | ---: | ---: | ---: |
+    /// | 333k | 399 991 | 12 | 2 399 944 | 2 300 000 | 14.5% |
+    /// | 1M | 1 201 173 | 4 | 2 402 346 | 2 300 000 | 43.5% |
+    /// | 2M | 2 402 346 | 2 | 2 402 346 | 2 300 000 | 87.0% |
+    /// | 6M | 7 207 038 | 3 | 10 810 557 | 9 200 000 | 65.2% |
+    /// | 7M | 8 408 211 | 3 | 12 612 317 | 9 200 000 | 76.1% |
+    /// | 8M | 9 609 384 | 2 | 9 609 384 | 9 200 000 | 87.0% |
+    ///
+    /// `the_oversample_reaches_the_span` in `tests/dvbt.rs` re-derives every row
+    /// and fails if a span, a rate or a factor moves out from under the others.
+    ///
+    /// **Why the groups cannot share one span.**  The three broadcast rates are
+    /// exactly 6:7:8, so equalising their display *rates* would need factors of
+    /// 28, 24 and 21 — a 200 MS/s stream.  The narrowband three are luckier
+    /// (12/4/2 land within 0.1% of each other) but they cannot reach the
+    /// broadcast widths either.  Two groups is what integer oversampling allows.
+    pub const fn display_oversample(self) -> usize {
+        match self {
+            DvbTBandwidth::Bw333kHz => 12,
+            DvbTBandwidth::Bw1MHz => 4,
+            DvbTBandwidth::Bw2MHz => 2,
+            DvbTBandwidth::Bw6MHz => 3,
+            DvbTBandwidth::Bw7MHz => 3,
+            DvbTBandwidth::Bw8MHz => 2,
+        }
+    }
+
+    /// The width the viewer frames at zoom 1× — fixed across the mode's group,
+    /// so stepping the `Bandwidth` toggle changes the band's width on screen
+    /// rather than the axis under it.
+    ///
+    /// Always at or below the display Nyquist; the difference is headroom that
+    /// is sampled but never framed.  See [`DVBT_NARROW_SPAN_HZ`].
+    pub const fn display_span_hz(self) -> f32 {
+        match self {
+            DvbTBandwidth::Bw333kHz | DvbTBandwidth::Bw1MHz | DvbTBandwidth::Bw2MHz => {
+                DVBT_NARROW_SPAN_HZ
+            }
+            DvbTBandwidth::Bw6MHz | DvbTBandwidth::Bw7MHz | DvbTBandwidth::Bw8MHz => {
+                DVBT_BROADCAST_SPAN_HZ
+            }
+        }
+    }
+
+    /// The rate the viewer displays at: [`display_oversample`](Self::display_oversample)
+    /// times the waveform's own, so the 83%-occupied band fits the one-sided
+    /// span with room for the group's fixed width.
     pub fn display_fs(self) -> f32 {
-        self.fs() * DVBT_DISPLAY_OVERSAMPLE as f32
+        self.fs() * self.display_oversample() as f32
+    }
+
+    /// One-sided span of the display stream — all of it, framed or not.
+    pub fn display_nyquist_hz(self) -> f32 {
+        self.display_fs() / 2.0
     }
 
     /// Short label for the HUD / settings toggle.
@@ -505,6 +659,21 @@ impl DvbTMask {
             DvbTMask::Db80 => "80 dB",
         }
     }
+
+    /// The label as the top HUD renders it, with the unit closed up.
+    ///
+    /// The HUD separates fields by a single space and attaches units to their
+    /// numbers (`c/n 35dB`, `ref -38dB`), so a value carrying an internal space
+    /// would read as two fields.  The settings toggle and the config keep the
+    /// spaced form, which is what a row of options wants.
+    pub fn hud_label(self) -> &'static str {
+        match self {
+            DvbTMask::Off => "off",
+            DvbTMask::Db40 => "40dB",
+            DvbTMask::Db60 => "60dB",
+            DvbTMask::Db80 => "80dB",
+        }
+    }
 }
 
 /// Default taper: **off**, unlike COFDM's 1/4.
@@ -690,54 +859,68 @@ pub fn dvbt_buffer_super_frames(guard: GuardInterval, fs: f32) -> usize {
 
 // ── Band centre ─────────────────────────────────────────────────────────────
 
-/// Legal range for the band centre (Hz), given the **display** rate `fs_display`.
+/// Legal range for the band centre (Hz) in `bandwidth`'s mode.
 ///
-/// The occupied band is `dvb_t_occupied_bw(fs_display / 2)` wide — 83% of the
-/// waveform's own rate, which is 41.6% of the display rate — and is symmetric
-/// about the upconversion frequency, so the centre must keep both edges inside
-/// `0..fs_display/2`.  Unlike COFDM there is no narrower fallback band, so the
-/// window is tight: the centre may move by only ±4.2% of the display rate about
-/// its midpoint (±101 kHz at the 1 MHz mode).
+/// The occupied band is `dvb_t_occupied_bw(fs)` wide — 83% of the waveform's own
+/// rate — and is symmetric about the upconversion frequency, so the centre must
+/// keep both edges inside `0..display_nyquist`.  That is the *physical* bound:
+/// past it the real projection folds.  It is deliberately wider than the framed
+/// window, so the band can be tuned into the oversampling headroom rather than
+/// being pinned to the part of the spectrum that happens to be on screen.
 ///
-/// Returns a degenerate `(fs/4, fs/4)` if the band cannot fit at all, which
-/// cannot happen at [`DVBT_DISPLAY_OVERSAMPLE`] ≥ 2 but keeps the range
+/// **These take the mode, not a rate**, and that is a fix rather than a
+/// convenience: DVB-T carries two rates that differ by a per-mode factor, and
+/// every earlier signature here took "a rate" and left the caller to pick.  One
+/// caller picked wrong and drew the band hard against the left edge of the
+/// display with every number self-consistent.  A `DvbTBandwidth` cannot be
+/// passed wrongly.
+///
+/// Returns a degenerate midpoint pair if the band cannot fit at all, which
+/// [`DVBT_MIN_DISPLAY_OVERSAMPLE`] rules out but which keeps the range
 /// non-inverted for a pathological rate.
-pub fn dvbt_center_bounds(fs_display: f32) -> (f32, f32) {
-    let half = dvb_t_occupied_bw(fs_display / DVBT_DISPLAY_OVERSAMPLE as f32) / 2.0;
-    let (lo, hi) = (half, fs_display / 2.0 - half);
+pub fn dvbt_center_bounds(bandwidth: DvbTBandwidth) -> (f32, f32) {
+    let half = dvb_t_occupied_bw(bandwidth.fs()) / 2.0;
+    let nyquist = bandwidth.display_nyquist_hz();
+    let (lo, hi) = (half, nyquist - half);
     if lo <= hi {
         (lo, hi)
     } else {
-        (fs_display / 4.0, fs_display / 4.0)
+        (nyquist / 2.0, nyquist / 2.0)
     }
 }
 
-/// Default band centre (Hz) at the display rate: mid-display.
-pub fn dvbt_default_center_hz(fs_display: f32) -> f32 {
-    fs_display / 4.0
+/// Default band centre (Hz): the middle of the **framed** window, not of the
+/// display's full Nyquist.
+///
+/// The two are the same thing only when the oversampling lands exactly on the
+/// group span, which it does at 2M and 8M and nowhere else.  Centring on the
+/// Nyquist instead would put the band off to one side of a window it more than
+/// fits in — at 333k, 100 kHz above the frame's own centre.
+pub fn dvbt_default_center_hz(bandwidth: DvbTBandwidth) -> f32 {
+    bandwidth.display_span_hz() / 2.0
 }
 
 /// A requested band centre, clamped to [`dvbt_center_bounds`].  A non-finite
 /// request falls back to the default centre rather than poisoning the rotator.
-pub fn dvbt_clamp_center(center_hz: f32, fs_display: f32) -> f32 {
-    let (lo, hi) = dvbt_center_bounds(fs_display);
+pub fn dvbt_clamp_center(center_hz: f32, bandwidth: DvbTBandwidth) -> f32 {
+    let (lo, hi) = dvbt_center_bounds(bandwidth);
     if center_hz.is_finite() {
         center_hz.clamp(lo, hi)
     } else {
-        dvbt_default_center_hz(fs_display)
+        dvbt_default_center_hz(bandwidth).clamp(lo, hi)
     }
 }
 
 // ── HUD helper ──────────────────────────────────────────────────────────────
 
-/// Submode line for the top HUD, e.g. "  1M 1/32  QPSK 3/4  shp 1/4·60 dB".
+/// Submode line for the top HUD, e.g. " 1M 1/32 QPSK 3/4 shp 1/4·60dB".
 pub fn hud_submode_str(
     bandwidth: DvbTBandwidth,
     link: DvbTLinkParams,
     shaping: &DvbTShaping,
 ) -> String {
     let mut s = format!(
-        "  {} {}  {} {}",
+        " {} {} {} {}",
         bandwidth.label(),
         guard_label(link.guard),
         constellation_label(link.constellation),
@@ -745,9 +928,9 @@ pub fn hud_submode_str(
     );
     if shaping.enabled {
         s.push_str(&format!(
-            "  shp {}·{}",
+            " shp {}·{}",
             shaping.taper.label(),
-            shaping.mask.label()
+            shaping.mask.hud_label()
         ));
     }
     s
@@ -823,7 +1006,7 @@ impl DvbTSource {
             "DVB-T carries QPSK, 16-QAM or 64-QAM only"
         );
         let fs_display = bandwidth.display_fs();
-        let center_hz = dvbt_clamp_center(center_hz, fs_display);
+        let center_hz = dvbt_clamp_center(center_hz, bandwidth);
         let mut src = Self {
             sig_secs,
             gap_secs,
@@ -910,6 +1093,12 @@ impl DvbTSource {
         self.full_scale
     }
 
+    /// Length of the rendered display buffer, in complex samples.  Exposed for
+    /// the tests that pin the memory the oversampling factor costs.
+    pub fn buffer_len(&self) -> usize {
+        self.iq.len()
+    }
+
     /// TS payload bytes per frame in the rendered buffer.  The receiver is built
     /// with this: a stream demodulator trims each frame's recovered payload to a
     /// length it is told, so a mismatch silently truncates.
@@ -980,10 +1169,12 @@ impl DvbTSource {
             native.extend_from_slice(&modu.modulate(&payload).iq);
         }
 
-        // ×2 to the display rate.  See `DVBT_DISPLAY_OVERSAMPLE` for why this is
-        // not optional: at the waveform's own rate the band is wider than the
-        // one-sided display span and folds over itself.
-        let mut iq = interpolate_2x(&native);
+        // Up to the display rate.  See `DVBT_MIN_DISPLAY_OVERSAMPLE` for why any
+        // of this is needed — at the waveform's own rate the band is wider than
+        // the one-sided display span and folds over itself — and
+        // `DvbTBandwidth::display_oversample` for why the factor is per-mode.
+        let up = self.bandwidth.display_oversample();
+        let mut iq = interpolate(&native, up);
 
         // Display scaling, derived from what was actually rendered.  The target
         // is a real-projection RMS of `DVBT_DISPLAY_RMS_DBFS`, so `RMS_real =
@@ -1026,7 +1217,7 @@ impl DvbTSource {
         // requested C/N the one the *decoder* experiences — the number that
         // decides whether frames decode.  See `dvbt::decode` for the display
         // side, where the two factors of two cancel exactly.
-        let signal_power = mean_power_even(&iq);
+        let signal_power = mean_power_at(&iq, up);
         let fs_wave = self.waveform_fs();
         self.noise.set_reference(cn_reference(
             signal_power,
@@ -1071,7 +1262,7 @@ impl DvbTSource {
         center_hz: f32,
     ) {
         let fs_display = bandwidth.display_fs();
-        let center_hz = dvbt_clamp_center(center_hz, fs_display);
+        let center_hz = dvbt_clamp_center(center_hz, bandwidth);
         let rerender = bandwidth != self.bandwidth
             || link != self.link
             || shaping.effective() != self.effective_shaping();
@@ -1155,16 +1346,17 @@ impl SignalSource for DvbTSource {
     /// would report `CBER`/`IBER` of exactly zero at every C/N while the spectrum
     /// on screen was visibly noisy.
     fn next_samples(&mut self, n: usize) -> Vec<f32> {
+        let up = self.bandwidth.display_oversample();
         let mut out = Vec::with_capacity(n);
         self.last_iq.clear();
-        self.last_iq.reserve(n.div_ceil(DVBT_DISPLAY_OVERSAMPLE));
+        self.last_iq.reserve(n.div_ceil(up));
         let len = self.iq.len();
         let live = self.in_signal && len > 0;
         for _ in 0..n {
             // Silence gap (or empty buffer): noise only.  The cursor still
             // advances so the even/odd phase — and with it which samples the
             // decoder is handed — does not depend on the phase history.
-            let at_wave_sample = self.pos.is_multiple_of(DVBT_DISPLAY_OVERSAMPLE);
+            let at_wave_sample = self.pos.is_multiple_of(up);
             let mut c = if live {
                 self.iq[self.pos]
             } else {
@@ -1192,9 +1384,10 @@ impl SignalSource for DvbTSource {
         Some(self.in_signal)
     }
 
-    /// The **display** rate — [`DVBT_DISPLAY_OVERSAMPLE`] times the waveform's,
-    /// so the band fits the one-sided span.  `ViewApp::apply_source_sample_rate`
-    /// re-derives the display Nyquist from this.
+    /// The **display** rate — [`DvbTBandwidth::display_oversample`] times the
+    /// waveform's, so the band fits the one-sided span with room for the group's
+    /// fixed width.  `ViewApp::apply_source_sample_rate` re-derives the display
+    /// Nyquist from this.
     fn sample_rate(&self) -> f32 {
         self.bandwidth.display_fs()
     }
@@ -1202,24 +1395,28 @@ impl SignalSource for DvbTSource {
 
 // ── ×2 interpolation ────────────────────────────────────────────────────────
 
-/// Interpolates `native` to [`DVBT_DISPLAY_OVERSAMPLE`] times its rate, exactly
-/// preserving the input samples at even output indices.
+/// Interpolates `native` to `up` times its rate, exactly preserving the input
+/// samples at output indices that are multiples of `up`.
 ///
-/// **A half-band design, and the "exactly" is the point.**  A windowed sinc with
-/// its −6 dB cutoff at a quarter of the output rate has every even-offset tap
-/// zero except the centre one (`sinc(n/2) = 0` for even `n ≠ 0`, whatever the
-/// window), so scaling the prototype to unit centre tap makes `y[2k] == x[k]`
-/// bit-for-bit.  That is what lets the decoder read the waveform's own samples
-/// straight out of the display buffer instead of the source keeping two.
+/// **The "exactly" is the point, and it does not depend on `up` being two.**  A
+/// windowed sinc with its −6 dB cutoff at `1/(2·up)` of the output rate has
+/// `sinc(n/up) = 0` at every non-zero multiple of `up`, whatever the window — so
+/// scaling the prototype to unit centre tap makes `y[k·up] == x[k]`
+/// bit-for-bit.  At `up = 2` that is the familiar half-band identity; the same
+/// argument carries to 3, 4 and 12, which is what lets the six bandwidth modes
+/// oversample by different factors while the decoder still reads the waveform's
+/// own samples straight out of the display buffer.
 ///
-/// Only the odd outputs cost anything: the even ones are a copy, and the odd
-/// ones use just the odd-offset half of the prototype.  The transition band runs
-/// from the outermost active carrier (`±852/2048` of the input rate) to its
-/// image, which fixes the tap count through [`kaiser_num_taps`].
-fn interpolate_2x(native: &[C32]) -> Vec<C32> {
-    let up = DVBT_DISPLAY_OVERSAMPLE;
+/// Phase 0 is a copy and costs nothing; the other `up − 1` phases each use their
+/// own `1/up` share of the prototype, so the work per *output* sample is
+/// `n_taps / up` regardless of `up`.  The transition band runs from the
+/// outermost active carrier (`±852/2048` of the input rate) to its first image,
+/// which fixes the tap count through [`kaiser_num_taps`].
+fn interpolate(native: &[C32], up: usize) -> Vec<C32> {
+    debug_assert!(up >= 1, "oversampling factor must be positive");
     let mut out = vec![C32::default(); native.len() * up];
-    if native.is_empty() {
+    if native.is_empty() || up == 1 {
+        out.copy_from_slice(native);
         return out;
     }
     for (k, c) in native.iter().enumerate() {
@@ -1227,59 +1424,68 @@ fn interpolate_2x(native: &[C32]) -> Vec<C32> {
     }
 
     // Passband edge is the outermost active carrier as a fraction of the OUTPUT
-    // rate; the transition is symmetric about a quarter of it, so the width is
-    // twice the gap between the two.
-    let pass_norm = (DVB_T_KMAX as f32 / 2.0) / (DVB_T_N_FFT as f32 * up as f32);
-    let trans_norm = 2.0 * (0.25 - pass_norm);
+    // rate; the first image starts at `1/up` minus the same, so the transition
+    // is what is left between them and is centred on the `1/(2·up)` cutoff.
+    let up_f = up as f32;
+    let pass_norm = (DVB_T_KMAX as f32 / 2.0) / (DVB_T_N_FFT as f32 * up_f);
+    let cutoff = 0.5 / up_f;
+    let trans_norm = 1.0 / up_f - 2.0 * pass_norm;
     let n_taps = kaiser_num_taps(trans_norm, DVBT_INTERP_STOPBAND_DB);
-    let proto = kaiser_lowpass_taps(n_taps, 0.25, DVBT_INTERP_STOPBAND_DB);
+    let proto = kaiser_lowpass_taps(n_taps, cutoff, DVBT_INTERP_STOPBAND_DB);
     let mid = proto.len() / 2;
-    // Unit centre tap, so even outputs pass through unscaled and odd ones carry
-    // the same passband gain.
+    // Unit centre tap, so phase-0 outputs pass through unscaled and the rest
+    // carry the same passband gain.
     let scale = if proto[mid].abs() > f32::EPSILON {
         1.0 / proto[mid]
     } else {
         1.0
     };
 
-    // The odd-phase branch, as (input offset, tap) pairs: output `2k+1` reads
-    // `x[k - r]` through `proto[mid + 2r + 1]`.
-    let odd: Vec<(isize, f32)> = (0..proto.len())
-        .filter(|t| (*t as isize - mid as isize) % 2 != 0)
-        .map(|t| {
-            let r = (t as isize - mid as isize - 1) / 2;
-            (r, proto[t] * scale)
-        })
-        .collect();
-    let (r_min, r_max) = (
-        odd.iter().map(|(r, _)| *r).min().unwrap_or(0),
-        odd.iter().map(|(r, _)| *r).max().unwrap_or(0),
-    );
-
-    // Interior first, without bounds checks: the buffer is up to 1.4M samples
-    // and this is the only loop in `render` proportional to both length and tap
-    // count.
-    let lo = r_max.max(0) as usize;
-    let hi = native.len().saturating_sub(r_min.unsigned_abs());
-    for k in lo..hi {
-        let mut acc = C32::default();
-        for (r, tap) in &odd {
-            acc += native[(k as isize - r) as usize] * *tap;
-        }
-        out[k * up + 1] = acc;
-    }
-    // Edges, where the taps reach outside the buffer (treated as zero).  The
-    // loop point is a discontinuity anyway; this makes the first and last few
-    // samples slightly soft rather than wrong.
-    for k in (0..lo).chain(hi..native.len()) {
-        let mut acc = C32::default();
-        for (r, tap) in &odd {
-            let idx = k as isize - r;
-            if idx >= 0 && (idx as usize) < native.len() {
-                acc += native[idx as usize] * *tap;
+    // One branch per non-zero phase, as (input offset, tap) pairs: output
+    // `k·up + p` reads `x[k - r]` through `proto[mid + p + r·up]`.
+    let branch = |p: usize| -> Vec<(isize, f32)> {
+        let mid = mid as isize;
+        (0..proto.len() as isize)
+            .filter(|t| (t - mid - p as isize).rem_euclid(up as isize) == 0)
+            .map(|t| {
+                (
+                    (t - mid - p as isize) / up as isize,
+                    proto[t as usize] * scale,
+                )
+            })
+            .collect()
+    };
+    for p in 1..up {
+        let taps = branch(p);
+        let (r_min, r_max) = (
+            taps.iter().map(|(r, _)| *r).min().unwrap_or(0),
+            taps.iter().map(|(r, _)| *r).max().unwrap_or(0),
+        );
+        // Interior first, without bounds checks: the buffer runs to millions of
+        // samples and this is the only loop in `render` proportional to both
+        // length and tap count.
+        let lo = r_max.max(0) as usize;
+        let hi = native.len().saturating_sub(r_min.unsigned_abs());
+        for k in lo..hi {
+            let mut acc = C32::default();
+            for (r, tap) in &taps {
+                acc += native[(k as isize - r) as usize] * *tap;
             }
+            out[k * up + p] = acc;
         }
-        out[k * up + 1] = acc;
+        // Edges, where the taps reach outside the buffer (treated as zero).  The
+        // loop point is a discontinuity anyway; this makes the first and last few
+        // samples slightly soft rather than wrong.
+        for k in (0..lo).chain(hi..native.len()) {
+            let mut acc = C32::default();
+            for (r, tap) in &taps {
+                let idx = k as isize - r;
+                if idx >= 0 && (idx as usize) < native.len() {
+                    acc += native[idx as usize] * *tap;
+                }
+            }
+            out[k * up + p] = acc;
+        }
     }
     out
 }
@@ -1291,12 +1497,12 @@ fn display_target_rms() -> f32 {
     10f32.powf(DVBT_DISPLAY_RMS_DBFS / 20.0)
 }
 
-/// Mean power of the even-indexed samples — the waveform's own, and so the ones
-/// the decoder reads.
-fn mean_power_even(iq: &[C32]) -> f32 {
+/// Mean power of every `up`-th sample — the waveform's own, and so the ones the
+/// decoder reads.
+fn mean_power_at(iq: &[C32], up: usize) -> f32 {
     let mut sum = 0.0f32;
     let mut count = 0usize;
-    for c in iq.iter().step_by(DVBT_DISPLAY_OVERSAMPLE) {
+    for c in iq.iter().step_by(up.max(1)) {
         sum += c.norm_sqr();
         count += 1;
     }

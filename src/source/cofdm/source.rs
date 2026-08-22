@@ -492,6 +492,21 @@ impl CofdmMask {
             CofdmMask::Db80 => "80 dB",
         }
     }
+
+    /// The label as the top HUD renders it, with the unit closed up.
+    ///
+    /// The HUD separates fields by a single space and attaches units to their
+    /// numbers (`c/n 35dB`, `ref -38dB`), so a value carrying an internal space
+    /// would read as two fields.  The settings toggle and the config keep the
+    /// spaced form, which is what a row of options wants.
+    pub fn hud_label(self) -> &'static str {
+        match self {
+            CofdmMask::Off => "off",
+            CofdmMask::Db40 => "40dB",
+            CofdmMask::Db60 => "60dB",
+            CofdmMask::Db80 => "80dB",
+        }
+    }
 }
 
 /// Default taper and mask when shaping is enabled.
@@ -657,16 +672,16 @@ pub fn cofdm_link_config(shaping: &CofdmShaping, fs: f32) -> (OfdmConfig, OfdmPr
 // ── COFDM HUD helper ──────────────────────────────────────────────────────────
 
 /// Submode line for the top HUD: the bandwidth fraction, plus a compact shaping
-/// tag when shaping is on, e.g. "  bw 1/4  shp 1/4·60 dB".  The bandwidth label
+/// tag when shaping is on, e.g. " bw 1/4 shp 1/4·60dB".  The bandwidth label
 /// names the *fraction*, which no longer implies the occupied band once the edge
 /// guard is overridden — the Di bar's BW readout is authoritative there.
 pub fn hud_submode_str(fraction: CofdmBwFraction, shaping: &CofdmShaping) -> String {
-    let mut s = format!("  bw {}", fraction.label());
+    let mut s = format!(" bw {}", fraction.label());
     if shaping.enabled {
         s.push_str(&format!(
-            "  shp {}·{}",
+            " shp {}·{}",
             shaping.taper.label(),
-            shaping.mask.label()
+            shaping.mask.hud_label()
         ));
     }
     s

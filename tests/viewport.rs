@@ -35,6 +35,99 @@ fn a_fresh_viewport_is_full_span() {
     assert!(v.is_full());
 }
 
+// ── The display span: what zoom 1x means ───────────────────────────────────
+
+/// A narrowed display span becomes 1x, and the Nyquist above it stays real.
+///
+/// **The separation DVB-T forced.**  Its band is a fixed 83.25% of the
+/// waveform's rate and the display rate is an integer multiple of that, so at
+/// zoom 1x the band fills `1.665 / L` of the window — never more than 83.25%,
+/// and less at every factor above the minimum.  Holding one width across a group
+/// of modes therefore needs 1x to mean something other than "all of it".
+#[test]
+fn a_narrowed_display_span_is_what_zoom_1x_shows() {
+    let mut v = FreqView::new(WB_NYQUIST);
+    v.set_display_span(WB_NYQUIST * 0.75);
+    v.reset();
+
+    assert_eq!(v.display_span(), WB_NYQUIST * 0.75);
+    assert_eq!(v.span_hz, WB_NYQUIST * 0.75);
+    assert_eq!(v.zoom_ratio(), 1.0, "the narrowed width is 1x");
+    assert!(v.is_full());
+    // The data range is untouched: the headroom is spectrum, not a wall.
+    assert_eq!(v.nyquist, WB_NYQUIST);
+    assert_eq!(v.center_hz, WB_NYQUIST * 0.375);
+
+    // Zoom is measured against the framed width, and cannot open past it.
+    v.set_zoom_ratio(2.0);
+    assert_eq!(v.span_hz, WB_NYQUIST * 0.375);
+    v.set_zoom_ratio(0.5);
+    assert_eq!(v.span_hz, WB_NYQUIST * 0.75, "1x is the floor");
+    assert_eq!(v.zoom_ratio(), 1.0);
+    // ...and the maximum ratio shrinks with it, so the `Zoom` row's bound and
+    // the keyboard's still agree.
+    assert_eq!(v.max_zoom_ratio(), WB_NYQUIST * 0.75 / MIN_SPAN_HZ);
+}
+
+/// Panning still reaches the headroom above a narrowed span.
+///
+/// The half that is easy to break in the other direction: if the pan bound moved
+/// with the frame, the oversampled spectrum a source carries above its framed
+/// width would become unreachable — sampled, drawn nowhere, and impossible to
+/// look at.
+#[test]
+fn a_narrowed_span_still_pans_into_the_headroom() {
+    let mut v = FreqView::new(WB_NYQUIST);
+    v.set_display_span(WB_NYQUIST * 0.5);
+    v.reset();
+    assert!(v.hi() < WB_NYQUIST);
+
+    v.pan(WB_NYQUIST, PanLimit::Band);
+    assert!(
+        v.hi() > WB_NYQUIST * 0.99,
+        "a pan should reach the top of the real spectrum: hi {}",
+        v.hi()
+    );
+    assert!(v.hi() <= WB_NYQUIST + 1.0, "but not past it under Band");
+}
+
+/// A display span belongs to the source that asked for it.
+///
+/// `set_nyquist` restores 1x to the full width, so a narrowed frame cannot
+/// outlive the switch that set it — the same rule `preferred_ref_db` follows,
+/// and for the same reason: five of the six sources state no preference and must
+/// not inherit the sixth's.
+#[test]
+fn a_display_span_does_not_outlive_a_rate_change() {
+    let mut v = FreqView::new(WB_NYQUIST);
+    v.set_display_span(WB_NYQUIST * 0.5);
+    assert_eq!(v.display_span(), WB_NYQUIST * 0.5);
+
+    v.set_nyquist(NB_NYQUIST);
+    assert_eq!(
+        v.display_span(),
+        NB_NYQUIST,
+        "a source that states nothing gets the whole span back"
+    );
+    assert_eq!(v.zoom_ratio(), 1.0);
+}
+
+/// A span wider than the Nyquist is clamped, not honoured.
+#[test]
+fn a_display_span_cannot_exceed_the_spectrum() {
+    let mut v = FreqView::new(NB_NYQUIST);
+    v.set_display_span(NB_NYQUIST * 4.0);
+    assert_eq!(v.display_span(), NB_NYQUIST);
+    v.set_display_span(f32::NAN);
+    assert_eq!(
+        v.display_span(),
+        NB_NYQUIST,
+        "a non-finite width is ignored"
+    );
+    v.set_display_span(0.0);
+    assert_eq!(v.display_span(), MIN_SPAN_HZ, "and zero is floored");
+}
+
 #[test]
 fn the_zoom_round_trip_is_stable() {
     // The property the row↔viewport sync rests on.  `zoom_ratio` rounds to two

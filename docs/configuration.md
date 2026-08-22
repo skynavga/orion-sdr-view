@@ -87,6 +87,13 @@ ignored rather than refused.
 
 - **`cn_db`**, on every source — [impairment.md](impairment.md)
 - **`display.zoom`** — [viewport.md](viewport.md)
+- **`display.db_min` / `display.db_max`** — the spectrum scale's floor and top. Both are
+  **restated by the source on a switch**, so a configured pair is the scale the app opens
+  against rather than one that survives every selection. A wideband band whose per-bin level
+  sits far from the shared scale would otherwise be drawn against one meant for a different
+  waveform: COFDM asks for a `-36` top, and DVB-T for `-41` over a `-90` floor, because its
+  power spreads over 83% of the display span and its noise lands ~36 dB under its own trace.
+  `[` and `]` shift both together at any time.
 - **`sources.cofdm.*`** — [cofdm.md](cofdm.md), which covers band placement, burst timing and
   the three spectral-shaping levers
 - **`capture.*`** — [capture.md](capture.md)

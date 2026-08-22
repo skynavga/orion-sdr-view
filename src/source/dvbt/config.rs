@@ -16,10 +16,17 @@ use crate::source::dvbt::{
 
 #[derive(Debug, Deserialize)]
 pub struct DvbTConfig {
-    /// Band centre (Hz).  Absent means Nyquist/2 (`fs / 4`), which puts the band
-    /// mid-display.  Clamped to the range in which the whole occupied band fits
-    /// inside `0..Nyquist` — a tighter range than COFDM's, since DVB-T's
-    /// occupancy is fixed at 1705/2048 of `fs` and has no narrower fallback.
+    /// Band centre (Hz).  Absent means the middle of the *framed* window — half
+    /// the bandwidth group's display span, so 1150000 at 333k/1M/2M and 4600000
+    /// at 6M/7M/8M.
+    ///
+    /// Clamped to the range in which the whole occupied band fits inside
+    /// `0..Nyquist`, which is the physical bound rather than the framed one: the
+    /// band may be tuned into the oversampling headroom above the window the
+    /// source opens at.  How much room that leaves depends on the mode — the
+    /// occupancy is a fixed 1705/2048 of `fs` with no narrower fallback, so at 2M
+    /// and 8M it is a couple of percent, while at 333k the band can be tuned
+    /// right across the display.
     pub center_hz: Option<f32>,
     /// Channel bandwidth: "333k", "1M", "2M", "6M", "7M", "8M".
     ///
@@ -58,19 +65,18 @@ impl crate::config::ViewConfig {
     /// bandwidth's rate.  Derived from `dvbt_bandwidth` rather than from a
     /// constant, so configuring only the bandwidth still centres the band.
     pub fn dvbt_center_hz(&self) -> f32 {
-        // **The display rate, not the waveform's.**  The centre is a position on
-        // the frequency axis the viewer draws, and that axis runs to
-        // `display_fs / 2`.  Passing the waveform's rate here computed the
-        // bounds for a half-width window: the default landed below the real
-        // lower bound, the source clamped it up, and the band drew hard against
-        // the left edge of the display instead of centred — a wrong picture with
-        // nothing to say so.
-        let fs = self.dvbt_bandwidth().display_fs();
-        let (lo, hi) = dvbt_center_bounds(fs);
+        // **The mode, not a rate.**  These used to take "a rate" and this call
+        // site passed the waveform's where the display's was wanted: the default
+        // landed below the real lower bound, the source clamped it up, and the
+        // band drew hard against the left edge of the display instead of centred
+        // — a wrong picture with nothing to say so.  The signature now takes the
+        // one thing that cannot be passed wrongly.
+        let bw = self.dvbt_bandwidth();
+        let (lo, hi) = dvbt_center_bounds(bw);
         self.dvbt()
             .and_then(|c| c.center_hz)
             .filter(|v| v.is_finite())
-            .unwrap_or_else(|| dvbt_default_center_hz(fs))
+            .unwrap_or_else(|| dvbt_default_center_hz(bw))
             .clamp(lo, hi)
     }
     pub fn dvbt_guard(&self) -> GuardInterval {

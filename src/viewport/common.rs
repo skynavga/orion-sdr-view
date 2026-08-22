@@ -79,6 +79,11 @@ pub struct FreqView {
     pub center_hz: f32,
     pub span_hz: f32,
     pub nyquist: f32,
+    /// The span that counts as zoom 1x — the width the display is *for*, which
+    /// is not always the width it *has*.  See [`set_display_span`].
+    ///
+    /// [`set_display_span`]: Self::set_display_span
+    display_span: f32,
 }
 
 impl FreqView {
@@ -87,7 +92,40 @@ impl FreqView {
             center_hz: nyquist / 2.0,
             span_hz: nyquist,
             nyquist,
+            display_span: nyquist,
         }
+    }
+
+    /// The span zoom 1x shows: `nyquist` unless a source has narrowed it.
+    pub fn display_span(&self) -> f32 {
+        self.display_span
+    }
+
+    /// Narrow what zoom 1x means to `hz`, leaving the Nyquist alone.
+    ///
+    /// **Zoom 1x used to be Nyquist by definition**, and for five of the six
+    /// sources it still is — this is a no-op at `hz >= nyquist`.  DVB-T is what
+    /// separates the two, and the separation is forced by arithmetic rather than
+    /// chosen: its band is a fixed 83.25% of the *waveform's* rate, and the
+    /// display rate is an integer multiple of that, so at zoom 1x the band can
+    /// fill at most `1.665 / oversample` of the window — 83.25% at the minimum
+    /// factor of two, and less at every larger one.  Its six bandwidth modes need
+    /// factors from 2 to 12 to reach a common display width, so tying 1x to
+    /// Nyquist would rescale the frequency axis on every bandwidth press and
+    /// leave the narrow modes as slivers.
+    ///
+    /// The Nyquist above `display_span` is real spectrum that is simply never
+    /// framed — the same headroom a receiver has when its tuner samples wider
+    /// than the window it draws.  Everything that *indexes data* still works in
+    /// `0..nyquist`: bin mapping, texture UVs, and the pan bound are untouched,
+    /// so panning can still reach the headroom and the out-of-band wash still
+    /// knows where the band really ends.
+    pub fn set_display_span(&mut self, hz: f32) {
+        if !hz.is_finite() {
+            return;
+        }
+        self.display_span = hz.clamp(MIN_SPAN_HZ.min(self.nyquist), self.nyquist);
+        self.span_hz = self.span_hz.min(self.display_span);
     }
 
     /// Low frequency edge of the window.  **May be negative** when the view has
@@ -179,10 +217,11 @@ impl FreqView {
         self.center_hz = (self.center_hz + delta_hz).clamp(lo, hi);
     }
 
-    /// Reset to full span (show all frequencies 0..nyquist).
+    /// Reset to full span — `0..display_span`, which is `0..nyquist` unless a
+    /// source has narrowed what 1x means.
     pub fn reset(&mut self) {
-        self.span_hz = self.nyquist;
-        self.center_hz = self.nyquist / 2.0;
+        self.span_hz = self.display_span;
+        self.center_hz = self.display_span / 2.0;
     }
 
     /// Change the Nyquist limit and re-validate span/center against the new
@@ -194,21 +233,28 @@ impl FreqView {
     /// across a Nyquist change would land the new source somewhere neither the
     /// user nor the arithmetic chose.  Re-seating inside the band is the honest
     /// default, and `←` immediately puts it back.
+    /// Also **restores zoom 1x to Nyquist**, so a narrowed display span belongs
+    /// to the source that asked for it and never outlives it.  A caller with a
+    /// preference re-states it with [`set_display_span`](Self::set_display_span)
+    /// immediately after; one without gets the historical behaviour by doing
+    /// nothing, which is the property that keeps five of the six sources out of
+    /// this.
     pub fn set_nyquist(&mut self, nyquist: f32) {
         self.nyquist = nyquist;
+        self.display_span = nyquist;
         self.span_hz = self.span_hz.clamp(MIN_SPAN_HZ.min(nyquist), nyquist);
         let (lo, hi) = self.center_bounds(PanLimit::Band);
         self.center_hz = self.center_hz.clamp(lo, hi);
     }
 
-    /// Reframe to an explicit center + span, clamped to the current nyquist.
+    /// Reframe to an explicit center + span, clamped to the display span.
     /// Used to auto-frame a wideband source on switch.
     ///
     /// [`PanLimit::Band`] for the same reason as [`set_nyquist`](Self::set_nyquist):
     /// auto-framing is the app choosing a view, and it should never choose one
     /// that starts off the end of the band.
     pub fn reframe(&mut self, center_hz: f32, span_hz: f32) {
-        self.span_hz = span_hz.clamp(MIN_SPAN_HZ.min(self.nyquist), self.nyquist);
+        self.span_hz = span_hz.clamp(MIN_SPAN_HZ.min(self.display_span), self.display_span);
         let (lo, hi) = self.center_bounds(PanLimit::Band);
         self.center_hz = center_hz.clamp(lo, hi);
     }
@@ -218,9 +264,12 @@ impl FreqView {
         (hz / grid).round() * grid
     }
 
-    /// Current zoom ratio (nyquist / span_hz), rounded to two decimal places.
+    /// Current zoom ratio (`display_span / span_hz`), rounded to two decimal
+    /// places.  Against the display span rather than the Nyquist, so 1x means
+    /// "the view this source is framed for" — identical for every source that
+    /// has not narrowed one.
     pub fn zoom_ratio(&self) -> f32 {
-        (self.nyquist / self.span_hz * 100.0).round() / 100.0
+        (self.display_span / self.span_hz * 100.0).round() / 100.0
     }
 
     /// Largest zoom ratio this viewport allows — the bound both [`step_zoom`]
@@ -230,7 +279,7 @@ impl FreqView {
     /// [`step_zoom`]: Self::step_zoom
     /// [`set_zoom_ratio`]: Self::set_zoom_ratio
     pub fn max_zoom_ratio(&self) -> f32 {
-        (self.nyquist / MIN_SPAN_HZ).max(1.0)
+        (self.display_span / MIN_SPAN_HZ).max(1.0)
     }
 
     /// Set the zoom ratio directly (1.0 = full span), keeping the center where
@@ -249,7 +298,7 @@ impl FreqView {
             return;
         }
         let ratio = ratio.clamp(1.0, self.max_zoom_ratio());
-        self.span_hz = self.nyquist / ratio;
+        self.span_hz = self.display_span / ratio;
         let (lo, hi) = self.center_bounds(PanLimit::Overscan);
         self.center_hz = self.center_hz.clamp(lo, hi);
     }
@@ -273,6 +322,6 @@ impl FreqView {
 
     /// Returns true if the view is showing the full spectrum (no zoom/pan).
     pub fn is_full(&self) -> bool {
-        (self.span_hz - self.nyquist).abs() < 1.0
+        (self.span_hz - self.display_span).abs() < 1.0
     }
 }
