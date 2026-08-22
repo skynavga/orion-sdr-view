@@ -1,7 +1,7 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Integration tests for the COFDM instrumentation model: value formatting,
+//! Integration tests for the OFDM instrumentation model: value formatting,
 //! provenance rendering, the fixed nine-column panel grid, the prioritised
 //! Di-bar line, and the simulated metrics' response to measured C/N.
 //!
@@ -27,12 +27,12 @@ fn center() -> f32 {
 
 /// Facts for the synthetic source at a given bandwidth fraction and C/N,
 /// built the same way the provider builds them.
-fn facts_for(fraction: CofdmBwFraction, cn_db: f32) -> CofdmFacts {
+fn facts_for(fraction: CofdmBwFraction, cn_db: f32) -> OfdmFacts {
     let guard = CofdmShaping::default_for(fraction)
         .effective(fraction, center(), COFDM_DEFAULT_FS)
         .edge_guard;
     let (constellation, bits_per_symbol, inner_code_rate) = cofdm_mcs_facts();
-    CofdmFacts {
+    OfdmFacts {
         center_hz: center(),
         bandwidth_hz: cofdm_occupied_bw(COFDM_DEFAULT_FS, guard),
         // Raw amplitudes against the source's own full-scale reference.
@@ -54,12 +54,12 @@ fn facts_for(fraction: CofdmBwFraction, cn_db: f32) -> CofdmFacts {
     }
 }
 
-fn facts() -> CofdmFacts {
+fn facts() -> OfdmFacts {
     facts_for(CofdmBwFraction::OneQuarter, 28.5)
 }
 
-fn instrument() -> CofdmInstrument {
-    CofdmInstrument::from_facts(&facts())
+fn instrument() -> OfdmInstrument {
+    OfdmInstrument::from_facts(&facts())
 }
 
 /// Character-count measurer, standing in for the binary's glyph measurer.
@@ -68,7 +68,7 @@ fn chars(s: &str) -> f32 {
 }
 
 /// Every label the panel renders, in row order.
-fn all_labels(inst: &CofdmInstrument) -> Vec<String> {
+fn all_labels(inst: &OfdmInstrument) -> Vec<String> {
     let mut out = Vec::new();
     for row in inst.panel_rows() {
         out.push(row.section.to_owned());
@@ -243,7 +243,7 @@ fn rows_alternate_label_and_value_with_no_unlabelled_cell() {
 
 #[test]
 fn every_column_is_its_widest_content_plus_two() {
-    let rows = CofdmInstrument::layout_reference().panel_rows();
+    let rows = OfdmInstrument::layout_reference().panel_rows();
     let widths = column_widths(&rows, chars);
     let mut widest = [0.0_f32; COLUMNS];
     for row in &rows {
@@ -283,7 +283,7 @@ fn no_cell_overflows_its_column() {
 fn the_maximum_error_count_still_fits() {
     let mut f = facts();
     f.error_count = 999;
-    let inst = CofdmInstrument::from_facts(&f);
+    let inst = OfdmInstrument::from_facts(&f);
     let widths = reference_column_widths(chars);
     let rows = inst.panel_rows();
     let errors = rows.iter().find(|r| r.section == "Errors").unwrap();
@@ -299,7 +299,7 @@ fn the_grid_does_not_reflow_as_values_change() {
     // and the panel jitters as the signal moves.
     let baseline = reference_column_widths(chars);
     for cn in [5.0_f32, 17.0, 28.5, 38.0] {
-        let inst = CofdmInstrument::from_facts(&facts_for(CofdmBwFraction::OneQuarter, cn));
+        let inst = OfdmInstrument::from_facts(&facts_for(CofdmBwFraction::OneQuarter, cn));
         for row in inst.panel_rows() {
             for (i, cell) in row.cells.iter().enumerate() {
                 assert!(
@@ -451,7 +451,7 @@ fn the_bit_rate_matches_a_hand_computed_value_at_every_fraction() {
         let f = facts_for(fraction, 28.5);
         let expect =
             f.data_carriers as f64 * bits_per_symbol as f64 * (k as f64 / n as f64) * symbol_rate;
-        let got = CofdmInstrument::from_facts(&f).bitrate_bps.value.unwrap();
+        let got = OfdmInstrument::from_facts(&f).bitrate_bps.value.unwrap();
         assert!(
             (got - expect).abs() < 1.0,
             "{}: expected {expect} bps, got {got}",
@@ -465,8 +465,8 @@ fn the_bit_rate_matches_a_hand_computed_value_at_every_fraction() {
 
 #[test]
 fn the_bit_rate_scales_with_occupied_bandwidth() {
-    let narrow = CofdmInstrument::from_facts(&facts_for(CofdmBwFraction::OneEighth, 28.5));
-    let wide = CofdmInstrument::from_facts(&facts_for(CofdmBwFraction::SevenEighths, 28.5));
+    let narrow = OfdmInstrument::from_facts(&facts_for(CofdmBwFraction::OneEighth, 28.5));
+    let wide = OfdmInstrument::from_facts(&facts_for(CofdmBwFraction::SevenEighths, 28.5));
     assert!(wide.bitrate_bps.value.unwrap() > narrow.bitrate_bps.value.unwrap() * 5.0);
 }
 
@@ -476,7 +476,7 @@ fn the_bit_rate_scales_with_occupied_bandwidth() {
 fn the_di_line_never_exceeds_its_budget() {
     let inst = instrument();
     for budget in 20..=120 {
-        let line = inst.di_bar_str(budget);
+        let line = inst.di_bar_str("COFDM", budget);
         assert!(
             line.chars().count() <= budget.max(line_head_len(&inst)),
             "budget {budget}: {line:?} is {} chars",
@@ -486,14 +486,14 @@ fn the_di_line_never_exceeds_its_budget() {
 }
 
 /// The head (`COFDM ctr bw`) is never dropped — it is what identifies the line.
-fn line_head_len(inst: &CofdmInstrument) -> usize {
-    inst.di_bar_str(0).chars().count()
+fn line_head_len(inst: &OfdmInstrument) -> usize {
+    inst.di_bar_str("COFDM", 0).chars().count()
 }
 
 #[test]
 fn the_di_line_drops_fields_in_priority_order() {
     let inst = instrument();
-    let wide = inst.di_bar_str(120);
+    let wide = inst.di_bar_str("COFDM", 120);
     // Highest priority first: C/N, MER, CBER, locks, Δf, level.
     for f in ["C/N", "MER", "CBER", "\u{394}f", "lvl", "lck"] {
         assert!(wide.contains(f), "wide line missing {f}: {wide}");
@@ -501,7 +501,7 @@ fn the_di_line_drops_fields_in_priority_order() {
     // Narrowing drops from the tail, never from the head.
     let mut last_len = usize::MAX;
     for budget in (30..=120).rev().step_by(5) {
-        let line = inst.di_bar_str(budget);
+        let line = inst.di_bar_str("COFDM", budget);
         assert!(line.starts_with("COFDM"), "head dropped at {budget}");
         assert!(
             line.chars().count() <= last_len,
@@ -522,11 +522,11 @@ fn the_di_line_drops_fields_in_priority_order() {
 fn the_di_line_badges_simulated_fields() {
     let inst = instrument();
     // MER is simulated, so any line carrying it must own up.
-    let with_mer = inst.di_bar_str(120);
+    let with_mer = inst.di_bar_str("COFDM", 120);
     assert!(with_mer.contains("MER"));
     assert!(with_mer.ends_with(SIM_BADGE), "no SIM badge: {with_mer}");
     // A line short enough to carry only measured fields must not.
-    let head_only = inst.di_bar_str(34);
+    let head_only = inst.di_bar_str("COFDM", 34);
     assert!(
         !head_only.contains(SIM_BADGE),
         "spurious badge: {head_only}"
@@ -540,8 +540,8 @@ fn the_simulated_metrics_track_measured_cn() {
     // The testable half of "the panel is live": every simulated field is
     // derived from the real C/N, so changing Noise amp moves the whole panel.
     // The paint side is bin-only and falls to the manual pass.
-    let clean = CofdmInstrument::from_facts(&facts_for(CofdmBwFraction::OneQuarter, 34.0));
-    let noisy = CofdmInstrument::from_facts(&facts_for(CofdmBwFraction::OneQuarter, 18.0));
+    let clean = OfdmInstrument::from_facts(&facts_for(CofdmBwFraction::OneQuarter, 34.0));
+    let noisy = OfdmInstrument::from_facts(&facts_for(CofdmBwFraction::OneQuarter, 18.0));
 
     assert!(clean.mer_db.value.unwrap() > noisy.mer_db.value.unwrap());
     assert!(clean.evm_pct.value.unwrap() < noisy.evm_pct.value.unwrap());
@@ -560,7 +560,7 @@ fn the_inner_code_improves_on_the_channel_ber() {
     // IBER sits below CBER wherever the inner code is doing anything at all —
     // the rungs must not be reported the same way round.
     for cn in [20.0_f32, 25.0, 30.0] {
-        let inst = CofdmInstrument::from_facts(&facts_for(CofdmBwFraction::OneQuarter, cn));
+        let inst = OfdmInstrument::from_facts(&facts_for(CofdmBwFraction::OneQuarter, cn));
         let (cber, iber) = (inst.cber.value.unwrap(), inst.iber.value.unwrap());
         assert!(iber <= cber, "C/N {cn}: IBER {iber} above CBER {cber}");
     }
@@ -568,8 +568,8 @@ fn the_inner_code_improves_on_the_channel_ber() {
 
 #[test]
 fn locks_drop_when_the_link_fails() {
-    let dead = CofdmInstrument::from_facts(&facts_for(CofdmBwFraction::OneQuarter, 0.0));
-    let good = CofdmInstrument::from_facts(&facts_for(CofdmBwFraction::OneQuarter, 34.0));
+    let dead = OfdmInstrument::from_facts(&facts_for(CofdmBwFraction::OneQuarter, 0.0));
+    let good = OfdmInstrument::from_facts(&facts_for(CofdmBwFraction::OneQuarter, 34.0));
     assert_eq!(dead.carrier_lock.value, Some(false));
     assert_eq!(dead.fec_lock.value, Some(false));
     assert_eq!(good.carrier_lock.value, Some(true));
@@ -589,8 +589,8 @@ fn the_di_line_fields_hold_their_positions_across_a_cn_sweep() {
     for cn in [18.0_f32, 20.0, 24.0, 28.0, 31.0, 34.0, 36.0] {
         // Wide enough for every field plus the badge — the `lck` label pushed
         // the full line past 100.
-        let line = CofdmInstrument::from_facts(&facts_for(CofdmBwFraction::OneQuarter, cn))
-            .di_bar_str(110);
+        let line = OfdmInstrument::from_facts(&facts_for(CofdmBwFraction::OneQuarter, cn))
+            .di_bar_str("COFDM", 110);
         // Record where each label starts.  Identical across the sweep means
         // nothing moved.
         let offsets: Vec<Option<usize>> =
@@ -616,7 +616,7 @@ fn a_simulated_error_rate_never_claims_exactly_zero() {
     // `0.0E0` means "no errors observed", which a simulation cannot claim —
     // the deep tail of the error function underflows to zero in f32.
     for cn in [28.0_f32, 34.0, 40.0, 60.0] {
-        let inst = CofdmInstrument::from_facts(&facts_for(CofdmBwFraction::OneQuarter, cn));
+        let inst = OfdmInstrument::from_facts(&facts_for(CofdmBwFraction::OneQuarter, cn));
         for (name, m) in [
             ("CBER", &inst.cber),
             ("IBER", &inst.iber),
@@ -638,7 +638,7 @@ fn the_link_reads_healthy_at_every_bandwidth_on_default_settings() {
     // (1/8); nothing in it may read as broken.
     for cn in [17.5_f32, 20.0, 24.0, 28.0, 32.0, 36.0] {
         for &fraction in CofdmBwFraction::ALL {
-            let inst = CofdmInstrument::from_facts(&facts_for(fraction, cn));
+            let inst = OfdmInstrument::from_facts(&facts_for(fraction, cn));
             let at = format!("{} at C/N {cn}", fraction.label());
             for (name, lock) in [
                 ("carrier", &inst.carrier_lock),
@@ -662,7 +662,7 @@ fn the_link_reads_healthy_at_every_bandwidth_on_default_settings() {
 fn the_simulation_still_degrades_when_pushed_below_the_envelope() {
     // The fix above must not have flattened the model into "always healthy" —
     // the knee is below the reachable range, not absent.
-    let bad = CofdmInstrument::from_facts(&facts_for(CofdmBwFraction::OneQuarter, 5.0));
+    let bad = OfdmInstrument::from_facts(&facts_for(CofdmBwFraction::OneQuarter, 5.0));
     assert_eq!(bad.fec_lock.value, Some(false));
     assert!(bad.cber.value.unwrap() > 1.0e-2);
 }
@@ -675,7 +675,7 @@ fn run_provider(
     blocks: usize,
     cn_db: f32,
     gap_edge_at_end: bool,
-) -> Vec<Option<Box<CofdmInstrument>>> {
+) -> Vec<Option<Box<OfdmInstrument>>> {
     run_provider_with(state, blocks, cn_db, gap_edge_at_end, false)
 }
 
@@ -688,7 +688,7 @@ fn run_provider_with(
     cn_db: f32,
     gap_edge_at_end: bool,
     with_receiver: bool,
-) -> Vec<Option<Box<CofdmInstrument>>> {
+) -> Vec<Option<Box<OfdmInstrument>>> {
     let fraction = CofdmBwFraction::OneQuarter;
     let shaping =
         CofdmShaping::default_for(fraction).effective(fraction, center(), COFDM_DEFAULT_FS);
@@ -808,7 +808,7 @@ fn dbfs_is_measured_against_unit_full_scale() {
     let target_rms = 10f32.powf(COFDM_DISPLAY_RMS_DBFS / 20.0);
     f.level_amp = target_rms;
     f.peak_amp = target_rms * 4.0; // ~12 dB of OFDM crest factor
-    let inst = CofdmInstrument::from_facts(&f);
+    let inst = OfdmInstrument::from_facts(&f);
     let lvl = inst.level_dbfs.value.unwrap();
     let pk = inst.peak_dbfs.value.unwrap();
     assert!(
@@ -826,12 +826,12 @@ fn overload_trips_only_at_full_scale() {
     let mut f = facts();
     f.peak_amp = f.full_scale * 0.99;
     assert_eq!(
-        CofdmInstrument::from_facts(&f).overload.value,
+        OfdmInstrument::from_facts(&f).overload.value,
         Some(false),
         "overload tripped below full scale"
     );
     f.peak_amp = f.full_scale;
-    assert_eq!(CofdmInstrument::from_facts(&f).overload.value, Some(true));
+    assert_eq!(OfdmInstrument::from_facts(&f).overload.value, Some(true));
 }
 
 #[test]
@@ -839,7 +839,7 @@ fn silence_reads_as_a_floor_not_negative_infinity() {
     let mut f = facts();
     f.level_amp = 0.0;
     f.peak_amp = 0.0;
-    let inst = CofdmInstrument::from_facts(&f);
+    let inst = OfdmInstrument::from_facts(&f);
     assert!(inst.level_dbfs.value.unwrap().is_finite());
     assert!(chars(&fmt_dbfs(inst.level_dbfs.value.unwrap())) < reference_column_widths(chars)[2]);
 }
@@ -902,7 +902,7 @@ fn the_lock_run_sits_at_the_end_of_the_di_line() {
     // labelled so it is not a bare row of glyphs.
     let inst = instrument();
     for budget in [40_usize, 55, 70, 85, 100, 120] {
-        let line = inst.di_bar_str(budget);
+        let line = inst.di_bar_str("COFDM", budget);
         let Some(lck) = line.find("lck ") else {
             continue;
         };
@@ -939,7 +939,7 @@ fn the_lock_run_outlives_the_lower_priority_readouts() {
     // thing a narrowing window discards.
     let inst = instrument();
     for budget in 30..=120 {
-        let line = inst.di_bar_str(budget);
+        let line = inst.di_bar_str("COFDM", budget);
         if line.contains("lvl") || line.contains("\u{394}f") {
             assert!(
                 line.contains("lck"),
@@ -952,7 +952,7 @@ fn the_lock_run_outlives_the_lower_priority_readouts() {
 // ── Provider: the receiver replaces the simulation ────────────────────────────
 //
 // The provenance model exists so that swapping providers is a change on one
-// side of the `CofdmFacts` boundary and nothing downstream notices. These
+// side of the `OfdmFacts` boundary and nothing downstream notices. These
 // assert that it actually worked: the same panel, the same layout, driven by a
 // receiver instead of a model.
 
@@ -1158,7 +1158,7 @@ fn the_di_counters_are_absent_without_a_receiver() {
 /// `frm` sits in the Demod row, and the lock run still starts at its origin.
 #[test]
 fn the_demod_row_carries_the_frame_count() {
-    let rows = CofdmInstrument::layout_reference().panel_rows();
+    let rows = OfdmInstrument::layout_reference().panel_rows();
     let demod = rows.last().expect("Demod row");
     assert_eq!(demod.section, "Demod");
     let labels: Vec<&str> = demod
@@ -1210,4 +1210,204 @@ fn the_loop_timer_marks_an_overflow_without_changing_width() {
         "the marker slot must always be present or the HUD reflows: \
          {short:?} vs {long:?}"
     );
+}
+
+// ── Locks behind a live receiver ──────────────────────────────────────────────
+
+/// Facts with a receiver attached, as the DVB-T provider builds them: a
+/// post-Viterbi BER and no inner-decoder verdict.
+fn facts_with_rx(inner_ber: Option<f32>, inner_fec_ok: Option<bool>) -> OfdmFacts {
+    OfdmFacts {
+        rx: Some(OfdmRxFacts {
+            sync_score: Some(0.9),
+            cfo_hz: Some(0.0),
+            evm_db: Some(-32.0),
+            channel_ber: Some(0.0),
+            inner_ber,
+            inner_fec_ok,
+            outer_fec_ok: None,
+            frame_error_rate: Some(0.0),
+            error_count: 0,
+            error_count_wrapped: false,
+            frame_count: 12,
+            frame_count_wrapped: false,
+        }),
+        ..facts()
+    }
+}
+
+/// DVB-T's inner code is convolutional, so upstream exposes no `inner_ok` — a
+/// flag that would be constantly true says nothing.  The row is decided instead
+/// by the post-Viterbi BER against ETSI's quasi-error-free threshold, which is
+/// the one quantity here that moves with link quality.
+#[test]
+fn the_fec_row_falls_back_to_the_post_viterbi_ber() {
+    let clean = OfdmInstrument::from_facts(&facts_with_rx(Some(1.0e-5), None));
+    let broken = OfdmInstrument::from_facts(&facts_with_rx(Some(1.0e-3), None));
+    assert_eq!(clean.fec_lock.value, Some(true));
+    assert_eq!(broken.fec_lock.value, Some(false));
+
+    // Straddling QEF (2e-4) rather than merely far either side of it, so the
+    // test fails if the threshold drifts rather than only if it disappears.
+    let inside = OfdmInstrument::from_facts(&facts_with_rx(Some(1.9e-4), None));
+    let outside = OfdmInstrument::from_facts(&facts_with_rx(Some(2.1e-4), None));
+    assert_eq!(
+        inside.fec_lock.value,
+        Some(true),
+        "1.9e-4 is quasi-error-free"
+    );
+    assert_eq!(outside.fec_lock.value, Some(false), "2.1e-4 is not");
+}
+
+/// Two opinions about the same thing must not be blended: a decoder that
+/// reports its own convergence is believed, whatever the BER beside it says.
+#[test]
+fn a_decoders_own_verdict_outranks_the_ber() {
+    let says_ok = OfdmInstrument::from_facts(&facts_with_rx(Some(1.0e-2), Some(true)));
+    let says_no = OfdmInstrument::from_facts(&facts_with_rx(Some(0.0), Some(false)));
+    assert_eq!(says_ok.fec_lock.value, Some(true));
+    assert_eq!(says_no.fec_lock.value, Some(false));
+}
+
+/// Absent, not false.  A receiver running without the error-rate rungs has
+/// nothing to say about inner convergence, and a green-or-red indicator would
+/// be an answer it never gave.
+#[test]
+fn a_receiver_with_no_ber_leaves_the_fec_row_unmeasured() {
+    let inst = OfdmInstrument::from_facts(&facts_with_rx(None, None));
+    assert_eq!(inst.fec_lock.value, None);
+}
+
+/// `TS` stays unmeasured behind a receiver, DVB-T included — and stays that way
+/// until upstream can offer a reading that moves.
+///
+/// The row wants sync bytes arriving at the 188-byte cadence.  Every frame the
+/// viewer sees has already passed its outer code, and the sync byte is byte 0
+/// of an RS(204,188) codeword, so checking it would be true on the whole
+/// population — a third permanently-green indicator beside `outer_fec_ok` and
+/// `inner_fec_ok`.  Absent is the honest rendering.  Tracked as
+/// `~/.claude/plans/orion-sdr/dvb-t-ts-sync-indicator.md`.
+#[test]
+fn the_ts_row_stays_unmeasured_behind_a_receiver() {
+    let inst = OfdmInstrument::from_facts(&facts_with_rx(Some(0.0), None));
+    assert_eq!(inst.ts_lock.value, None);
+}
+
+/// The Di line leads with the source's own name rather than a hardcoded one.
+///
+/// The two labels are the same width on purpose: the line drops fields to fit a
+/// budget, so a wider leader would silently cost the last field.  If a third
+/// instrumented source arrives with a longer name, this is where it shows up.
+#[test]
+fn the_di_bar_leads_with_the_source_label() {
+    let inst = instrument();
+    let cofdm = inst.di_bar_str("COFDM", 120);
+    let dvbt = inst.di_bar_str("DVB-T", 120);
+    assert!(cofdm.starts_with("COFDM "), "{cofdm}");
+    assert!(dvbt.starts_with("DVB-T "), "{dvbt}");
+    assert_eq!(
+        cofdm.chars().count(),
+        dvbt.chars().count(),
+        "a wider leader would drop a field at the same budget"
+    );
+}
+
+// ── Provider: DVB-T reports what arrived ──────────────────────────────────────
+
+/// The panel's numerology comes from the **recovered TPS word**, not from the
+/// settings rows that produced the signal.
+///
+/// The two agree in this viewer — one process transmits and receives — so what
+/// this actually pins is that every slot is fed from the recovered word and
+/// that the mapping is right across the whole matrix: a guard taken off TPS
+/// while the code rate is still read from the configured link would look
+/// correct here and describe a link nobody transmitted the moment the two
+/// diverge. Walked over all fifteen pairs because a single mode cannot tell a
+/// correct mapping from a constant.
+#[test]
+fn the_dvbt_panel_reports_the_signalled_link() {
+    use orion_sdr_view::source::dvbt::{DVBT_CODE_RATES, DVBT_CONSTELLATIONS};
+    use orion_sdr_view::source::dvbt::{DvbTState, code_rate_fraction, constellation_label};
+    use orion_sdr_view::source::{
+        DVBT_DEFAULT_GUARD, DvbTBandwidth, DvbTShaping, DvbTSource, dvbt_default_center_hz,
+    };
+
+    let bw = DvbTBandwidth::Bw1MHz;
+    for &constellation in DVBT_CONSTELLATIONS {
+        for &code_rate in DVBT_CODE_RATES {
+            let link = orion_sdr::waveform::dvb_t::DvbTLinkParams {
+                guard: DVBT_DEFAULT_GUARD,
+                constellation,
+                code_rate,
+            };
+            let mut src = DvbTSource::new(
+                60.0,
+                1.0,
+                MAX_CN_DB,
+                bw,
+                link,
+                DvbTShaping::off(),
+                dvbt_default_center_hz(bw),
+            );
+            let mut state = DvbTState::new();
+            let (tx, rx) = std::sync::mpsc::sync_channel(4096);
+            // Enough blocks to acquire a frame and clear the provider's emit
+            // interval; the panel before the first decode falls back to the
+            // configured link and would pass for the wrong reason.
+            for _ in 0..600 {
+                let s = src.next_samples(SPECTRUM_WINDOW_SAMPLES);
+                let iq = src.last_samples_iq().map(<[_]>::to_vec);
+                state.process(
+                    &s,
+                    true,
+                    false,
+                    dvbt_default_center_hz(bw),
+                    src.occupied_bw_hz(),
+                    link,
+                    src.frame_payload_len(),
+                    src.full_scale(),
+                    iq.as_deref(),
+                    src.sample_rate(),
+                    src.waveform_fs(),
+                    false,
+                    &tx,
+                );
+            }
+            drop(tx);
+            let last = rx
+                .into_iter()
+                .filter_map(|r| match r {
+                    DecodeResult::Instrument(i) => i,
+                    _ => None,
+                })
+                .last()
+                .unwrap_or_else(|| panic!("{constellation:?} {code_rate:?}: no instrument"));
+
+            let at = format!("{constellation:?} {code_rate:?}");
+            // Without this the test is vacuous: with no frame decoded,
+            // `signalled_link` falls back to the configured link and every
+            // assertion below passes without TPS ever being consulted.  A
+            // frame count proves a receiver ran and a TPS word was recovered.
+            assert!(
+                last.frame_count.value.is_some_and(|n| n > 0),
+                "{at}: no frame decoded, so the TPS path was never taken"
+            );
+            let (k, n) = code_rate_fraction(code_rate);
+            assert_eq!(
+                last.constellation.value.as_deref(),
+                Some(constellation_label(constellation)),
+                "{at}: constellation"
+            );
+            assert_eq!(
+                last.code_rate.value.as_deref(),
+                Some(format!("{k}/{n}").as_str()),
+                "{at}: code rate — `code_rate_lp` would read the wrong half of TPS"
+            );
+            assert_eq!(
+                last.guard_interval.value.as_deref(),
+                Some("1/32"),
+                "{at}: guard interval"
+            );
+        }
+    }
 }

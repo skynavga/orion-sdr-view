@@ -21,7 +21,7 @@
 
 use std::io::Write;
 
-use crate::decode::instrument::CofdmInstrument;
+use crate::decode::instrument::OfdmInstrument;
 
 /// One line of the dump.
 ///
@@ -72,7 +72,7 @@ pub enum Record {
         t: f32,
         samples: u64,
         #[serde(flatten)]
-        inst: Box<CofdmInstrument>,
+        inst: Box<OfdmInstrument>,
     },
     /// Decoded text.  Emitted for the text modes; the CW and PSK31 burst
     /// delimiters and the FT8 frame stamps appear here, which is why the replay

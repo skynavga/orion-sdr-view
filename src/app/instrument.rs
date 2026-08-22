@@ -1,7 +1,7 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! The COFDM instrumentation panel (`X`).
+//! The OFDM instrumentation panel (`X`), shared by COFDM and DVB-T.
 //!
 //! Placement and painting only — the metric model, the value formatting and the
 //! grid arithmetic all live in [`crate::decode::instrument`], which is library
@@ -54,14 +54,13 @@ impl ViewApp {
                 .x
         };
 
-        let Some(inst) = self.decode_ticker.last_instrument.as_deref() else {
+        let Some(inst) = self
+            .instrument_label()
+            .and(self.decode_ticker.last_instrument.as_deref())
+        else {
             self.draw_instrument_placeholder(ui, &title_font, &body_font);
             return;
         };
-        if self.source_mode != SourceMode::Cofdm {
-            self.draw_instrument_placeholder(ui, &title_font, &body_font);
-            return;
-        }
 
         let rows = inst.panel_rows();
         // Widths come from the fixed reference specimen, so the grid does not
@@ -90,7 +89,7 @@ impl ViewApp {
         painter.text(
             egui::pos2(rect.left() + MARGIN_X, y),
             egui::Align2::LEFT_TOP,
-            "COFDM instrumentation",
+            self.instrument_title(),
             title_font.clone(),
             egui::Color32::WHITE,
         );
@@ -188,8 +187,8 @@ impl ViewApp {
         }
     }
 
-    /// Shown for a source with no instrumentation, and for COFDM before the
-    /// first burst — a named reason rather than an empty frame.
+    /// Shown for a source with no instrumentation, and for an instrumented one
+    /// before its first burst — a named reason rather than an empty frame.
     fn draw_instrument_placeholder(
         &self,
         ui: &mut egui::Ui,
@@ -203,16 +202,20 @@ impl ViewApp {
         painter.text(
             egui::pos2(rect.left() + MARGIN_X, rect.top() + MARGIN_Y),
             egui::Align2::LEFT_TOP,
-            "COFDM instrumentation",
+            self.instrument_title(),
             title_font.clone(),
             egui::Color32::WHITE,
         );
-        let msg = if self.source_mode == SourceMode::Cofdm {
+        // Naming the sources that *do* have a panel, rather than one of them:
+        // there are two now, and a message that sends an operator to COFDM from
+        // DVB-T would be sending them away from a panel that works.
+        let msg = if self.instrument_label().is_some() {
             "waiting for signal\u{2026}".to_owned()
         } else {
             format!(
-                "{} has no instrumentation \u{2014} switch to COFDM (I)",
-                self.source_mode.label()
+                "{} has no instrumentation \u{2014} switch to {} (I)",
+                self.source_mode.label(),
+                instrumented_source_labels()
             )
         };
         painter.text(
@@ -227,18 +230,54 @@ impl ViewApp {
         );
     }
 
-    /// True when the Di bar should render the COFDM instrumentation line rather
-    /// than the shared four-field `info_str`.  Every other source keeps the
+    /// True when the Di bar should render the instrumentation line rather than
+    /// the shared four-field `info_str`.  Every uninstrumented source keeps the
     /// existing line verbatim.
     pub(super) fn di_instrument_line(&self, budget_chars: usize) -> Option<String> {
-        if self.source_mode != SourceMode::Cofdm || self.decode_bar != DecodeBarMode::Info {
+        if self.decode_bar != DecodeBarMode::Info {
             return None;
         }
+        let label = self.instrument_label()?;
         self.decode_ticker
             .last_instrument
             .as_deref()
-            .map(|i| i.di_bar_str(budget_chars))
+            .map(|i| i.di_bar_str(label, budget_chars))
     }
+
+    /// The `frm`/`err` pair beside the loop timer, for a source whose receiver
+    /// counts frames.
+    pub(super) fn di_counter_line(&self) -> Option<String> {
+        self.instrument_label()?;
+        self.decode_ticker
+            .last_instrument
+            .as_deref()
+            .and_then(|i| i.di_counter_str())
+    }
+
+    /// This source's instrumentation label, or `None` when it has no panel.
+    pub fn instrument_label(&self) -> Option<&'static str> {
+        super::common::source_mode_factory(self.source_mode).instrument_label()
+    }
+
+    /// Panel and placeholder title.  Falls back to the generic word so an
+    /// uninstrumented source still gets a titled frame rather than a blank one.
+    fn instrument_title(&self) -> String {
+        match self.instrument_label() {
+            Some(label) => format!("{label} instrumentation"),
+            None => "Instrumentation".to_owned(),
+        }
+    }
+}
+
+/// The instrumented sources, in selector order, joined for the placeholder's
+/// "switch to ..." line.  Derived from the factory table, so adding a source
+/// with a panel updates the message with it.
+fn instrumented_source_labels() -> String {
+    let names: Vec<&str> = SourceMode::ALL
+        .iter()
+        .filter_map(|m| super::common::source_mode_factory(*m).instrument_label())
+        .collect();
+    names.join(" or ")
 }
 
 /// The shared overlay frame: translucent fill, rounded stroke.

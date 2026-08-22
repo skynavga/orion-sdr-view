@@ -20,11 +20,10 @@ pub use amdsb::{AmDsbSource, BuiltinAudio, load_builtin};
 pub use cofdm::{
     COFDM_CP_LEN, COFDM_DEFAULT_CN_DB, COFDM_DEFAULT_FS, COFDM_DISPLAY_RMS_DBFS,
     COFDM_MAX_EDGE_GUARD, COFDM_MAX_FS, COFDM_MIN_FS, COFDM_N_FFT, COFDM_PAYLOAD_BYTES,
-    COFDM_SHAPING_SLACK, CofdmBwFraction, CofdmMask, CofdmRx, CofdmRxFacts, CofdmRxStats,
-    CofdmShaping, CofdmSource, CofdmTaper, cofdm_center_bounds, cofdm_clamp_fs,
-    cofdm_data_carriers, cofdm_default_center_hz, cofdm_edge_guard_for, cofdm_link_config,
-    cofdm_mcs_facts, cofdm_min_edge_guard, cofdm_occupied_bw, cofdm_occupied_half,
-    cofdm_spacing_hz,
+    COFDM_SHAPING_SLACK, CofdmBwFraction, CofdmMask, CofdmRx, CofdmRxStats, CofdmShaping,
+    CofdmSource, CofdmTaper, OfdmRxFacts, cofdm_center_bounds, cofdm_clamp_fs, cofdm_data_carriers,
+    cofdm_default_center_hz, cofdm_edge_guard_for, cofdm_link_config, cofdm_mcs_facts,
+    cofdm_min_edge_guard, cofdm_occupied_bw, cofdm_occupied_half, cofdm_spacing_hz,
 };
 pub use cw::CwSource;
 pub use dvbt::{

@@ -70,7 +70,7 @@ use super::source::{COFDM_BUFFER_FRAMES, CofdmShaping, cofdm_link_config};
 /// fails.  A rising error rate that suddenly stops reporting is the signal that
 /// the link has given up, and rendering that as `0.0` would invert its meaning.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct CofdmRxFacts {
+pub struct OfdmRxFacts {
     pub sync_score: Option<f32>,
     pub cfo_hz: Option<f32>,
     pub evm_db: Option<f32>,
@@ -150,7 +150,7 @@ pub struct CofdmRx {
     /// rather than a flag, so there is not even a branch to pay.
     probe: OfdmRxProbe,
     stats: CofdmRxStats,
-    last: Option<CofdmRxFacts>,
+    last: Option<OfdmRxFacts>,
     last_seq: Option<u32>,
     /// Decode failures since the last accepted frame, so the sequence gap that
     /// follows them is not charged a second time — see [`CofdmRxStats::lost`].
@@ -190,7 +190,7 @@ impl CofdmRx {
         self.stats
     }
 
-    pub fn last(&self) -> Option<CofdmRxFacts> {
+    pub fn last(&self) -> Option<OfdmRxFacts> {
         self.last
     }
 
@@ -243,7 +243,7 @@ impl CofdmRx {
         self.count_gap(frame.packet.metadata.sequence_num);
 
         let d = &frame.diagnostics;
-        self.last = Some(CofdmRxFacts {
+        self.last = Some(OfdmRxFacts {
             sync_score: d.sync_score,
             cfo_hz: d.cfo_hz,
             evm_db: d.evm_db,

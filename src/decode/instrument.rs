@@ -1,7 +1,7 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! COFDM instrumentation: the metric model, the panel layout, and the value
+//! OFDM instrumentation: the metric model, the panel layout, and the value
 //! formatting.
 //!
 //! All of it lives in the library rather than in `src/app/` because `src/app/`
@@ -29,9 +29,9 @@
 //!
 //! | Field | Measured at the output of |
 //! | --- | --- |
-//! | [`CofdmInstrument::cber`] | the channel (i.e. before the inner decoder) |
-//! | [`CofdmInstrument::iber`] | the inner decoder, before the outer |
-//! | [`CofdmInstrument::error_rate`] | the whole chain, at frame/packet granularity |
+//! | [`OfdmInstrument::cber`] | the channel (i.e. before the inner decoder) |
+//! | [`OfdmInstrument::iber`] | the inner decoder, before the outer |
+//! | [`OfdmInstrument::error_rate`] | the whole chain, at frame/packet granularity |
 //!
 //! A future outer-decoder BER slots in as an `OBER` rung between `iber` and
 //! `error_rate` without renaming anything.  The rungs are deliberately **not**
@@ -65,7 +65,8 @@ pub enum Provenance {
     /// under a receiver — for the things nothing can actually measure here: a
     /// sample-clock error (no estimator), a delay spread (the band-limited
     /// channel estimate's spread is an occupancy artifact, not a channel
-    /// reading) and a transport-stream lock (no such layer for generic COFDM).
+    /// reading) and a transport-stream lock — generic COFDM has no such layer,
+    /// and DVB-T's cannot be read from the frames that survive to reach it.
     Unavailable,
 }
 
@@ -132,8 +133,12 @@ impl<T> Metric<T> {
 pub enum ErrorUnit {
     #[default]
     Frame,
-    /// Set by a DVB-T provider; the synthetic source is frame-oriented, so
-    /// nothing selects this yet.
+    /// Selected by the DVB-T provider.  Only the *rate* is a packet rate: a
+    /// DVB-T frame is all-or-nothing (a frame whose outer code fails is
+    /// returned as an error, so no packet inside a delivered frame is bad),
+    /// which makes PER and FER numerically equal and lets `frm`/`err` stay
+    /// frame counts.  Counting packets instead would multiply both by the
+    /// frame's packet count and wrap the six-digit field in minutes.
     Packet,
 }
 
@@ -148,9 +153,9 @@ impl ErrorUnit {
     }
 }
 
-/// The full COFDM instrument reading.
+/// The full OFDM instrument reading, filled by COFDM's provider and DVB-T's.
 #[derive(Clone, Debug, serde::Serialize)]
-pub struct CofdmInstrument {
+pub struct OfdmInstrument {
     // Tuning
     pub center_hz: Metric<f32>,
     pub bandwidth_hz: Metric<f32>,
@@ -440,7 +445,7 @@ fn lock(name: &'static str, m: &Metric<bool>) -> Lock {
     }
 }
 
-impl CofdmInstrument {
+impl OfdmInstrument {
     /// The panel's rows, in display order.
     pub fn panel_rows(&self) -> Vec<Row> {
         let grid = |section, cells: Vec<[Cell; 2]>| Row {
@@ -615,7 +620,7 @@ pub fn render_text(rows: &[Row]) -> Vec<String> {
 pub const SIM_BADGE: &str = "SIM";
 
 /// Fixed body widths for the Di line's fields, chosen so no reachable value
-/// changes a field's rendered width.  See [`CofdmInstrument::di_bar_str`].
+/// changes a field's rendered width.  See [`OfdmInstrument::di_bar_str`].
 const DB_W: usize = 5; // "-99.9" / "100.0"
 const BER_W: usize = 6; // "1.0E-4"; "<1E-9" and "0.0E0" are shorter
 const HZ_W: usize = 7; // "-9999Hz"
@@ -631,7 +636,7 @@ struct DiField {
     at_end: bool,
 }
 
-impl CofdmInstrument {
+impl OfdmInstrument {
     /// The prioritised one-line Di-bar summary, fitted to `budget_chars`.
     ///
     /// When the budget is short, the **lowest-priority fields are dropped**
@@ -657,8 +662,8 @@ impl CofdmInstrument {
         ))
     }
 
-    pub fn di_bar_str(&self, budget_chars: usize) -> String {
-        let mut line = String::from("COFDM");
+    pub fn di_bar_str(&self, label: &str, budget_chars: usize) -> String {
+        let mut line = String::from(label);
         if let Some(c) = self.center_hz.value {
             let _ = write!(line, " {:.1}kHz", c / 1000.0);
         }
@@ -783,16 +788,16 @@ impl CofdmInstrument {
 
 /// What a live receiver contributes, when one is running.
 ///
-/// Held apart from the rest of [`CofdmFacts`] so the two providers stay
+/// Held apart from the rest of [`OfdmFacts`] so the two providers stay
 /// distinguishable: `None` is the simulation, `Some` is measurement, and
-/// [`CofdmInstrument::from_facts`] is the one place that chooses. Every field
+/// [`OfdmInstrument::from_facts`] is the one place that chooses. Every field
 /// is itself optional because upstream reports "the stage that would produce
 /// this did not run" as `None` rather than as a sentinel — and for the BER
 /// rungs that is load-bearing, since they are measured by re-encoding a
 /// *decoded* frame and so go `None` exactly when the link fails. Rendering
 /// that as `0.0` would invert its meaning.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct CofdmRxFacts {
+pub struct OfdmRxFacts {
     pub sync_score: Option<f32>,
     pub cfo_hz: Option<f32>,
     pub evm_db: Option<f32>,
@@ -810,6 +815,17 @@ pub struct CofdmRxFacts {
     pub frame_count_wrapped: bool,
 }
 
+/// Post-inner-decoder BER at which the outer code still delivers
+/// quasi-error-free output, and so the threshold the `FEC` lock is decided on
+/// when the inner decoder reports no verdict of its own.
+///
+/// ETSI's QEF criterion — fewer than one uncorrected error per hour of
+/// transport stream — sits at a post-Viterbi BER of 2e-4 for the DVB-T
+/// RS(204,188) outer code (EN 300 744 §A.1, ETR 290). Using the standard's own
+/// number rather than a round one means the row flips where a broadcast
+/// engineer would say the link failed, not where this code guessed.
+const QEF_INNER_BER: f32 = 2.0e-4;
+
 /// Minimum sync score treated as a carrier/timing lock.
 ///
 /// `ofdm_sync`'s own acceptance threshold, so "locked" means exactly "the
@@ -817,15 +833,15 @@ pub struct CofdmRxFacts {
 /// differently-calibrated opinion about the same thing.
 const RX_LOCK_SCORE: f32 = 0.5;
 
-/// Everything the viewer can genuinely measure or declare about the COFDM
-/// signal today.  [`CofdmInstrument::from_facts`] fills the rest by simulation.
+/// Everything the viewer can genuinely measure or declare about an OFDM
+/// signal today.  [`OfdmInstrument::from_facts`] fills the rest by simulation.
 ///
 /// Deliberately carries *numerology*, not `orion-sdr` types: the provider
 /// resolves the carrier plan and MCS, and this module derives both the labels
 /// and the numbers from them.  That keeps the FEC types out of the render path
 /// and keeps this module testable without building a modulator.
 #[derive(Clone, Debug)]
-pub struct CofdmFacts {
+pub struct OfdmFacts {
     // Tuning / RF — measured.
     pub center_hz: f32,
     pub bandwidth_hz: f32,
@@ -850,7 +866,7 @@ pub struct CofdmFacts {
     pub error_count_wrapped: bool,
     pub error_unit: ErrorUnit,
     /// Measurements from a live receiver; `None` keeps the simulated block.
-    pub rx: Option<CofdmRxFacts>,
+    pub rx: Option<OfdmRxFacts>,
     /// Amplitude that counts as 0 dBFS for this source.
     ///
     /// **Not 1.0.**  The COFDM source applies a large fixed modulator gain
@@ -954,10 +970,10 @@ fn sim_floor(v: f32) -> f32 {
     v.max(f32::MIN_POSITIVE)
 }
 
-impl CofdmInstrument {
+impl OfdmInstrument {
     /// Build the instrument: the facts as measured or known, everything else
     /// simulated from the measured C/N.  See the simulation notes above.
-    pub fn from_facts(f: &CofdmFacts) -> Self {
+    pub fn from_facts(f: &OfdmFacts) -> Self {
         let (k, n) = f.inner_code_rate;
         let rate = if n == 0 { 0.5 } else { k as f32 / n as f32 };
 
@@ -1099,16 +1115,30 @@ impl CofdmInstrument {
                 },
                 None => Metric::simulated(f.cn_db > 8.0),
             },
-            // The *inner* decoder converging, reported by the decoder itself
-            // rather than inferred from a BER threshold.
+            // The *inner* decoder converging.  A decoder that reports its own
+            // verdict is believed; otherwise the post-Viterbi BER decides,
+            // which is the same question asked of the one quantity that
+            // answers it.  DVB-T takes the second branch: its inner code is
+            // always convolutional, so upstream exposes no `inner_ok` flag —
+            // there is nothing for it to say that is not constantly true.
             fec_lock: match rx {
-                Some(r) => match r.inner_fec_ok {
-                    Some(ok) => Metric::measured(ok),
-                    None => Metric::unavailable(),
+                Some(r) => match (r.inner_fec_ok, r.inner_ber) {
+                    (Some(ok), _) => Metric::measured(ok),
+                    (None, Some(ber)) => Metric::measured(ber <= QEF_INNER_BER),
+                    (None, None) => Metric::unavailable(),
                 },
                 None => Metric::simulated(iber < 1.0e-3),
             },
-            // No transport-stream layer exists for generic COFDM.
+            // No transport-stream layer is visible to the viewer.  Generic
+            // COFDM has none at all; DVB-T has one, but not a population to
+            // measure it on.  A frame whose outer code failed is rejected
+            // upstream (`is_valid` consults `outer_ok`), and the sync byte is
+            // byte 0 of an RS(204,188) codeword — so every frame that arrives
+            // has had it repaired, by construction.  Checking it here would be
+            // true on 100% of the frames that exist, which is the same
+            // permanently-green trap `outer_fec_ok` and `inner_fec_ok` fell
+            // into.  A reading that moves needs the *failed* frames, and lives
+            // upstream: see `~/.claude/plans/orion-sdr/dvb-t-ts-sync-indicator.md`.
             ts_lock: match rx {
                 Some(_) => Metric::unavailable(),
                 None => Metric::simulated(error_rate < 1.0e-2),
@@ -1127,7 +1157,7 @@ impl CofdmInstrument {
 
 // ── Layout stability ──────────────────────────────────────────────────────────
 
-impl CofdmInstrument {
+impl OfdmInstrument {
     /// A specimen whose every field renders at its widest plausible value.
     ///
     /// Column widths must be computed from **this**, not from the live
@@ -1186,9 +1216,9 @@ impl CofdmInstrument {
 }
 
 /// The stable column widths: [`column_widths`] over
-/// [`CofdmInstrument::layout_reference`].  Every caller — the painter and the
+/// [`OfdmInstrument::layout_reference`].  Every caller — the painter and the
 /// text renderer alike — must size the grid with this rather than with the
 /// live rows.
 pub fn reference_column_widths(measure: impl FnMut(&str) -> f32) -> [f32; COLUMNS] {
-    column_widths(&CofdmInstrument::layout_reference().panel_rows(), measure)
+    column_widths(&OfdmInstrument::layout_reference().panel_rows(), measure)
 }

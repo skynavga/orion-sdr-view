@@ -5,7 +5,7 @@
 //!
 //! There is no text decode.  Spectral characterisation is delegated to
 //! [`SpectralState`]; this module adds the RF-level measurements and assembles a
-//! [`CofdmInstrument`] on the same cadence, so the Di bar and the `X` panel
+//! [`OfdmInstrument`] on the same cadence, so the Di bar and the `X` panel
 //! advance in lockstep with the `Info` line.
 //!
 //! **The second provider of the instrument.**  Everything the generic COFDM
@@ -24,7 +24,7 @@ use orion_sdr::waveform::dvb_t::{DVB_T_DATA_CARRIERS, DVB_T_N_FFT, DvbTLinkParam
 use super::rx::DvbTRx;
 use super::source::{code_rate_fraction, constellation_label};
 use crate::decode::instrument::{
-    CofdmFacts, CofdmInstrument, CofdmRxFacts, ERROR_COUNT_WRAP, ErrorUnit,
+    ERROR_COUNT_WRAP, ErrorUnit, OfdmFacts, OfdmInstrument, OfdmRxFacts,
 };
 use crate::decode::spectral::{SpectralState, wb_cn_db};
 use crate::decode::{CofdmProbe, DecodeResult, ProbeFrameData};
@@ -254,13 +254,14 @@ impl DvbTState {
     /// `Some(true)` on every frame a caller can see, since a frame whose
     /// Reed–Solomon stage failed is returned as an error and counted in
     /// `failed`.  Wiring either to `fec_lock` would put a permanently-green
-    /// indicator on screen; it stays `Unavailable` until Phase 4 drives it from
-    /// `IBER`, which does move.
-    fn rx_facts(&self) -> Option<CofdmRxFacts> {
+    /// indicator on screen, so both stay `None` and `OfdmInstrument::from_facts`
+    /// decides the `FEC` row from `inner_ber` against the QEF threshold instead
+    /// — the one quantity here that moves with link quality.
+    fn rx_facts(&self) -> Option<OfdmRxFacts> {
         let (.., rx) = self.rx.as_ref()?;
         let stats = rx.stats();
         let last = rx.last().unwrap_or_default();
-        Some(CofdmRxFacts {
+        Some(OfdmRxFacts {
             sync_score: last.sync_score,
             cfo_hz: last.cfo_hz,
             evm_db: last.evm_db,
@@ -279,6 +280,25 @@ impl DvbTState {
         })
     }
 
+    /// The link the **receiver** reports, falling back to `configured` before a
+    /// frame has decoded.
+    ///
+    /// `code_rate_hp` is the one that matters: the viewer transmits
+    /// non-hierarchically, so the low-priority stream does not exist and the HP
+    /// rate is the link's rate.
+    fn signalled_link(&self, configured: DvbTLinkParams) -> DvbTLinkParams {
+        let Some((.., rx)) = self.rx.as_ref() else {
+            return configured;
+        };
+        rx.last()
+            .and_then(|f| f.tps)
+            .map_or(configured, |tps| DvbTLinkParams {
+                guard: tps.guard,
+                constellation: tps.constellation,
+                code_rate: tps.code_rate_hp,
+            })
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn build(
         &self,
@@ -288,9 +308,18 @@ impl DvbTState {
         link: DvbTLinkParams,
         fs_waveform: f32,
         full_scale: f32,
-    ) -> CofdmInstrument {
+    ) -> OfdmInstrument {
         let peak = samples.iter().fold(0.0_f32, |m, s| m.max(s.abs()));
-        CofdmInstrument::from_facts(&CofdmFacts {
+        // **What arrived, not what was configured.**  The TPS carriers signal
+        // the constellation, code rate and guard interval, so once a frame
+        // decodes the panel reports the link the receiver actually locked to
+        // rather than the settings rows that produced it.  That is the same
+        // provenance rule the rest of the panel follows, and TPS is what makes
+        // it reachable here without a header block: no other source can report
+        // its numerology as *received*.  Before the first frame, and for a
+        // source rendering with no receiver, the configured link stands in.
+        let signalled = self.signalled_link(link);
+        OfdmInstrument::from_facts(&OfdmFacts {
             center_hz: carrier_hz,
             bandwidth_hz: bw_hz,
             level_amp: rms(samples),
@@ -309,14 +338,14 @@ impl DvbTState {
             // and the ×2 oversampling exists only so the band fits on screen.
             fs: fs_waveform,
             n_fft: DVB_T_N_FFT,
-            cp_len: link.guard.cp_len_2k(),
+            cp_len: signalled.guard.cp_len_2k(),
             // Fixed by the standard at exactly 1512 of 2048 bins — asserted by
             // `dvb_t_2k_plans` upstream, and deliberately not re-derived here:
             // anything computed from `n_fft` would be silently wrong.
             data_carriers: DVB_T_DATA_CARRIERS,
-            constellation: constellation_label(link.constellation),
-            bits_per_symbol: link.constellation.bits_per_symbol(),
-            inner_code_rate: code_rate_fraction(link.code_rate),
+            constellation: constellation_label(signalled.constellation),
+            bits_per_symbol: signalled.constellation.bits_per_symbol(),
+            inner_code_rate: code_rate_fraction(signalled.code_rate),
             rx: self.rx_facts(),
             // Simulation-only counters; with a receiver running they are ignored
             // in favour of the counted ones in `rx_facts`.

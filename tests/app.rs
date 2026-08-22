@@ -1159,3 +1159,35 @@ fn dvbt_lowers_the_display_floor_and_gives_it_back() {
         "switching away must restore the shared floor, not inherit DVB-T's: {floor}"
     );
 }
+
+/// An `X` panel is granted by naming yourself, not by being COFDM.
+///
+/// The regression this pins: DVB-T built and shipped a full `OfdmInstrument`
+/// every block while three render paths each asked `source_mode !=
+/// SourceMode::Cofdm` and threw it away, so the panel told the operator "DVB-T
+/// has no instrumentation" about a source that had just filled one.
+#[test]
+fn an_instrument_panel_follows_the_source_not_the_mode() {
+    let mut h = Harness::with_defaults();
+
+    h.select_source(SourceMode::Cofdm);
+    assert_eq!(h.app.instrument_label(), Some("COFDM"));
+
+    h.select_source(SourceMode::DvbT);
+    assert_eq!(
+        h.app.instrument_label(),
+        Some("DVB-T"),
+        "DVB-T fills an instrument, so it must be shown one"
+    );
+
+    // And the sources that genuinely have no receiver still say so.
+    for mode in [SourceMode::TestTone, SourceMode::Cw, SourceMode::Ft8] {
+        h.select_source(mode);
+        assert_eq!(
+            h.app.instrument_label(),
+            None,
+            "{} has no receiver filling an instrument",
+            mode.label()
+        );
+    }
+}
