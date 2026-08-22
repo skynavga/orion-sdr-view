@@ -32,7 +32,7 @@ use orion_sdr::modulate::ConstellationOrder;
 
 use orion_sdr::waveform::dvb_t::DvbTLinkParams;
 
-use crate::decode::instrument::CofdmInstrument;
+use crate::decode::instrument::OfdmInstrument;
 use crate::source::cofdm::CofdmShaping;
 use crate::source::{amdsb, cofdm, cw, dvbt, ft8, psk31, tone};
 
@@ -237,7 +237,7 @@ pub enum DecodeResult {
     ///
     /// `None` **clears** the panel at a gap edge, so it falls back to em-dashes
     /// rather than holding numbers from a burst that has ended.
-    Instrument(Option<Box<CofdmInstrument>>),
+    Instrument(Option<Box<OfdmInstrument>>),
     /// Equalized symbols and the per-bit correction map for the frames that
     /// completed in one chunk — pane 3's constellation mode.
     ///
@@ -296,7 +296,7 @@ pub struct DecodeTicker {
     /// `last_info`.  The `X` panel re-reads this every frame, so it is live
     /// rather than a snapshot: opening it freezes nothing and closing it loses
     /// nothing.  Cleared alongside `last_info` on a gap.
-    pub last_instrument: Option<Box<CofdmInstrument>>,
+    pub last_instrument: Option<Box<OfdmInstrument>>,
     /// Probe frames delivered since the main thread last drained them.
     ///
     /// **Drained rather than held**, unlike `last_instrument`: the panes

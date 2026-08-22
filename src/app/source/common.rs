@@ -113,6 +113,20 @@ pub(in crate::app) trait SourceFactory: Sync {
     fn preferred_db_min(&self, _settings: &SettingsState) -> Option<f32> {
         Some(crate::config::Defaults::DB_MIN)
     }
+
+    /// What this source calls itself in the instrumentation panel and the Di
+    /// bar's leader, or `None` when its decoder fills no
+    /// [`OfdmInstrument`](crate::decode::OfdmInstrument).
+    ///
+    /// **The presence of a label is the gate**, so a source acquires an `X`
+    /// panel by naming itself and nothing else. Before this the three render
+    /// paths each tested `source_mode != SourceMode::Cofdm`, which meant DVB-T
+    /// built and shipped a full instrument that the panel then answered with
+    /// "DVB-T has no instrumentation" — a claim the code contradicted twice per
+    /// block. The label doubles as the title so the two cannot disagree either.
+    fn instrument_label(&self) -> Option<&'static str> {
+        None
+    }
 }
 
 /// Static dispatch table of per-source factories, indexed by `SourceMode as

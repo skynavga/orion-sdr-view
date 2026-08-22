@@ -8,7 +8,7 @@ mod source;
 
 pub use config::CofdmConfig;
 pub use decode::CofdmState;
-pub use rx::{CofdmRx, CofdmRxFacts, CofdmRxStats};
+pub use rx::{CofdmRx, CofdmRxStats, OfdmRxFacts};
 pub use source::{
     COFDM_CP_LEN, COFDM_DEFAULT_BW_FRACTION, COFDM_DEFAULT_CN_DB, COFDM_DEFAULT_FS,
     COFDM_DEFAULT_GAP_SECS, COFDM_DEFAULT_MASK, COFDM_DEFAULT_SHAPING_ENABLED,

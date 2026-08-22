@@ -224,7 +224,7 @@ pub(crate) const COFDM_BUFFER_FRAMES: usize = 40;
 ///
 /// Normalising instead makes the source **unit-scale like every other one**,
 /// which is what lets the shared [`orion_sdr::util::SIGNAL_THRESHOLD`] apply to
-/// it, lets `CofdmFacts::full_scale` be 1.0, and lets a new multicarrier source
+/// it, lets `OfdmFacts::full_scale` be 1.0, and lets a new multicarrier source
 /// get correct scaling with no tuning session.  DFT-s-OFDM is the case that
 /// makes this structural rather than tidy: its whole point is lower PAPR, so a
 /// COFDM-shaped constant would be wrong for it rather than merely untuned.

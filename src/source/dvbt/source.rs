@@ -1041,7 +1041,7 @@ impl DvbTSource {
     /// every rotator phase.
     ///
     /// **Not 1.0, and this is the source that needs the distinction back.**
-    /// Every other source is unit-scale, so `CofdmFacts::full_scale` has been
+    /// Every other source is unit-scale, so `OfdmFacts::full_scale` has been
     /// 1.0 since COFDM's fitted gain was replaced by a derived one.  DVB-T's
     /// crest factor is 29-33 dB (see [`DVBT_DISPLAY_RMS_DBFS`]), so an RMS
     /// normalised to any level a unit-scale threshold would accept puts the

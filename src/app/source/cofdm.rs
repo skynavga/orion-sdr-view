@@ -91,6 +91,9 @@ pub(in crate::app) fn hud_submode_str(settings: &SettingsState) -> String {
 
 pub(super) struct Factory;
 impl super::SourceFactory for Factory {
+    fn instrument_label(&self) -> Option<&'static str> {
+        Some("COFDM")
+    }
     fn make(&self, settings: &SettingsState) -> Box<dyn SignalSource> {
         Box::new(make(settings))
     }

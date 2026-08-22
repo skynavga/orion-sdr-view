@@ -257,17 +257,12 @@ impl ViewApp {
             .x;
 
         // "frm xxx err yyy" to the left of the loop timer. FT8/FT4 count
-        // decoded transmissions; COFDM counts received frames, off the same
-        // receiver the panel reads — the same field, in the same place, so the
-        // two sources do not need to be read differently.
+        // decoded transmissions; an instrumented source counts received frames,
+        // off the same receiver the panel reads — the same field, in the same
+        // place, so the sources do not need to be read differently.
         let ft_label: Option<String> = match self.source_mode {
             SourceMode::Ft8 => Some(ft8::hud_frame_counter_str(&self.ft8_view)),
-            SourceMode::Cofdm => self
-                .decode_ticker
-                .last_instrument
-                .as_deref()
-                .and_then(|i| i.di_counter_str()),
-            _ => None,
+            _ => self.di_counter_line(),
         };
         let ft_label_w = ft_label.as_ref().map_or(0.0, |s| {
             painter

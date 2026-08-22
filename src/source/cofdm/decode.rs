@@ -5,7 +5,7 @@
 //!
 //! There is no text decode.  Spectral characterisation is delegated to
 //! [`SpectralState`]; this module adds the RF-level measurements and assembles
-//! a [`CofdmInstrument`] on the same cadence, so the Di bar and the `X` panel
+//! a [`OfdmInstrument`] on the same cadence, so the Di bar and the `X` panel
 //! advance in lockstep with the `Info` line rather than at a rate of their own.
 //!
 //! This is the first *provider* of the instrument.  When the viewer runs a
@@ -24,7 +24,7 @@ use super::source::{
     cofdm_mcs_facts,
 };
 use crate::decode::instrument::{
-    CofdmFacts, CofdmInstrument, CofdmRxFacts, ERROR_COUNT_WRAP, ErrorUnit,
+    ERROR_COUNT_WRAP, ErrorUnit, OfdmFacts, OfdmInstrument, OfdmRxFacts,
 };
 use crate::decode::spectral::{SpectralState, wb_cn_db};
 use crate::decode::{CofdmProbe, DecodeResult, ProbeFrameData};
@@ -248,12 +248,12 @@ impl CofdmState {
     }
 
     /// What the receiver has measured, or `None` when none is running.
-    fn rx_facts(&self) -> Option<CofdmRxFacts> {
+    fn rx_facts(&self) -> Option<OfdmRxFacts> {
         let (.., rx) = self.rx.as_ref()?;
         let stats = rx.stats();
         let last = rx.last().unwrap_or_default();
         let bad = stats.failed + stats.lost;
-        Some(CofdmRxFacts {
+        Some(OfdmRxFacts {
             sync_score: last.sync_score,
             cfo_hz: last.cfo_hz,
             evm_db: last.evm_db,
@@ -279,10 +279,10 @@ impl CofdmState {
         bw_hz: f32,
         shaping: CofdmShaping,
         fs: f32,
-    ) -> CofdmInstrument {
+    ) -> OfdmInstrument {
         let peak = samples.iter().fold(0.0_f32, |m, s| m.max(s.abs()));
         let (constellation, bits_per_symbol, inner_code_rate) = cofdm_mcs_facts();
-        CofdmInstrument::from_facts(&CofdmFacts {
+        OfdmInstrument::from_facts(&OfdmFacts {
             center_hz: carrier_hz,
             bandwidth_hz: bw_hz,
             level_amp: rms(samples),
@@ -320,7 +320,7 @@ impl CofdmState {
     ///
     /// Frames elapsed is derived from the bit rate rather than by re-deriving
     /// the frame geometry: `frames = bitrate × seconds / payload_bits`.
-    fn accumulate_errors(&mut self, inst: &CofdmInstrument, elapsed_samples: usize, fs: f32) {
+    fn accumulate_errors(&mut self, inst: &OfdmInstrument, elapsed_samples: usize, fs: f32) {
         // Simulation only. With a receiver running, `err` is a count of frames
         // that actually failed or went missing (see `rx_facts`), so estimating
         // it from a rate times an elapsed-frame count would be second-guessing
