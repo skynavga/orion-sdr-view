@@ -17,8 +17,8 @@ use orion_sdr::waveform::dvb_t::{DvbTLinkParams, GuardInterval};
 use orion_sdr_view::source::dvbt::{DVBT_CODE_RATES, DVBT_CONSTELLATIONS, DVBT_GUARDS};
 use orion_sdr_view::source::{
     DVBT_DEFAULT_CN_DB, DVBT_DEFAULT_CODE_RATE, DVBT_DEFAULT_CONSTELLATION, DVBT_DEFAULT_GUARD,
-    DVBT_DISPLAY_OVERSAMPLE, DvbTBandwidth, DvbTRx, DvbTShaping, DvbTSource, MAX_CN_DB,
-    SignalSource, dvbt_default_center_hz, dvbt_super_frame_samples,
+    DvbTBandwidth, DvbTRx, DvbTShaping, DvbTSource, MAX_CN_DB, SignalSource,
+    dvbt_default_center_hz, dvbt_super_frame_samples,
 };
 
 /// The viewer's real per-render-frame block size, so the tests exercise the same
@@ -57,7 +57,7 @@ fn source_with(bw: DvbTBandwidth, link: DvbTLinkParams, cn_db: f32) -> DvbTSourc
         bw,
         link,
         DvbTShaping::off(),
-        dvbt_default_center_hz(bw.display_fs()),
+        dvbt_default_center_hz(bw),
     )
 }
 
@@ -78,9 +78,14 @@ fn pump(src: &mut DvbTSource, rx: &mut DvbTRx, n: usize) {
     }
 }
 
-/// Display samples spanning `n` super-frames at `guard`.
-fn samples_for(guard: GuardInterval, n: usize) -> usize {
-    n * dvbt_super_frame_samples(guard) * DVBT_DISPLAY_OVERSAMPLE
+/// Display samples spanning `n` super-frames at `guard`, in `bw`'s mode.
+///
+/// The mode matters: the display oversampling factor runs from 2 to 12 across
+/// the six bandwidths, so a count derived from a fixed factor would pump a
+/// twelfth of the intended signal at 333k and report an acquisition failure that
+/// was really a short read.
+fn samples_for(bw: DvbTBandwidth, guard: GuardInterval, n: usize) -> usize {
+    n * dvbt_super_frame_samples(guard) * bw.display_oversample()
 }
 
 // ── Acquisition ────────────────────────────────────────────────────────────
@@ -93,7 +98,7 @@ fn a_clean_link_decodes_every_frame() {
     let link = default_link();
     let mut src = source_with(bw, link, CLEAN_CN_DB);
     let mut rx = DvbTRx::new(link, src.frame_payload_len());
-    pump(&mut src, &mut rx, samples_for(link.guard, 2));
+    pump(&mut src, &mut rx, samples_for(bw, link.guard, 2));
     let stats = rx.stats();
     assert!(
         stats.decoded >= 6,
@@ -114,7 +119,7 @@ fn every_mode_acquires() {
                 let link = link_of(guard, constellation, code_rate);
                 let mut src = source_with(bw, link, CLEAN_CN_DB);
                 let mut rx = DvbTRx::new(link, src.frame_payload_len());
-                pump(&mut src, &mut rx, samples_for(guard, 1));
+                pump(&mut src, &mut rx, samples_for(bw, guard, 1));
                 let stats = rx.stats();
                 assert!(
                     stats.decoded >= 3,
@@ -138,7 +143,7 @@ fn every_bandwidth_acquires() {
     for &bw in DvbTBandwidth::ALL {
         let mut src = source_with(bw, link, CLEAN_CN_DB);
         let mut rx = DvbTRx::new(link, src.frame_payload_len());
-        pump(&mut src, &mut rx, samples_for(link.guard, 1));
+        pump(&mut src, &mut rx, samples_for(bw, link.guard, 1));
         let stats = rx.stats();
         assert!(stats.decoded >= 3, "{}: {stats:?}", bw.label());
         assert_eq!(stats.failed, 0, "{}: {stats:?}", bw.label());
@@ -155,7 +160,7 @@ fn the_default_cn_decodes_cleanly_at_every_mode() {
             let link = link_of(DVBT_DEFAULT_GUARD, constellation, code_rate);
             let mut src = source_with(bw, link, DVBT_DEFAULT_CN_DB);
             let mut rx = DvbTRx::new(link, src.frame_payload_len());
-            pump(&mut src, &mut rx, samples_for(link.guard, 1));
+            pump(&mut src, &mut rx, samples_for(bw, link.guard, 1));
             let stats = rx.stats();
             assert_eq!(
                 stats.failed, 0,
@@ -192,10 +197,10 @@ fn the_default_shaping_is_transparent_at_every_mode() {
                 bw,
                 link,
                 DvbTShaping::default_enabled(),
-                dvbt_default_center_hz(bw.display_fs()),
+                dvbt_default_center_hz(bw),
             );
             let mut rx = DvbTRx::new(link, src.frame_payload_len());
-            pump(&mut src, &mut rx, samples_for(link.guard, 1));
+            pump(&mut src, &mut rx, samples_for(bw, link.guard, 1));
             let stats = rx.stats();
             assert_eq!(
                 stats.failed, 0,
@@ -238,10 +243,10 @@ fn the_taper_costs_the_dense_constellations() {
             bw,
             link,
             shaping,
-            dvbt_default_center_hz(bw.display_fs()),
+            dvbt_default_center_hz(bw),
         );
         let mut rx = DvbTRx::new(link, src.frame_payload_len());
-        pump(&mut src, &mut rx, samples_for(link.guard, 1));
+        pump(&mut src, &mut rx, samples_for(bw, link.guard, 1));
         rx.stats().decoded
     };
     assert!(
@@ -278,7 +283,7 @@ fn a_clean_link_measures_a_clean_ladder() {
     let link = default_link();
     let mut src = source_with(bw, link, CLEAN_CN_DB);
     let mut rx = DvbTRx::new(link, src.frame_payload_len());
-    pump(&mut src, &mut rx, samples_for(link.guard, 1));
+    pump(&mut src, &mut rx, samples_for(bw, link.guard, 1));
 
     let f = rx.last().expect("a frame should have decoded");
     assert_eq!(
@@ -369,7 +374,7 @@ fn frame_accounting_covers_every_arrival() {
     let mut src = source_with(bw, link, CLEAN_CN_DB);
     let mut rx = DvbTRx::new(link, src.frame_payload_len());
     let n_super = 2;
-    pump(&mut src, &mut rx, samples_for(link.guard, n_super));
+    pump(&mut src, &mut rx, samples_for(bw, link.guard, n_super));
     let stats = rx.stats();
     // Four frames per super-frame, less at most one lost to the leading
     // guard-interval search window.
@@ -389,13 +394,13 @@ fn reset_clears_the_accounting_and_the_buffer() {
     let link = default_link();
     let mut src = source_with(bw, link, CLEAN_CN_DB);
     let mut rx = DvbTRx::new(link, src.frame_payload_len());
-    pump(&mut src, &mut rx, samples_for(link.guard, 1));
+    pump(&mut src, &mut rx, samples_for(bw, link.guard, 1));
     assert!(rx.stats().decoded > 0);
     rx.reset();
     assert_eq!(rx.stats().decoded, 0);
     assert_eq!(rx.stats().failed, 0);
     assert!(rx.last().is_none());
     // And it still works afterwards.
-    pump(&mut src, &mut rx, samples_for(link.guard, 1));
+    pump(&mut src, &mut rx, samples_for(bw, link.guard, 1));
     assert!(rx.stats().decoded > 0);
 }

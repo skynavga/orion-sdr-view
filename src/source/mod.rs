@@ -29,10 +29,11 @@ pub use cofdm::{
 pub use cw::CwSource;
 pub use dvbt::{
     DVBT_DEFAULT_BANDWIDTH, DVBT_DEFAULT_CN_DB, DVBT_DEFAULT_CODE_RATE, DVBT_DEFAULT_CONSTELLATION,
-    DVBT_DEFAULT_GUARD, DVBT_DISPLAY_OVERSAMPLE, DVBT_DISPLAY_RMS_DBFS, DVBT_RX_WINDOW_BACKOFF,
-    DVBT_SHAPING_SLACK, DVBT_SYMBOLS_PER_FRAME, DvbTBandwidth, DvbTMask, DvbTRx, DvbTRxFacts,
-    DvbTRxStats, DvbTShaping, DvbTSource, DvbTTaper, dvbt_center_bounds, dvbt_clamp_center,
-    dvbt_default_center_hz, dvbt_frame_payload_bytes, dvbt_super_frame_samples,
+    DVBT_DEFAULT_GUARD, DVBT_DISPLAY_RMS_DBFS, DVBT_MIN_DISPLAY_OVERSAMPLE, DVBT_NARROW_SPAN_HZ,
+    DVBT_PREFERRED_FLOOR_DB, DVBT_PREFERRED_REF_DB, DVBT_RX_WINDOW_BACKOFF, DVBT_SHAPING_SLACK,
+    DVBT_SYMBOLS_PER_FRAME, DvbTBandwidth, DvbTMask, DvbTRx, DvbTRxFacts, DvbTRxStats, DvbTShaping,
+    DvbTSource, DvbTTaper, dvbt_center_bounds, dvbt_clamp_center, dvbt_default_center_hz,
+    dvbt_frame_payload_bytes, dvbt_preferred_ref_db, dvbt_super_frame_samples,
 };
 pub use ft8::{Ft8Mode, Ft8MsgType, Ft8Source};
 pub use psk31::{Psk31Mode, Psk31Source};

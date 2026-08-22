@@ -9,14 +9,14 @@ use crate::source::{CnNoise, CnReference, NoiseDomain, SignalSource, mean_power}
 // ── PSK31 HUD helpers ────────────────────────────────────────────────────────
 
 /// Format the PSK31 submode string shown in the top HUD line:
-/// `"  mode b|q  msg c|n"`.
+/// `" mode b|q msg c|n"`.
 pub fn hud_submode_str(mode: Psk31Mode, msg_is_custom: bool) -> String {
     let mode_ch = match mode {
         Psk31Mode::Bpsk31 => "b",
         Psk31Mode::Qpsk31 => "q",
     };
     let msg_ch = if msg_is_custom { "c" } else { "n" };
-    format!("  mode {mode_ch}  msg {msg_ch}")
+    format!(" mode {mode_ch} msg {msg_ch}")
 }
 
 // ── PSK31 constants ───────────────────────────────────────────────────────────

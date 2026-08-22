@@ -55,13 +55,13 @@ static CQ_VOICE_WAV: &[u8] = include_bytes!("../../../assets/audio/cq_voice.wav"
 // ── AM DSB HUD helpers ───────────────────────────────────────────────────────
 
 /// Format the AM DSB submode string shown in the top HUD line:
-/// `"  aud m"` (Morse), `"  aud v"` (Voice), or `"  aud c"` (Custom WAV).
+/// `" aud m"` (Morse), `" aud v"` (Voice), or `" aud c"` (Custom WAV).
 /// `audio_label` is the toggle's current label as exposed by the settings UI.
 pub fn hud_submode_str(audio_label: &str) -> String {
     match audio_label {
-        "Voice" => "  aud v".to_owned(),
-        "Custom" => "  aud c".to_owned(),
-        _ => "  aud m".to_owned(),
+        "Voice" => " aud v".to_owned(),
+        "Custom" => " aud c".to_owned(),
+        _ => " aud m".to_owned(),
     }
 }
 

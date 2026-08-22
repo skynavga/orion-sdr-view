@@ -68,6 +68,9 @@ pub struct ViewApp {
     /// history at a scaling that no longer applies.  Nothing about that
     /// announces itself.
     pub(super) applied_fs: f32,
+    /// The `(reference, floor)` the active source last asked for, so a change to
+    /// the *preference* can be told from a change by the operator's `[` / `]`.
+    pub(super) applied_scale: (Option<f32>, Option<f32>),
 
     // Test tone generator — kept alive so its state (cycling, settings) persists
     // across source switches. TestToneSource borrows it when active.
@@ -286,6 +289,10 @@ impl ViewApp {
             source_mode: SourceMode::TestTone,
             source,
             applied_fs: SAMPLE_RATE,
+            // Deliberately empty: the first `sync_settings` then sees the
+            // startup source's preference as a change and applies it, so a
+            // configured scale and a preferred one resolve through one path.
+            applied_scale: (None, None),
             signal_gen,
 
             ring_buf: RingBuffer::new(FFT_SIZE),
@@ -454,6 +461,16 @@ impl ViewApp {
         let fs = self.source.sample_rate();
         self.applied_fs = fs;
         self.freq_view.set_nyquist(fs / 2.0);
+        // What zoom 1× means, which is Nyquist unless the source says otherwise.
+        // Stated here rather than in `reframe_for_source` because it bounds the
+        // `Zoom` row below, and because `set_nyquist` has just reset it — a
+        // source that narrows the display span has to re-narrow it every time
+        // the rate moves, or one bandwidth press would silently widen 1× back to
+        // the full display.
+        let factory = super::common::source_mode_factory(self.source_mode);
+        if let Some(span) = factory.preferred_span_hz(&self.settings) {
+            self.freq_view.set_display_span(span);
+        }
         self.settings.set_zoom_max(self.freq_view.max_zoom_ratio());
         self.waterfall.clear();
         self.persistence.clear();
@@ -724,13 +741,11 @@ impl ViewApp {
         // bound, cleared history) before reframing, so reframe clamps to the
         // new Nyquist.
         self.apply_source_sample_rate();
-        let factory = super::common::source_mode_factory(mode);
-        // Before `reset_playback`, because this writes a *display* row and the
-        // `sync_settings` inside that call is what propagates it to `db_max` and
-        // the waterfall.  Display rows are not what `reset_playback` resets.
-        if let Some(ref_db) = factory.preferred_ref_db(&self.settings) {
-            self.settings.set_db_max(ref_db);
-        }
+        // Before `reset_playback`, because this writes *display* rows and the
+        // `sync_settings` inside that call is what propagates them to `db_max`,
+        // `db_min` and the waterfall.  Display rows are not what
+        // `reset_playback` resets.
+        self.apply_source_scale();
         self.sync_decode_config();
         self.reset_playback();
         // Framed *after* the row reset, because the band centre is read from
@@ -739,6 +754,65 @@ impl ViewApp {
         // the row happened to be left on the way in — which was harmless only
         // while the centre was a constant.  `reframe` touches the viewport
         // alone, so it needs no further sync.
+        self.reframe_for_source();
+        // Text mode is only valid for CW/PSK31/FT8; clamp if we switched away.
+        let has_text = matches!(mode, SourceMode::Cw | SourceMode::Psk31 | SourceMode::Ft8);
+        if !has_text && self.decode_bar == DecodeBarMode::Text {
+            self.decode_bar = DecodeBarMode::Info;
+        }
+    }
+
+    /// The spectrum scale the active source asks for: `(reference, floor)`, each
+    /// `None` where it states none.
+    pub(super) fn source_scale(&self) -> (Option<f32>, Option<f32>) {
+        let factory = super::common::source_mode_factory(self.source_mode);
+        (
+            factory.preferred_ref_db(&self.settings),
+            factory.preferred_db_min(&self.settings),
+        )
+    }
+
+    /// Write the active source's preferred scale into the display rows, and
+    /// record it so a later change to the *preference* can be told apart from a
+    /// later change by the operator.
+    ///
+    /// **A settings row can move the preference without moving the sample
+    /// rate**, which is why this is separate from
+    /// [`apply_source_sample_rate`](Self::apply_source_sample_rate) rather than
+    /// folded into it.  DVB-T's reference level tracks its oversampling factor,
+    /// and 1M → 2M steps that factor from 4 to 2 while both render at the same
+    /// 4.80 MS/s: keyed off the rate, the scale would not have moved and the
+    /// trace would have sat 3 dB off the top of the pane.
+    pub(super) fn apply_source_scale(&mut self) {
+        let want = self.source_scale();
+        if let Some(ref_db) = want.0 {
+            self.settings.set_db_max(ref_db);
+        }
+        if let Some(floor_db) = want.1 {
+            self.settings.set_db_min(floor_db);
+        }
+        self.applied_scale = want;
+    }
+
+    /// Frame the viewport on the active source's band, if it states a
+    /// preference, and tell the `Zoom` row what that settled on.
+    ///
+    /// Called on a source switch and on any change that moves the source's
+    /// *sample rate* — which until DVB-T's `Bandwidth` toggle only a switch
+    /// could do.  Both are mode changes: the bin-indexed history is already
+    /// being discarded, so re-framing costs nothing that survives anyway.
+    ///
+    /// **Re-deriving the Nyquist is not enough on its own**, which is what made
+    /// this worth factoring out of `switch_source`.  A bandwidth change moves
+    /// the rate *and* re-centres the band; the viewport kept neither, so
+    /// stepping 1M → 2M left the window centred on the outgoing band centre at
+    /// the incoming span — the signal ran off the right edge with the left of
+    /// the window past 0 Hz, every number in the HUD self-consistent and wrong.
+    ///
+    /// A source with no stated preference (every narrowband one) is left alone,
+    /// so its viewport survives a switch as it always has.
+    pub(super) fn reframe_for_source(&mut self) {
+        let factory = super::common::source_mode_factory(self.source_mode);
         if let (Some(center), Some(span)) = (
             factory.nominal_center_hz(&self.settings),
             factory.preferred_span_hz(&self.settings),
@@ -749,11 +823,6 @@ impl ViewApp {
         // `Zoom` row must now show.  Precedence step 2: a source's stated span
         // wins on switch *to* it.
         self.settings.set_zoom_ratio(self.freq_view.zoom_ratio());
-        // Text mode is only valid for CW/PSK31/FT8; clamp if we switched away.
-        let has_text = matches!(mode, SourceMode::Cw | SourceMode::Psk31 | SourceMode::Ft8);
-        if !has_text && self.decode_bar == DecodeBarMode::Text {
-            self.decode_bar = DecodeBarMode::Info;
-        }
     }
 
     /// Close every overlay but `keep`.  The three are mutually exclusive: only

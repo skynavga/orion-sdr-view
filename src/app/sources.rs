@@ -22,6 +22,15 @@ impl ViewApp {
 
     /// Push current settings values into live signal/display state.
     pub(super) fn sync_settings(&mut self) {
+        // The source's preferred spectrum scale, *before* the rows are read
+        // below.  Guarded on the preference having moved, so `[` / `]` and the
+        // `dB min` / `dB max` rows keep working — what changes it is a source
+        // switch or a settings row the preference is derived from, which for
+        // DVB-T is `Bandwidth`.  That row can move the reference without moving
+        // the sample rate, so this cannot ride on the rate guard below.
+        if self.source_scale() != self.applied_scale {
+            self.apply_source_scale();
+        }
         self.db_min = self.settings.db_min();
         self.db_max = self.settings.db_max();
         self.waterfall.db_min = self.settings.db_min();
@@ -63,6 +72,7 @@ impl ViewApp {
         // source reports, which is the same rule the method itself follows.
         if self.source.sample_rate() != self.applied_fs {
             self.apply_source_sample_rate();
+            self.reframe_for_source();
         }
 
         self.sync_decode_config();

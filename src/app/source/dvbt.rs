@@ -6,7 +6,7 @@ use orion_sdr::waveform::dvb_t::DvbTLinkParams;
 use crate::app::settings::{DvbTSettings, SettingsState};
 use crate::decode::DecodeMode;
 use crate::source::SignalSource;
-use crate::source::dvbt::{self, DVBT_PREFERRED_REF_DB, DvbTSource};
+use crate::source::dvbt::{self, DVBT_PREFERRED_FLOOR_DB, DvbTSource, dvbt_preferred_ref_db};
 use crate::source::ft8::Ft8ViewState;
 
 /// Build a fresh `DvbTSource` from current settings.
@@ -116,14 +116,27 @@ impl super::SourceFactory for Factory {
         Some(settings.dvbt_center_hz())
     }
     fn preferred_span_hz(&self, settings: &SettingsState) -> Option<f32> {
-        // Full Nyquist of the *display* rate, so the occupied band fills 83% of
-        // the window — which is as much of it as DVB-T can be made to fill,
-        // since the band width is not a lever.  Clamped to Nyquist by
-        // `FreqView::reframe`.
-        Some(settings.dvbt_bandwidth().display_fs() / 2.0)
+        // **A fixed width per bandwidth group, not the display Nyquist**, which
+        // is what makes DVB-T the source that needed `FreqView::set_display_span`.
+        // Framing at Nyquist drew every mode's band at the same 83% of a
+        // different window, so a `Bandwidth` press rescaled the axis instead of
+        // changing the band's width on screen — hiding the one thing the toggle
+        // exists to show.  See `DvbTBandwidth::display_span_hz`.
+        Some(settings.dvbt_bandwidth().display_span_hz())
     }
-    fn preferred_ref_db(&self, _settings: &SettingsState) -> Option<f32> {
-        Some(DVBT_PREFERRED_REF_DB)
+    fn preferred_ref_db(&self, settings: &SettingsState) -> Option<f32> {
+        // **Per bandwidth mode, not a constant.**  The burst's total power is
+        // normalised the same way everywhere, but the spectrum draws it per bin
+        // and a narrow mode packs it into a sixth as many — see
+        // `dvbt_preferred_ref_db`, which is what stops 333k running off the top
+        // of the pane.
+        Some(dvbt_preferred_ref_db(settings.dvbt_bandwidth()))
+    }
+    fn preferred_db_min(&self, _settings: &SettingsState) -> Option<f32> {
+        // The only source that moves the floor.  A band 83% of the display wide
+        // puts its noise ~36 dB under its own per-bin level, which the shared
+        // -80 dB floor cuts off entirely — see `DVBT_PREFERRED_FLOOR_DB`.
+        Some(DVBT_PREFERRED_FLOOR_DB)
     }
 }
 

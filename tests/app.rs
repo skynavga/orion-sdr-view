@@ -745,15 +745,19 @@ fn selecting_dvbt_adopts_the_oversampled_display_rate() {
 
     let bw = h.app.settings().dvbt_bandwidth();
     assert_eq!(h.app.source_sample_rate(), bw.display_fs());
-    assert_eq!(h.app.source_sample_rate(), bw.fs() * 2.0);
+    assert_eq!(
+        h.app.source_sample_rate(),
+        bw.fs() * bw.display_oversample() as f32
+    );
 
-    // The viewport is reframed to the new Nyquist, and the whole occupied band
-    // fits inside it with room to spare.
-    let nyquist = bw.display_fs() / 2.0;
-    assert!((h.app.freq_view().nyquist - nyquist).abs() < 1.0);
+    // The axis knows the whole stream, the frame shows the group's width, and
+    // the band fits inside the frame with room to spare.
+    let view = h.app.freq_view();
+    assert!((view.nyquist - bw.display_nyquist_hz()).abs() < 1.0);
+    assert!((view.span_hz - bw.display_span_hz()).abs() < 1.0);
     assert!(
-        bw.occupied_hz() < nyquist,
-        "the band must fit the one-sided span"
+        bw.occupied_hz() < bw.display_span_hz(),
+        "the band must fit the framed window"
     );
 }
 
@@ -769,7 +773,7 @@ fn the_lock_key_retunes_the_dvbt_band() {
     let mut h = Harness::with_defaults();
     h.select_source(SourceMode::DvbT);
 
-    let (lo, hi) = orion_sdr_view::source::dvbt_center_bounds(h.app.source_sample_rate());
+    let (lo, hi) = orion_sdr_view::source::dvbt_center_bounds(h.app.settings().dvbt_bandwidth());
     assert!(hi > lo, "the centre range must not be a point");
 
     let before = h.app.settings().dvbt_center_hz();
@@ -806,36 +810,352 @@ fn a_dvbt_bandwidth_change_moves_the_rate_and_the_display_together() {
     use orion_sdr_view::app::settings::DvbTSettings;
     let mut h = Harness::with_defaults();
     h.select_source(SourceMode::DvbT);
-    let rate_before = h.app.source_sample_rate();
 
     // Open settings and walk to the Bandwidth row.  The first row of the
     // overlay is the *source selector*, so the source's own rows start one
     // below it: Source, Center, Bandwidth.
     h.key(egui::Key::S);
     h.key_n(egui::Key::ArrowDown, 3);
+
+    // Every mode, not one step.  The rate does not move on every press — 1M and
+    // 2M oversample by 4 and 2 onto the same 4.80 MS/s — so a test built on one
+    // transition would be asserting a coincidence.  What holds at all six is
+    // that the rate is the mode's own and the axis agrees with it.
+    let mut rates = Vec::new();
+    for _ in 0..orion_sdr_view::source::DvbTBandwidth::ALL.len() {
+        h.key(egui::Key::ArrowRight);
+        let bw = h.app.settings().dvbt_bandwidth();
+        assert_eq!(h.app.source_mode(), SourceMode::DvbT, "still on DVB-T");
+        assert_eq!(h.app.source_sample_rate(), bw.display_fs());
+        assert!(
+            (h.app.freq_view().nyquist - bw.display_nyquist_hz()).abs() < 1.0,
+            "{}: the display Nyquist must follow the rate, not lag it",
+            bw.label()
+        );
+
+        // And the band lands back mid-frame rather than pinned to whichever edge
+        // the clamp left it against — stepping the toggle should look like a
+        // mode change, not like the band walking off to one side.
+        let center = h.app.settings().dvbt_center_hz();
+        let (lo, hi) = orion_sdr_view::source::dvbt_center_bounds(bw);
+        assert!(
+            (lo..=hi).contains(&center),
+            "{}: centre {center} outside {lo}..{hi}",
+            bw.label()
+        );
+        assert!(
+            (center - bw.display_span_hz() / 2.0).abs() < 1.0,
+            "{}: a mode change should land the band mid-frame",
+            bw.label()
+        );
+        rates.push(h.app.source_sample_rate());
+    }
+    h.key(egui::Key::S);
+    // The rate really does move across the six, so the re-derivation above is
+    // being exercised rather than passing on a stationary axis.
+    assert!(
+        rates.iter().any(|r| *r != rates[0]),
+        "expected the rate to move somewhere across the six modes: {rates:?}"
+    );
+}
+
+/// A bandwidth change has to move the *viewport*, not just the Nyquist behind
+/// it.
+///
+/// The distinction the previous test does not make, and the one that shipped
+/// broken: `apply_source_sample_rate` re-derives the axis, but `FreqView` keeps
+/// whatever centre and span it was on.  A step from 1M to 2M therefore left the
+/// window centred on the *outgoing* band centre while the band itself had been
+/// re-centred an octave up — measured on screen, the trace ran off the right
+/// edge with the left sixth of the window sitting below 0 Hz.  Every number in
+/// the HUD agreed with every other; only the picture was wrong.
+#[test]
+fn a_dvbt_bandwidth_change_reframes_the_viewport() {
+    use orion_sdr_view::app::settings::DvbTSettings;
+    let mut h = Harness::with_defaults();
+    h.select_source(SourceMode::DvbT);
+
+    // Two steps: 1M -> 2M -> 6M, which crosses into the broadcast group.  One
+    // step would not do — 1M and 2M share a display width *and* a band centre,
+    // so a stale frame would still look right.
+    h.key(egui::Key::S);
+    h.key_n(egui::Key::ArrowDown, 3);
+    h.key(egui::Key::ArrowRight);
     h.key(egui::Key::ArrowRight);
     h.key(egui::Key::S);
 
     let bw = h.app.settings().dvbt_bandwidth();
-    assert_eq!(h.app.source_mode(), SourceMode::DvbT, "still on DVB-T");
-    assert_ne!(h.app.source_sample_rate(), rate_before, "the rate moved");
-    assert_eq!(h.app.source_sample_rate(), bw.display_fs());
+    assert_eq!(bw.label(), "6M", "expected to have crossed groups");
+    let view = h.app.freq_view();
     assert!(
-        (h.app.freq_view().nyquist - bw.display_fs() / 2.0).abs() < 1.0,
-        "the display Nyquist must follow the rate, not lag it"
+        (view.center_hz - h.app.settings().dvbt_center_hz()).abs() < 1.0,
+        "viewport centre {} should be the band centre {}",
+        view.center_hz,
+        h.app.settings().dvbt_center_hz()
+    );
+    assert!(
+        (view.span_hz - bw.display_span_hz()).abs() < 1.0,
+        "viewport span {} should be the new group width {}",
+        view.span_hz,
+        bw.display_span_hz()
+    );
+    // The window that follows holds the whole band with room at both ends, and
+    // starts at or above DC — the two ways the stale frame failed.
+    let (lo, hi) = (view.lo(), view.hi());
+    assert!(lo >= -1.0, "the window should not run below 0 Hz: {lo}");
+    let (band_lo, band_hi) = (
+        h.app.settings().dvbt_center_hz() - bw.occupied_hz() / 2.0,
+        h.app.settings().dvbt_center_hz() + bw.occupied_hz() / 2.0,
+    );
+    assert!(
+        band_lo > lo && band_hi < hi,
+        "band {band_lo}..{band_hi} should sit inside the window {lo}..{hi}"
+    );
+}
+
+/// The frequency axis holds still across a bandwidth change within a group.
+///
+/// **The point of the whole per-mode oversampling table.**  Framing at the
+/// display Nyquist drew every mode's band at the same 83% of a *different*
+/// window, so stepping 333k -> 1M -> 2M rescaled the axis under the trace
+/// instead of widening the trace on the axis — the one thing a bandwidth toggle
+/// exists to show was the one thing it could not.  With the span fixed the
+/// band's share of the window *is* its width: 14.5%, 43.5%, 87.0%.
+#[test]
+fn the_dvbt_axis_holds_still_across_a_bandwidth_change() {
+    use orion_sdr_view::app::settings::DvbTSettings;
+    let mut h = Harness::with_defaults();
+    h.select_source(SourceMode::DvbT);
+
+    // Walk to the Bandwidth row and step down to the narrowest mode, then back
+    // up through the group, recording the span and the band's share at each.
+    h.key(egui::Key::S);
+    h.key_n(egui::Key::ArrowDown, 3);
+    h.key(egui::Key::ArrowLeft);
+
+    let mut seen = Vec::new();
+    for _ in 0..3 {
+        let bw = h.app.settings().dvbt_bandwidth();
+        let view = h.app.freq_view();
+        seen.push((bw, view.span_hz, view.zoom_ratio()));
+        h.key(egui::Key::ArrowRight);
+    }
+    h.key(egui::Key::S);
+
+    let (_, span, _) = seen[0];
+    for &(bw, got, zoom) in &seen {
+        assert!(
+            (got - span).abs() < 1.0,
+            "{}: span {got} should equal the group's {span}",
+            bw.label()
+        );
+        assert!(
+            (zoom - 1.0).abs() < 0.01,
+            "{}: a framed source should read zoom 1x, got {zoom}",
+            bw.label()
+        );
+        // The band's share of that fixed window is its width and nothing else.
+        assert!(
+            (bw.occupied_hz() / got - bw.occupied_hz() / span).abs() < 1e-6,
+            "{}: fill should follow the width alone",
+            bw.label()
+        );
+    }
+    // Three genuinely different widths on one axis, narrowest first.
+    let widths: Vec<f32> = seen.iter().map(|(bw, _, _)| bw.occupied_hz()).collect();
+    assert!(
+        widths[0] < widths[1] && widths[1] < widths[2],
+        "expected three increasing widths, got {widths:?}"
+    );
+}
+
+/// The Nyquist above the framed span is real spectrum, reachable but not framed.
+///
+/// The half of `set_display_span` that is easy to get wrong in the other
+/// direction: narrowing zoom 1x must not narrow the *data*.  At 333k the stream
+/// runs to 2.40 MHz while the frame stops at 2.30, and the bin mapping, the
+/// texture UVs and the pan bound all still work in the full range.
+#[test]
+fn the_dvbt_display_span_does_not_shrink_the_spectrum() {
+    use orion_sdr_view::app::settings::DvbTSettings;
+    let mut h = Harness::with_defaults();
+    h.select_source(SourceMode::DvbT);
+    h.key(egui::Key::S);
+    h.key_n(egui::Key::ArrowDown, 3);
+    h.key(egui::Key::ArrowLeft); // 1M -> 333k, the deepest oversampling
+    h.key(egui::Key::S);
+
+    let bw = h.app.settings().dvbt_bandwidth();
+    assert_eq!(bw.display_oversample(), 12, "expected the 333k mode");
+    let view = h.app.freq_view();
+    assert!(
+        view.nyquist > view.display_span() + 1.0,
+        "333k should carry headroom: nyquist {} vs span {}",
+        view.nyquist,
+        view.display_span()
+    );
+    assert!(
+        (view.nyquist - bw.display_nyquist_hz()).abs() < 1.0,
+        "the axis must still know the real Nyquist"
+    );
+    assert!(
+        (view.span_hz - bw.display_span_hz()).abs() < 1.0,
+        "but frame the group's width"
     );
 
-    // And the band lands back mid-display rather than pinned to whichever edge
-    // the clamp left it against — stepping the toggle should look like a mode
-    // change, not like the band walking off to one side.
-    let center = h.app.settings().dvbt_center_hz();
-    let (lo, hi) = orion_sdr_view::source::dvbt_center_bounds(bw.display_fs());
+    // Panning can still reach the headroom, so the extra spectrum is not walled
+    // off — it is merely not where the source opens.
+    h.key_n(egui::Key::ArrowUp, 4);
+    h.key_n(egui::Key::ArrowRight, 40);
     assert!(
-        (lo..=hi).contains(&center),
-        "centre {center} outside {lo}..{hi}"
+        h.app.freq_view().hi() > bw.display_span_hz(),
+        "a pan should be able to leave the framed window"
+    );
+}
+
+/// The reference level follows the `Bandwidth` row even when the rate does not.
+///
+/// **The trap in keying display state off the sample rate.**  DVB-T's reference
+/// tracks its oversampling factor, and 1M -> 2M steps that factor from 4 to 2
+/// while *both* modes render at the same 4.80 MS/s — 1 201 173 x 4 and
+/// 2 402 346 x 2.  Hung off the rate guard, the scale would not have moved and
+/// the 2M trace would have sat 3 dB up the pane with nothing to say why.
+#[test]
+fn the_dvbt_reference_follows_the_bandwidth_row() {
+    use orion_sdr_view::app::settings::DvbTSettings;
+    use orion_sdr_view::source::dvbt_preferred_ref_db;
+    let mut h = Harness::with_defaults();
+    h.select_source(SourceMode::DvbT);
+
+    let bw_before = h.app.settings().dvbt_bandwidth();
+    let rate_before = h.app.source_sample_rate();
+    let ref_before = h.app.settings().db_max();
+    assert!(
+        (ref_before - dvbt_preferred_ref_db(bw_before)).abs() < 0.01,
+        "the 1M reference should be its own: {ref_before}"
+    );
+
+    h.key(egui::Key::S);
+    h.key_n(egui::Key::ArrowDown, 3);
+    h.key(egui::Key::ArrowRight); // 1M -> 2M
+    h.key(egui::Key::S);
+
+    let bw = h.app.settings().dvbt_bandwidth();
+    assert_eq!(bw.label(), "2M");
+    assert_eq!(
+        h.app.source_sample_rate(),
+        rate_before,
+        "1M and 2M render at the same rate, which is the whole point here"
+    );
+    let now = h.app.settings().db_max();
+    assert!(
+        (now - dvbt_preferred_ref_db(bw)).abs() < 0.01,
+        "the reference should have followed the row: {now} vs {}",
+        dvbt_preferred_ref_db(bw)
     );
     assert!(
-        (center - bw.display_fs() / 4.0).abs() < 1.0,
-        "a mode change should land the band mid-display"
+        (now - ref_before).abs() > 1.0,
+        "and it should actually have moved: {ref_before} -> {now}"
+    );
+    // The floor is not part of it — the noise per bin does not move with the
+    // factor, so only the top of the scale tracks it.
+    assert!(
+        (h.app.settings().db_min() - orion_sdr_view::source::DVBT_PREFERRED_FLOOR_DB).abs() < 0.01
+    );
+}
+
+/// `R` after a bandwidth excursion must restore the band the source started
+/// with — the bandwidth *and* the centre that belongs to it.
+///
+/// **The row default is not a value to clamp.**  `reseed_center_bounds` used to
+/// clamp `default` into the new mode's range alongside `value`, which reads as
+/// tidy and is not: the default is what `R` restores *together with* the
+/// bandwidth row, so one visit to 2M rewrote it from 600.6 kHz to that mode's
+/// lower bound of 1.000 MHz and left it there.  `R` then paired a 1M bandwidth
+/// with a centre 300 kHz outside its legal range; the source clamped to the band
+/// edge, the band drew hard against one side, and the C/N estimator measured a
+/// window that no longer held it — 26 dB against a requested 35.  The settings
+/// panel read exactly what it had been reset to throughout.
+#[test]
+fn resetting_after_a_dvbt_bandwidth_change_restores_the_default_band() {
+    use orion_sdr_view::app::settings::DvbTSettings;
+    let mut h = Harness::with_defaults();
+    h.select_source(SourceMode::DvbT);
+    let bw_before = h.app.settings().dvbt_bandwidth();
+    let center_before = h.app.settings().dvbt_center_hz();
+
+    // Two steps, to 6M: it is in the other bandwidth group, so its centre
+    // default differs from 1M's and a failure to restore is visible.  One step
+    // lands on 2M, which shares 1M's display width and band centre exactly.
+    h.key(egui::Key::S);
+    h.key_n(egui::Key::ArrowDown, 3);
+    h.key(egui::Key::ArrowRight);
+    h.key(egui::Key::ArrowRight);
+    h.key(egui::Key::S);
+    assert_ne!(h.app.settings().dvbt_bandwidth(), bw_before, "moved off 1M");
+    assert!(
+        (h.app.settings().dvbt_center_hz() - center_before).abs() > 1.0,
+        "the excursion should have moved the centre, or this proves nothing"
+    );
+
+    h.key(egui::Key::R);
+
+    let bw = h.app.settings().dvbt_bandwidth();
+    let center = h.app.settings().dvbt_center_hz();
+    assert_eq!(bw, bw_before, "R restores the bandwidth");
+    assert!(
+        (center - center_before).abs() < 1.0,
+        "R restores the centre that belongs to it: {center} vs {center_before}"
+    );
+    // And the restored pair is *coherent*: the centre is inside the range its
+    // own bandwidth allows, so the source renders it unclamped.
+    let (lo, hi) = orion_sdr_view::source::dvbt_center_bounds(bw);
+    assert!(
+        (lo..=hi).contains(&center),
+        "restored centre {center} outside {lo}..{hi}"
+    );
+    assert!(
+        (center - bw.display_span_hz() / 2.0).abs() < 1.0,
+        "the restored band should be mid-frame"
+    );
+}
+
+/// DVB-T lowers the spectrum floor, and every other source gets the shared one
+/// back.
+///
+/// A reference level alone sizes nothing: it moves the top of the scale while
+/// the floor stays where the config left it, so DVB-T's -41 dB preference made
+/// the window *shorter* rather than lower.  Its power spreads over 83% of the
+/// display span, which puts the per-bin trace near -52 dBFS and the injected
+/// noise near -88 — below the shared -80 floor, so the out-of-band region drew
+/// pinned at the bottom of the scale.  That is what a *noiseless* channel looks
+/// like, which is why nothing about it read as broken.
+///
+/// The half that matters as much: the floor is *given back*.  A preference no
+/// other source states would have left DVB-T's -90 in place for whatever was
+/// selected next.
+#[test]
+fn dvbt_lowers_the_display_floor_and_gives_it_back() {
+    use orion_sdr_view::source::dvbt::DVBT_PREFERRED_FLOOR_DB;
+    let mut h = Harness::with_defaults();
+
+    h.select_source(SourceMode::DvbT);
+    let floor = h.app.settings().db_min();
+    let top = h.app.settings().db_max();
+    assert!(
+        (floor - DVBT_PREFERRED_FLOOR_DB).abs() < 0.01,
+        "DVB-T should state its own floor: {floor}"
+    );
+    // Deep enough to hold the noise the default C/N puts under the band.
+    assert!(
+        top - floor > 35.0 + 10.0,
+        "the scale must span the C/N plus headroom: {floor}..{top}"
+    );
+
+    h.select_source(SourceMode::Cofdm);
+    let floor = h.app.settings().db_min();
+    assert!(
+        (floor - orion_sdr_view::config::Defaults::DB_MIN).abs() < 0.01,
+        "switching away must restore the shared floor, not inherit DVB-T's: {floor}"
     );
 }

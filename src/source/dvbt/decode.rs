@@ -30,30 +30,38 @@ use crate::decode::spectral::{SpectralState, wb_cn_db};
 use crate::decode::{CofdmProbe, DecodeResult, ProbeFrameData};
 
 /// Correction (dB) from the C/N a real-projection spectrum measures to the C/N
-/// the receiver actually sees.  **Zero for DVB-T, and not by coincidence — by
-/// two cancelling factors of two.**
+/// the receiver actually sees, given the display's oversampling factor.
 ///
-/// COFDM carries `REAL_PROJECTION_CN_OFFSET_DB = 3.01` because its noise is
-/// generated at the same rate the display measures at: taking the real part of
-/// complex baseband quarters the signal into two mirror lobes while merely
-/// halving already-symmetric complex noise, so the estimator reads 3 dB low.
+/// COFDM carries a constant `REAL_PROJECTION_CN_OFFSET_DB = 3.01` because its
+/// noise is generated at the same rate the display measures at: taking the real
+/// part of complex baseband quarters the signal into two mirror lobes while
+/// merely halving already-symmetric complex noise, so the estimator reads 3 dB
+/// low.
 ///
-/// DVB-T runs its display stream at twice the waveform's rate (see
-/// `DVBT_DISPLAY_OVERSAMPLE`), and injects noise per *emitted* sample — so the
-/// noise is white over `2·fs_waveform` on the display, while the decoder, which
-/// reads every other sample, aliases that same power into `fs_waveform` and sees
-/// 3 dB more of it.  Writing both out against the requested ratio:
+/// DVB-T's is **not a constant, because its oversampling factor is not one**.
+/// Noise is injected per *emitted* sample, so it is white over `fs_display`,
+/// while the decoder reads every `L`-th sample and aliases that same power into
+/// `fs_waveform`.  Writing both out against the requested ratio, with `σ²` the
+/// per-component noise variance and `B` the occupied bandwidth:
 ///
 /// ```text
-/// measured = [(P_s / 4) / B] / [(P_n / 2) / fs_display] = P_s · fs_display / (2 · B · P_n)
-/// actual   =  P_s · fs_waveform / (B · P_n)
-/// ratio    =  fs_display / (2 · fs_waveform) = 1
+/// measured = [(P_s / 2) / B] / [2σ² / fs_display] = P_s · fs_display / (4 · B · σ²)
+/// actual   =  P_s / (2σ² · B / fs_waveform)       = P_s · fs_waveform / (2 · B · σ²)
+/// ratio    =  fs_display / (2 · fs_waveform)      = L / 2
 /// ```
 ///
-/// So the display's estimate *is* the decoder's C/N, with nothing to correct.
-/// Stated as a named constant rather than omitted, because the next multicarrier
-/// source will have to work out which of the two it is.
-const REAL_PROJECTION_CN_OFFSET_DB: f32 = 0.0;
+/// So the spectrum over-reads by `10·log10(L/2)` dB and this subtracts it.  At
+/// `L = 2` the two factors of two cancel and the correction is exactly zero,
+/// which is what the 1 MHz mode measured before the factor became per-mode — and
+/// is why this was a `0.0` constant until the narrow modes needed 4 and 12.
+/// Left as arithmetic on the two rates the caller already holds, so it cannot
+/// disagree with the factor the source actually rendered at.
+fn real_projection_cn_offset_db(fs_display: f32, fs_waveform: f32) -> f32 {
+    if !(fs_display.is_finite() && fs_waveform > 0.0) {
+        return 0.0;
+    }
+    -10.0 * (fs_display / (2.0 * fs_waveform)).log10()
+}
 
 #[derive(Default)]
 pub struct DvbTState {
@@ -108,8 +116,31 @@ impl DvbTState {
             // narrowband estimator — one peak bin against the noise floor —
             // measures a single subcarrier and reports a number tens of dB off.
             // Compare the mean power across the occupied window instead.
+            //
+            // **Read this number as approximate, and here more than anywhere.**
+            // `wb_cn_db` takes its noise floor from the median of the bins
+            // *outside* the occupied window, and its own doc comment names the
+            // limit: at 87.5% occupancy there are barely any such bins and they
+            // are all transmit skirt.  DVB-T sits at 83.25% in every mode and
+            // cannot be narrowed, so the exclusion zone starves down to its
+            // `MIN_NOISE_BINS` floor on every reading.  Measured against a
+            // requested 35 dB, the Di line settles around 34 and dips to 23-28
+            // perhaps one reading in six.
+            //
+            // The dips are not noise in the estimate — they are the interleaver
+            // flush.  `DVBT_DISPLAY_RMS_DBFS` records why a DVB-T frame opens
+            // and closes with near-impulsive symbols; an analysis window landing
+            // on one splatters broadband energy across the handful of bins the
+            // median is computed from, lifting the apparent floor by several dB.
+            // A window that misses them reads the true ratio.
+            //
+            // The fix is not a better spectral estimator: it is to measure the
+            // noise where the signal is, from the receiver's EVM, which is what
+            // the instrument's `MER` rung is for.  That is blocked on the
+            // orion-sdr 0.0.63 defect `DVBT_MEASURE_ERROR_RATES` documents.
             |real, fs, carrier_hz| {
-                wb_cn_db(real, fs, carrier_hz, bw_hz) + REAL_PROJECTION_CN_OFFSET_DB
+                wb_cn_db(real, fs, carrier_hz, bw_hz)
+                    + real_projection_cn_offset_db(fs_display, fs_waveform)
             },
             // The occupied bandwidth of a DVB-T band is a fixed property of the
             // mode — `fs · 1705/2048`, with no lever that can move it — not a

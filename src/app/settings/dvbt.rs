@@ -105,22 +105,23 @@ impl DvbTRows {
     pub fn new() -> Self {
         let d = DvbTShaping::default_enabled();
         let bw = DVBT_DEFAULT_BANDWIDTH;
-        // Every frequency row is in **display-rate** terms, because that is what
-        // the viewport shows and what the `L` key writes back.  The waveform's
-        // own rate is half of it — see `DVBT_DISPLAY_OVERSAMPLE`.
-        let fs_d = bw.display_fs();
-        let center = dvbt_default_center_hz(fs_d);
-        let (center_lo, center_hi) = dvbt_center_bounds(fs_d);
+        // Every frequency row is in **display** terms, because that is what the
+        // viewport shows and what the `L` key writes back.  Both helpers take the
+        // mode rather than a rate, so neither of DVB-T's two rates can be handed
+        // to the wrong one.
+        let center = dvbt_default_center_hz(bw);
+        let (center_lo, center_hi) = dvbt_center_bounds(bw);
         Self {
             rows: vec![
                 Row::Num(NumField {
                     label: "Center",
                     value: center,
                     default: center,
-                    // 1 kHz per press.  The tunable range is narrow — the band
-                    // is 83% of the waveform's rate and cannot shrink, so the
-                    // centre moves only ±4.2% of the display rate — and `L`
-                    // (lock source to viewport centre) is the real tuning
+                    // 1 kHz per press.  How far it can travel depends on the
+                    // mode: at 2M and 8M the display is barely wider than the
+                    // band and the centre moves only a couple of percent, while
+                    // at 333k the band can be tuned right across the window.
+                    // `L` (lock source to viewport centre) is the real tuning
                     // control, writing the centre in directly at 10 Hz.
                     step: 1_000.0,
                     min: center_lo,
@@ -249,10 +250,28 @@ impl DvbTRows {
         )
     }
 
+    /// The bandwidth an `R` reset would restore — the row's *default* index, not
+    /// its current one.
+    ///
+    /// The centre's default has to be derived from this rather than from
+    /// [`bandwidth`](Self::bandwidth): a reset restores every row at once, so the
+    /// centre it restores must be the one that belongs to the bandwidth it
+    /// restores alongside it.
+    fn default_bandwidth(&self) -> DvbTBandwidth {
+        let idx = match &self.rows[BANDWIDTH] {
+            Row::Toggle(f) => f.default,
+            _ => index_of(DvbTBandwidth::ALL, DVBT_DEFAULT_BANDWIDTH),
+        };
+        DvbTBandwidth::ALL
+            .get(idx)
+            .copied()
+            .unwrap_or(DVBT_DEFAULT_BANDWIDTH)
+    }
+
     fn center_hz(&self) -> f32 {
         match &self.rows[CENTER] {
             Row::Num(f) => f.value,
-            _ => dvbt_default_center_hz(self.bandwidth().display_fs()),
+            _ => dvbt_default_center_hz(self.bandwidth()),
         }
     }
 
@@ -284,13 +303,25 @@ impl DvbTRows {
     /// with it and a value from the old mode is almost always outside the new
     /// one.  Without this the row would show a centre the source cannot use —
     /// the source clamps regardless, so the two would silently disagree.
+    ///
+    /// **The default is re-derived, never clamped**, and the difference is a bug
+    /// this shipped with.  Clamping it looks like the obvious way to keep the
+    /// reset value inside the new range, but the default is what `R` restores
+    /// *together with the bandwidth row* — so clamping it against the bandwidth
+    /// currently selected writes the wrong answer permanently.  Visiting 2M once
+    /// rewrote the default from 600.6 kHz to that mode's lower bound of 1.000
+    /// MHz; `R` then restored 1M alongside a centre 300 kHz outside its range,
+    /// the source clamped it to the band edge, and the C/N estimator measured a
+    /// window that no longer held the band — 26 dB against a requested 35, with
+    /// the settings panel reading exactly what it had been reset to.
     fn reseed_center_bounds(&mut self) {
-        let (lo, hi) = dvbt_center_bounds(self.bandwidth().display_fs());
+        let (lo, hi) = dvbt_center_bounds(self.bandwidth());
+        let default = dvbt_default_center_hz(self.default_bandwidth());
         if let Row::Num(f) = &mut self.rows[CENTER] {
             f.min = lo;
             f.max = hi;
             f.value = f.value.clamp(lo, hi);
-            f.default = f.default.clamp(lo, hi);
+            f.default = default;
         }
     }
 
@@ -302,7 +333,7 @@ impl DvbTRows {
     /// mid-display makes each press land the band where a fresh source would put
     /// it, which is what a mode switch should look like.
     fn recenter(&mut self) {
-        let center = dvbt_default_center_hz(self.bandwidth().display_fs());
+        let center = dvbt_default_center_hz(self.bandwidth());
         if let Row::Num(f) = &mut self.rows[CENTER] {
             f.value = center;
         }
@@ -332,6 +363,15 @@ impl super::common::SourceRows for DvbTRows {
             self.reseed_center_bounds();
             self.recenter();
         }
+    }
+    /// A reset restores the `Bandwidth` toggle, so the `Center` row's *range* has
+    /// to come back with it — `Row::reset` only restores values, and a row left
+    /// bounded by the outgoing mode would clamp the next nudge into a band the
+    /// source cannot render.  The reset value itself is already right: the
+    /// default is derived from the bandwidth's own default rather than clamped,
+    /// so it names the centre of whichever mode the reset just restored.
+    fn reset_extras(&mut self) {
+        self.reseed_center_bounds();
     }
     fn patch_from_config(&mut self, cfg: &ViewConfig) {
         // Bandwidth first: the centre's range and default are derived from it.

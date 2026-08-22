@@ -95,7 +95,7 @@ impl Ft8ViewState {
     }
 
     /// Format the FT8 submode string shown in the top HUD line:
-    /// `"  mode 8|4  msg s|f"`.
+    /// `" mode 8|4 msg s|f"`.
     pub fn hud_submode_str(&self) -> String {
         let mode_ch = match self.mode {
             Ft8Mode::Ft8 => "8",
@@ -105,7 +105,7 @@ impl Ft8ViewState {
             Ft8MsgType::Standard => "s",
             Ft8MsgType::FreeText => "f",
         };
-        format!("  mode {mode_ch}  msg {msg_ch}")
+        format!(" mode {mode_ch} msg {msg_ch}")
     }
 
     /// Format the FT8/FT4 frame counter shown to the left of the loop timer:

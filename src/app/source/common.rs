@@ -68,11 +68,14 @@ pub(in crate::app) trait SourceFactory: Sync {
     // preference here — it flows from `SignalSource::sample_rate()` on the
     // constructed source.
     //
-    // The *reference level* is different: it defaults to the shared
-    // `Defaults::DB_MAX` rather than to `None`, so every source states one.
-    // That matters because COFDM's is 21 dB away from it — a source that
-    // declared no preference would simply inherit whatever COFDM last set and
-    // draw its spectrum against a scale meant for a different waveform.
+    // The two *scale* preferences are different: each defaults to the shared
+    // `Defaults` value rather than to `None`, so every source states both.
+    // That matters because COFDM's reference is 21 dB away from the shared one —
+    // a source that declared no preference would simply inherit whatever COFDM
+    // last set and draw its spectrum against a scale meant for a different
+    // waveform.  The same argument applies to the floor now that one source
+    // moves it, which is why it is stated the same way rather than left as an
+    // override that never gets undone.
 
     /// Nominal center frequency to place at the display center on switch.
     fn nominal_center_hz(&self, _settings: &SettingsState) -> Option<f32> {
@@ -90,6 +93,25 @@ pub(in crate::app) trait SourceFactory: Sync {
     /// does not sit near it.
     fn preferred_ref_db(&self, _settings: &SettingsState) -> Option<f32> {
         Some(crate::config::Defaults::DB_MAX)
+    }
+
+    /// Preferred spectrum floor (dBFS, scale bottom) on switch.
+    ///
+    /// **The reference level alone does not size the window**, and that is what
+    /// this exists for: `preferred_ref_db` moves the *top* while the floor stays
+    /// where the config left it, so a source that prefers a low reference gets a
+    /// *shorter* scale rather than a lower one.  DVB-T is the first source for
+    /// which that matters — its power spreads over 83% of the display span, so
+    /// its per-bin level sits ~10 dB under COFDM's, and at the shared -80 dB
+    /// floor the injected noise fell off the bottom of the scale entirely.  The
+    /// spectrum still looked plausible: a band with nothing below it reads as a
+    /// clean channel rather than as a clipped one.
+    ///
+    /// Stated by every source rather than overridden by one, for the reason
+    /// `preferred_ref_db` is: a `None` here would leave DVB-T's floor in place
+    /// after switching away from it.
+    fn preferred_db_min(&self, _settings: &SettingsState) -> Option<f32> {
+        Some(crate::config::Defaults::DB_MIN)
     }
 }
 

@@ -640,14 +640,20 @@ impl DecodeState {
                     cfg.dvbt_full_scale,
                     chunk.iq.as_deref(),
                     // `cfg.fs` is the *display* rate the source reports, which
-                    // for DVB-T is twice the waveform's — the band is 83% of its
-                    // own rate and would not otherwise fit the one-sided span.
-                    // The spectral estimator wants the former (it runs on the
-                    // real block) and the instrument's symbol rate and guard
-                    // duration want the latter, so both are passed rather than
-                    // one being re-derived at the far end.
+                    // for DVB-T is an integer multiple of the waveform's — the
+                    // band is 83% of its own rate and would not otherwise fit the
+                    // one-sided span.  The spectral estimator wants the former
+                    // (it runs on the real block) and the instrument's symbol
+                    // rate and guard duration want the latter, so both are passed
+                    // rather than one being re-derived at the far end.
+                    //
+                    // The waveform's rate comes back from the *occupied
+                    // bandwidth* rather than by dividing by a factor: the factor
+                    // varies by bandwidth mode (2 to 12) and is not carried in
+                    // the decode config, whereas `fs = BW · 2048/1705` is exact
+                    // and is the same relation the source used to pick it.
                     fs,
-                    fs / crate::source::DVBT_DISPLAY_OVERSAMPLE as f32,
+                    orion_sdr::waveform::dvb_t::dvb_t_fs_for_bandwidth(cfg.dvbt_bw_hz),
                     cfg.dvbt_probe,
                     tx,
                 );

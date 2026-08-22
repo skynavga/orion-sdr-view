@@ -5,8 +5,8 @@
 
 # Viewport: `zoom` and panning
 
-`display.zoom` is the **startup** viewport zoom, as a ratio of the full `0..Nyquist` span — `1.0`
-shows everything, `4.0` shows a quarter of it. A ratio rather than a span in Hz, so one value means
+`display.zoom` is the **startup** viewport zoom, as a ratio of the source's full display width —
+`1.0` shows all of it, `4.0` shows a quarter. A ratio rather than a span in Hz, so one value means
 the same thing on a 48 kHz source and on a 1.92 MHz one.
 
 ## Precedence
@@ -14,18 +14,34 @@ the same thing on a 48 kHz source and on a 1.92 MHz one.
 In order:
 
 1. The configured `zoom` applies at startup.
-2. Switching **to** a source that states a preferred span reframes to it. COFDM does, to frame its
-   band; the five narrowband sources state none and leave the viewport alone.
+2. Switching **to** a source that states a preferred span reframes to it. COFDM and DVB-T do, to
+   frame their bands; the five narrowband sources state none and leave the viewport alone.
 3. The `↑`/`↓` keys — and the `Zoom` row in the settings popover, which is the same control — apply
    until the next switch.
 
 So `zoom` is a startup default, not a persistent override. `R` on the Display tab restores it.
 
+## 1x is the display width, which is usually Nyquist
+
+For five of the six sources the two are the same thing and there is nothing to know. **DVB-T is the
+exception**, and the reason is arithmetic rather than taste: its band is a fixed 83.25% of the
+waveform's own sample rate, and the rate it displays at is an integer multiple of that — so at
+`0..Nyquist` the band would fill `1.665 / L` of the window, never more than 83.25% and less at every
+factor above two. Holding one width across a group of bandwidth modes therefore needs 1x to mean
+something narrower than the whole stream.
+
+It frames **2300 kHz** across `333k` / `1M` / `2M` and **9200 kHz** across `6M` / `7M` / `8M`, so a
+`Bandwidth` press changes the width of the band on the axis rather than the axis under the band. The
+widest mode of each group fills 7/8 of its window, matching COFDM at its own widest setting. The
+spectrum above the framed width is real and still reachable by panning; it is simply not where the
+source opens — the same headroom a receiver has when its tuner samples wider than the window it
+draws.
+
 ## The reachable range is per source
 
-The zoom stops at a 1 kHz window, which is 24x at 48 kHz and 960x for COFDM. The `Zoom` row's upper
-bound follows the active source for that reason, so it can never display a ratio the viewport has
-silently refused.
+The zoom stops at a 1 kHz window, which is 24x at 48 kHz, 960x for COFDM and 2300x for DVB-T. The
+`Zoom` row's upper bound follows the active source for that reason, so it can never display a ratio
+the viewport has silently refused.
 
 ## Panning past the band
 
