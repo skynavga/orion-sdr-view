@@ -18,7 +18,6 @@ pub use source::{
     DVBT_PREFERRED_FLOOR_DB, DVBT_PREFERRED_REF_DB, DVBT_RX_WINDOW_BACKOFF, DVBT_SHAPING_SLACK,
     DVBT_SYMBOLS_PER_FRAME, DvbTBandwidth, DvbTMask, DvbTShaping, DvbTSource, DvbTTaper,
     code_rate_fraction, code_rate_label, constellation_label, dvbt_buffer_super_frames,
-    dvbt_center_bounds, dvbt_clamp_center, dvbt_default_center_hz, dvbt_frame_capacity_bits,
-    dvbt_frame_payload_bytes, dvbt_inner_fec, dvbt_preferred_ref_db, dvbt_super_frame_samples,
-    guard_label, hud_submode_str,
+    dvbt_center_bounds, dvbt_clamp_center, dvbt_default_center_hz, dvbt_frame_payload_bytes,
+    dvbt_preferred_ref_db, dvbt_super_frame_samples, guard_label, hud_submode_str,
 };

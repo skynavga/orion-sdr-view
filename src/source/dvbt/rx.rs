@@ -42,42 +42,30 @@ use super::source::{DVBT_CELL_ID, DVBT_RX_WINDOW_BACKOFF, DVBT_SYMBOLS_PER_FRAME
 
 /// Whether to ask upstream for the measured CBER / IBER / EVM rungs.
 ///
-/// **Off, because in orion-sdr 0.0.63 turning it on makes every DVB-T frame fail
-/// to decode — on a noiseless link, at every mode.**  This is not a tuning
-/// choice; it is a workaround for an upstream defect, and it is a named constant
-/// so that restoring the rungs once upstream ships a fix is a one-word edit.
+/// **On since orion-sdr 0.0.64.**  It bought the three rungs and the pane-3
+/// constellation together, because `feed_probed` sets the same internal
+/// `want_truth` flag: probing and measuring are one switch upstream, not two.
 ///
-/// The defect, measured and reduced to arithmetic:
+/// What it costs is a whole-frame re-encode per decoded frame — the truth
+/// reference the BERs are measured against.  That is the reason this source
+/// fills its frames rather than copying COFDM's fixed 184 bytes (see
+/// [`dvbt_frame_payload_bytes`](super::dvbt_frame_payload_bytes)): the re-encode
+/// is taken on the whole frame whatever the payload, so a 184-byte payload would
+/// pay ~5× the FEC work for a 2% fill.  Kept as a named constant so the cost can
+/// be dropped without unpicking the call sites.
 ///
-/// - `DvbTFrameMod` grows its null-packet stuffing until the coded stream *meets
-///   or exceeds* the frame's capacity, then maps only what fits and documents
-///   the remainder as "simply unused".  At QPSK r3/4 that is 84 TS packets
-///   coding to **206 728** bits against a frame capacity of **205 632** — 1 096
-///   bits encoded and never transmitted.
-/// - `DvbTFrameDemod::decode` reconstructs the same 84-packet count when any
-///   measured rung is requested (`want_truth`), so it hands `decode_chain` a
-///   plan expecting 206 728 coded bits together with the 205 632 LLRs the frame
-///   actually carries.  The tail Reed–Solomon codewords are decoded from bits
-///   that were never sent, `outer_ok` goes false, and the frame is returned as
-///   `DvbTRxError::PayloadDecode`.
-/// - There is no payload length that avoids it: `coded(n)` steps by a fixed
-///   amount per packet and the capacity is a multiple of the symbol size, so the
-///   two coincide at no integer `n` in any mode.
-///
-/// Reproduced on the *batch* `DvbTFrameDemod::decode` with a plain 184-byte
-/// payload, i.e. the exact configuration the upstream plan describes as
-/// measured — so it is not an artifact of this viewer's frame-filling payload,
-/// its super-frame driver, or its display interpolation.  See
-/// `error_rates_break_decoding_upstream` in `tests/dvbt_rx.rs`, which is
-/// `#[ignore]`d and will start passing the day this is fixed.
-///
-/// What is lost while it is off: `CBER`, `IBER` and `EVM` read `Unavailable`
-/// rather than wrong, and the pane-3 constellation stays empty — `feed_probed`
-/// sets the same `want_truth` flag, so probing fails identically.  What is *not*
-/// lost is the rung the error metrics are actually driven from:
-/// `rs_corrected_bytes` is filled unconditionally, and reads a true zero on a
-/// clean link because this source fills its frames.
-const DVBT_MEASURE_ERROR_RATES: bool = false;
+/// **It was `false` through 0.0.63**, where turning it on made a DVB-T frame
+/// fail to decode outright at QPSK r3/4, QPSK r7/8, 16-QAM r7/8 and 64-QAM r3/4,
+/// and — worse — decode with a *wrong* `inner_ber` at 64-QAM r7/8.  The
+/// modulator stuffed null packets until the coded stream met or exceeded the
+/// frame capacity, transmitted only what fit, and the receiver rebuilt the same
+/// packet count and asked `decode_chain` for the full coded length; the
+/// remainder was decoded from bits that were never sent.  0.0.64 states the rule
+/// once, in `dvb_t_frame_fill`, and both directions call it: the frame carries
+/// the largest packet count that *fits*, and the leftover carriers repeat the
+/// coded stream's head where nothing decodes or compares.  Pinned downstream by
+/// `error_rates_break_decoding_upstream` in `tests/dvbt_rx.rs`.
+const DVBT_MEASURE_ERROR_RATES: bool = true;
 
 /// One frame's measured diagnostics, flattened out of orion-sdr's
 /// [`DvbTRxDiagnostics`](orion_sdr::demodulate::DvbTRxDiagnostics) plus the
@@ -184,9 +172,8 @@ impl DvbTRx {
             // receiver whose window differs from what the transmitter's shaping
             // assumes does not fail loudly, it just decodes worse.
             .with_rx_window_backoff(DVBT_RX_WINDOW_BACKOFF)
-            // True CBER/IBER, and EVM which shares the gate.  Off in 0.0.63 —
-            // see `DVBT_MEASURE_ERROR_RATES`, which is a workaround for an
-            // upstream defect rather than a cost decision.
+            // True CBER/IBER, and EVM which shares the gate.  See
+            // `DVBT_MEASURE_ERROR_RATES` for what the re-encode costs.
             .with_error_rates(DVBT_MEASURE_ERROR_RATES);
         Self {
             demod,
@@ -231,10 +218,9 @@ impl DvbTRx {
     ///
     /// It is additionally gated on [`DVBT_MEASURE_ERROR_RATES`], because
     /// `feed_probed` sets the same upstream `want_truth` flag that
-    /// `with_error_rates` does — so while that defect stands, probing does not
-    /// merely cost something, it fails every frame.  An empty constellation pane
-    /// is the honest rendering of that; a pane fed from frames that all failed
-    /// would show nothing anyway, after throwing away the decode.
+    /// `with_error_rates` does.  The two are one switch upstream, so probing
+    /// while the rungs are off would silently pay for a truth re-encode whose
+    /// results nothing reads.
     pub fn process(&mut self, iq: &[C32], want_probe: bool) {
         let want_probe = want_probe && DVBT_MEASURE_ERROR_RATES;
         let results = if want_probe {

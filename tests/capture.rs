@@ -898,7 +898,7 @@ fn a_still_actually_contains_the_window_rather_than_a_blank_frame() {
         .as_chunks::<4>()
         .0
         .iter()
-        .map(|p| [p[0], p[1], p[2], p[3]])
+        .copied()
         .collect();
     assert!(
         distinct.len() > 100,

@@ -269,14 +269,21 @@ fn the_taper_costs_the_dense_constellations() {
 /// The measured ladder, and specifically the rung the panel drives its error
 /// metrics from.
 ///
-/// **`rs_corrected_bytes` must read zero on a clean link**, and it does so only
-/// because the source fills its frames.  A sparse payload makes the receiver
-/// decode a prefix, and the Forney(12,17) tail then draws on codewords the
-/// prefix never covers, so Reed–Solomon quietly repairs the shortfall with no
-/// channel involved at all.  Measured across the 15 constellation/rate pairs: a
-/// 184-byte payload reads **1** at fourteen of them, a frame-filling payload
-/// reads **0** at all fifteen.  A panel driving its error count off a rung with
-/// a nonzero floor would show a permanently damaged link.
+/// **`rs_corrected_bytes` must read zero on a clean link**, and filling the
+/// frame is what guarantees it.  A sparse payload makes the receiver decode a
+/// prefix, and the Forney(12,17) tail then draws on codewords the prefix never
+/// covers, so Reed–Solomon quietly repairs the shortfall with no channel
+/// involved at all.  A panel driving its error count off a rung with a nonzero
+/// floor would show a permanently damaged link.
+///
+/// Re-measured on orion-sdr 0.0.64 across the 15 constellation/rate pairs: a
+/// frame-filling payload reads **0** at all fifteen either way, while a 184-byte
+/// payload reads **1** at all fifteen with the error-rate gate off and **0** at
+/// all fifteen with it on.  The gate moves it because `want_truth` sizes the
+/// decode from `dvb_t_frame_fill` rather than from the caller's `payload_len`,
+/// so a measured receiver decodes the whole frame and never sees the prefix
+/// artifact.  Filling the frame makes the two agree, which is the point: a rung
+/// whose value depends on whether anyone is looking at it is not a measurement.
 #[test]
 fn a_clean_link_measures_a_clean_ladder() {
     let bw = DvbTBandwidth::Bw1MHz;
@@ -308,59 +315,75 @@ fn a_clean_link_measures_a_clean_ladder() {
     assert_eq!(tps.guard, link.guard);
     assert!(tps.frame_number <= 3);
 
-    // The BER and EVM rungs are absent while `DVBT_MEASURE_ERROR_RATES` is off.
-    // Asserted rather than skipped, so switching the constant back on without
-    // updating the instrument's expectations is caught here.
-    assert_eq!(f.channel_ber, None, "CBER is gated off in 0.0.63");
-    assert_eq!(f.inner_ber, None, "IBER is gated off in 0.0.63");
-    assert_eq!(f.evm_db, None, "EVM shares the same gate");
+    // The measured rungs, live since orion-sdr 0.0.64.  Zero rather than small:
+    // a near-zero BER on a noiseless link would mean the truth reference is
+    // misaligned with what was transmitted, which is exactly the failure 0.0.63
+    // had.
+    assert_eq!(f.channel_ber, Some(0.0), "CBER on a noiseless link");
+    assert_eq!(f.inner_ber, Some(0.0), "IBER on a noiseless link");
+    let evm = f.evm_db.expect("EVM shares the BER gate and is now on");
+    assert!(evm < -25.0, "EVM {evm} dB should be clean at max C/N");
 }
 
-/// The upstream defect that forces `DVBT_MEASURE_ERROR_RATES` off, pinned so it
-/// is a fact rather than a comment — and so the day orion-sdr fixes it, this
-/// test starts passing and says so.
+/// Asking for the measured rungs must not change whether a frame decodes, at
+/// **any** mode — the regression pin for the defect that kept
+/// `DVBT_MEASURE_ERROR_RATES` off through orion-sdr 0.0.63.
 ///
-/// `DvbTFrameMod` stuffs null packets until the coded stream *meets or exceeds*
-/// the frame capacity, then transmits only what fits.  `DvbTFrameDemod` with any
-/// measured rung requested reconstructs the same packet count and asks
-/// `decode_chain` for the full coded length, so the tail Reed–Solomon codewords
-/// are decoded from bits that were never sent.  At QPSK r3/4 that is 206 728
-/// coded bits against a 205 632-bit frame: 1 096 bits short, every frame, on a
-/// noiseless link.
+/// Through 0.0.63 `DvbTFrameMod` stuffed null packets until the coded stream
+/// *met or exceeded* the frame capacity and transmitted only what fit, while
+/// `DvbTFrameDemod` reconstructed the same packet count and asked `decode_chain`
+/// for the full coded length.  The discarded remainder is the tail of the coded
+/// stream, so what happened next depended on how big it was, and the whole
+/// matrix has to be walked to see it:
 ///
-/// Run with `cargo test --release --test dvbt_rx -- --ignored` to check whether
-/// upstream has fixed it.
+/// - Ten modes overran by exactly the K=7 code's coded tail (8-12 bits), losing
+///   nothing that carries information, and decoded correctly.  That is why the
+///   suite was green.
+/// - Four failed outright — QPSK r3/4 (1 096 bits), QPSK r7/8 (1 406), 16-QAM
+///   r7/8 (940), 64-QAM r3/4 (1 096).
+/// - **64-QAM r7/8 (474) decoded and reported `inner_ber` 5.0e-5 with five bytes
+///   of Reed–Solomon repair, on a noiseless link.**  It is the sentinel: a fix
+///   that merely clamps the plan to the LLR length turns the four failures green
+///   and leaves this one quietly wrong.
+///
+/// So the assertion is exact zero, not "small", and it is made at every one of
+/// the fifteen constellation/rate pairs.
 #[test]
-#[ignore = "orion-sdr 0.0.63: with_error_rates(true) fails every DVB-T frame"]
-fn error_rates_break_decoding_upstream() {
+fn the_error_rate_gate_never_changes_the_decode() {
     use orion_sdr::demodulate::DvbTFrameDemod;
     use orion_sdr::modulate::DvbTFrameMod;
     use orion_sdr::waveform::dvb_t::DvbTFrameParams;
 
-    let link = default_link();
-    let params = DvbTFrameParams {
-        link,
-        frame_number: 0,
-        cell_id: 0x0A,
-    };
     let payload: Vec<u8> = (0..184).map(|i| (i % 251) as u8).collect();
-    let frame = DvbTFrameMod::new(params).modulate(&payload);
+    for &constellation in DVBT_CONSTELLATIONS {
+        for &code_rate in DVBT_CODE_RATES {
+            let link = link_of(DVBT_DEFAULT_GUARD, constellation, code_rate);
+            let params = DvbTFrameParams {
+                link,
+                frame_number: 0,
+                cell_id: 0x0A,
+            };
+            let mode = format!("{constellation:?} {code_rate:?}");
+            let frame = DvbTFrameMod::new(params).modulate(&payload);
 
-    let plain = DvbTFrameDemod::new(params).decode(&frame.iq, frame.n_symbols, payload.len());
-    assert!(plain.is_ok(), "the ungated path decodes: {plain:?}");
+            let plain = DvbTFrameDemod::new(params).decode(&frame.iq, frame.n_symbols, 184);
+            assert!(plain.is_ok(), "ungated decode at {mode}: {plain:?}");
 
-    let measured = DvbTFrameDemod::new(params).with_error_rates(true).decode(
-        &frame.iq,
-        frame.n_symbols,
-        payload.len(),
-    );
-    assert!(
-        measured.is_ok(),
-        "with_error_rates(true) must not break a noiseless decode: {measured:?}"
-    );
-    let d = measured.unwrap().diagnostics;
-    assert_eq!(d.channel_ber, Some(0.0));
-    assert_eq!(d.inner_ber, Some(0.0));
+            let measured = DvbTFrameDemod::new(params).with_error_rates(true).decode(
+                &frame.iq,
+                frame.n_symbols,
+                184,
+            );
+            assert!(
+                measured.is_ok(),
+                "with_error_rates(true) must not break a noiseless decode at {mode}: {measured:?}"
+            );
+            let d = measured.unwrap().diagnostics;
+            assert_eq!(d.channel_ber, Some(0.0), "CBER at {mode}");
+            assert_eq!(d.inner_ber, Some(0.0), "IBER at {mode}");
+            assert_eq!(d.rs_corrected_bytes, Some(0), "RS repair at {mode}");
+        }
+    }
 }
 
 /// Frame accounting has no `lost` counter, and this is why: the stream demod

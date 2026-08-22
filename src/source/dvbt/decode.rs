@@ -136,8 +136,12 @@ impl DvbTState {
             //
             // The fix is not a better spectral estimator: it is to measure the
             // noise where the signal is, from the receiver's EVM, which is what
-            // the instrument's `MER` rung is for.  That is blocked on the
-            // orion-sdr 0.0.63 defect `DVBT_MEASURE_ERROR_RATES` documents.
+            // the instrument's `MER` rung is for.  That was blocked on the
+            // orion-sdr 0.0.63 defect `DVBT_MEASURE_ERROR_RATES` documents;
+            // 0.0.64 unblocked it, and `evm_db` now arrives on every decoded
+            // frame.  Switching the HUD's C/N over to it is Phase 4 work — this
+            // estimator stays until the panel that consumes `MER` exists, so the
+            // reading has one owner rather than two disagreeing ones.
             |real, fs, carrier_hz| {
                 wb_cn_db(real, fs, carrier_hz, bw_hz)
                     + real_projection_cn_offset_db(fs_display, fs_waveform)
