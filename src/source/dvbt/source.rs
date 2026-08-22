@@ -2,22 +2,19 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use num_complex::Complex32 as C32;
-use orion_sdr::demodulate::CodecCache;
 use orion_sdr::dsp::{Rotator, kaiser_lowpass_taps, kaiser_num_taps};
-use orion_sdr::fec::{ConvCode, CrcKind, InnerFec, InterleaverKind, PunctureRate};
-use orion_sdr::modulate::ofdm_frame::block_plan;
+use orion_sdr::fec::PunctureRate;
 use orion_sdr::modulate::{
     ConstellationOrder, DVB_T_FRAMES_PER_SUPER_FRAME, DvbTFrameMod, DvbTSuperFrameMod,
     DvbTSuperFrameParams,
 };
 use orion_sdr::multicarrier::TxLowpass;
 use orion_sdr::waveform::dvb_t::{
-    DVB_T_DATA_CARRIERS, DVB_T_FRAME_OUTER, DVB_T_FRAME_OUTER_IL, DVB_T_KMAX, DVB_T_N_FFT,
-    DvbTLinkParams, GuardInterval, dvb_t_fs_for_bandwidth, dvb_t_occupied_bw,
-    is_dvb_t_constellation,
+    DVB_T_KMAX, DVB_T_N_FFT, DvbTFrameParams, DvbTLinkParams, GuardInterval, dvb_t_frame_fill,
+    dvb_t_fs_for_bandwidth, dvb_t_occupied_bw, is_dvb_t_constellation,
 };
 use orion_sdr::waveform::dvb_t_tps::TPS_SYMBOLS_PER_FRAME;
-use orion_sdr::waveform::dvb_t_ts::{TS_PACKET_LEN, TS_PAYLOAD_LEN};
+use orion_sdr::waveform::dvb_t_ts::TS_PAYLOAD_LEN;
 
 use crate::source::{
     CnNoise, CnReference, NoiseDomain, SignalSource, is_continuous_sig, mean_power_c,
@@ -533,15 +530,6 @@ pub fn code_rate_fraction(rate: PunctureRate) -> (usize, usize) {
     }
 }
 
-/// The inner FEC for a link: K=7 punctured convolutional at its code rate.
-/// Mirrors `DvbTFrameParams::inner()`, which needs a frame number this does not.
-pub fn dvbt_inner_fec(link: DvbTLinkParams) -> InnerFec {
-    InnerFec::Convolutional {
-        rate: link.code_rate,
-        code: ConvCode::DvbK7,
-    }
-}
-
 // ── Spectral shaping ────────────────────────────────────────────────────────
 
 /// Symbol-window roll-off, as a fraction of the **shaping budget** — not of the
@@ -758,12 +746,6 @@ impl DvbTShaping {
 
 // ── Frame geometry ──────────────────────────────────────────────────────────
 
-/// Bits one DVB-T frame's data carriers hold, at `link`'s constellation:
-/// `68 · 1512 · v`.
-pub fn dvbt_frame_capacity_bits(link: DvbTLinkParams) -> usize {
-    DVBT_SYMBOLS_PER_FRAME * DVB_T_DATA_CARRIERS * link.constellation.bits_per_symbol()
-}
-
 /// TS payload bytes one frame carries when the payload **fills** it: the largest
 /// whole number of 188-byte TS packets whose coded stream still fits in 68
 /// symbols, times the 187 payload bytes each carries.
@@ -783,54 +765,36 @@ pub fn dvbt_frame_capacity_bits(link: DvbTLinkParams) -> usize {
 /// 68)` — so one packet too many pushes the frame to 69 symbols and the signal
 /// stops being conformant DVB-T.  At QPSK r1/2 the boundary is sharp: 51 packets
 /// code to 202 380 bits (fits), 52 to 205 644 (overflows 205 632 by twelve
-/// bits).  So the payload is 51 packets and the modulator stuffs exactly one
-/// null packet — a 98% fill, in a 68-symbol frame.
+/// bits).  So the payload is 51 packets, the modulator stuffs no null packet at
+/// all, and the 3 252 leftover carrier bits repeat the coded stream's head.
 ///
-/// Computed through the library's own [`block_plan`] rather than re-derived, for
-/// the reason `cofdm_data_carriers`' doc comment gives about carrier counts: an
-/// arithmetic restatement of a coding chain drifts silently, and this one has a
-/// Forney interleaver's flush delay and a convolutional tail in it.
+/// **This is upstream's rule, not a restatement of it.**  Through orion-sdr
+/// 0.0.63 it was a restatement — this function bisected for the largest count
+/// that fits while the modulator stuffed to the smallest that overflows, and the
+/// two disagreeing was the whole of the defect
+/// [`DVBT_MEASURE_ERROR_RATES`](super::rx) used to document.  0.0.64 states the
+/// rule once in [`dvb_t_frame_fill`] and has the modulator, the demodulator and
+/// this call all read it, so a payload sized here cannot drift from the frame
+/// that carries it.
 pub fn dvbt_frame_payload_bytes(link: DvbTLinkParams) -> usize {
     dvbt_frame_payload_packets(link) * TS_PAYLOAD_LEN
 }
 
 /// The packet count behind [`dvbt_frame_payload_bytes`].
+///
+/// `min_packets = 1`: this asks the fill rule what a frame *can* carry, so the
+/// floor is one packet rather than a payload's own count.
 fn dvbt_frame_payload_packets(link: DvbTLinkParams) -> usize {
-    let capacity = dvbt_frame_capacity_bits(link);
-    let cache = CodecCache::new();
-    let inner = dvbt_inner_fec(link);
-    let coded = |n: usize| {
-        block_plan(
-            n * TS_PACKET_LEN,
-            CrcKind::None,
-            DVB_T_FRAME_OUTER,
-            inner,
-            DVB_T_FRAME_OUTER_IL,
-            InterleaverKind::None,
-            &cache,
-        )
-        .coded_bits
-    };
-    // Coded length is monotone in the packet count, so double until it overflows
-    // and then bisect.  A linear scan would run to 319 `block_plan` calls at
-    // 64-QAM r7/8; this runs about twenty at every mode.
-    if coded(1) > capacity {
-        return 1;
-    }
-    let mut lo = 1usize;
-    while coded(lo * 2) <= capacity {
-        lo *= 2;
-    }
-    let mut hi = lo * 2; // coded(lo) <= capacity < coded(hi)
-    while hi - lo > 1 {
-        let mid = lo + (hi - lo) / 2;
-        if coded(mid) <= capacity {
-            lo = mid;
-        } else {
-            hi = mid;
-        }
-    }
-    lo
+    dvb_t_frame_fill(
+        DvbTFrameParams {
+            link,
+            frame_number: 0,
+            cell_id: (DVBT_CELL_ID >> 8) as u8,
+        },
+        1,
+        DVBT_SYMBOLS_PER_FRAME,
+    )
+    .n_ts_packets
 }
 
 /// Samples in one super-frame at `guard`, at the **waveform's** rate:

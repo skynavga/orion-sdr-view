@@ -779,7 +779,9 @@ fn a_waterfall_raster_matches_the_pane_it_came_from() {
 
     // Top row of the image is the newest row of the waterfall.
     let got: Vec<egui::Color32> = buf[..want_w * 4]
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|p| egui::Color32::from_rgba_premultiplied(p[0], p[1], p[2], p[3]))
         .collect();
     assert_eq!(got, first_row, "the image is not the pane's display order");
@@ -893,8 +895,10 @@ fn a_still_actually_contains_the_window_rather_than_a_blank_frame() {
     let info = reader.next_frame(&mut buf).expect("decode");
 
     let distinct: std::collections::HashSet<[u8; 4]> = buf[..info.buffer_size()]
-        .chunks_exact(4)
-        .map(|p| [p[0], p[1], p[2], p[3]])
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .copied()
         .collect();
     assert!(
         distinct.len() > 100,
@@ -905,7 +909,9 @@ fn a_still_actually_contains_the_window_rather_than_a_blank_frame() {
     // would read as a rendering bug.
     assert!(
         buf[..info.buffer_size()]
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .all(|p| p[3] == 255),
         "a still should be fully opaque"
     );

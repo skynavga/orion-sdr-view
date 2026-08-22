@@ -197,7 +197,12 @@ fn compare(cpu: &[u8], gpu: &[u8]) -> (f64, u8) {
     assert_eq!(cpu.len(), gpu.len(), "images differ in size");
     let mut differing = 0usize;
     let mut worst = 0u8;
-    for (a, b) in cpu.chunks_exact(4).zip(gpu.chunks_exact(4)) {
+    for (a, b) in cpu
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(gpu.as_chunks::<4>().0.iter())
+    {
         let d = (0..4).map(|i| a[i].abs_diff(b[i])).max().unwrap_or(0);
         if d > 0 {
             differing += 1;
