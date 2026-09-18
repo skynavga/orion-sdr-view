@@ -40,7 +40,7 @@ fewer can go stale.
 
 Before editing, confirm nothing else has picked up a version string:
 
-```sh
+```bash
 grep -rn "OLD_VERSION" --include="*.toml" --include="*.md" --include="*.rs" . \
   | grep -v CHANGELOG.md | grep -v "^./target/"
 ```
@@ -73,7 +73,7 @@ list. If there are no real changes (test release), write a minimal entry such as
 
 Run the test suite and verify all tests pass:
 
-```sh
+```bash
 cargo test --release
 ```
 
@@ -83,7 +83,7 @@ If tests fail, stop and report the failure. Do not proceed.
 
 Stage only the files changed in steps 2 and 3 (never `git add -A`):
 
-```sh
+```bash
 git add CHANGELOG.md Cargo.lock Cargo.toml
 ```
 
@@ -95,36 +95,54 @@ Do not include a co-author trailer.
 
 Push the current branch to origin if it has no upstream yet:
 
-```sh
+```bash
 git push -u origin HEAD
 ```
 
 Check whether a PR already exists for the current branch:
 
-```sh
+```bash
 gh pr list --head CURRENT_BRANCH --state open
 ```
 
 If no open PR exists, create one. Inspect `git log main..HEAD --oneline` to
 understand all changes in the branch, then write a concise BLUF-style summary
-(one short paragraph) covering all significant changes. Follow it with a
-"Release prep for NEW_VERSION." line. Example format:
+(one short paragraph) covering all significant changes.
+
+**Link closed issues.** Search the full commit messages on the branch
+(`git log main..HEAD`, not just `--oneline`) for GitHub issue references —
+`#NN`, with or without a leading `Closes`/`Fixes`/`Resolves`/`Refs` keyword —
+and collect the distinct issue numbers found. This is how work done via
+`/implement #NN` gets tied back to its issue. If none are found, ask the user
+whether this branch closes any issue(s) before proceeding; don't guess a
+number. For every issue number confirmed (found in commits or supplied by the
+user), add a `Closes #NN` line to the PR body — GitHub's closing-keyword
+syntax — so the issue closes automatically when the PR merges. If the branch
+closes no issue, omit this section entirely.
+
+Follow with a "Release prep for NEW_VERSION." line. Example format:
 
 ```text
 <One short paragraph summarizing all significant changes in the branch.>
 
+Closes #NN
+
 Release prep for NEW_VERSION.
 ```
 
+(Add one `Closes #NN` line per linked issue; omit the block if there are none.)
+
+Do not include a co-author trailer.
+
 Merge the PR:
 
-```sh
+```bash
 gh pr merge --merge --delete-branch
 ```
 
 Switch to `main` and pull so the local branch is up to date:
 
-```sh
+```bash
 git checkout main
 git pull
 ```
@@ -133,13 +151,13 @@ Confirm the current branch is now `main` before proceeding.
 
 ## Step 7 — Create signed tag
 
-```sh
+```bash
 git tag -s vNEW_VERSION -m "Release NEW_VERSION"
 ```
 
 Then verify it:
 
-```sh
+```bash
 git tag -v vNEW_VERSION
 ```
 
