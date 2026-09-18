@@ -84,7 +84,7 @@ If tests fail, stop and report the failure. Do not proceed.
 Stage only the files changed in steps 2 and 3 (never `git add -A`):
 
 ```sh
-git add Cargo.toml Cargo.lock CHANGELOG.md
+git add CHANGELOG.md Cargo.lock Cargo.toml
 ```
 
 Commit with message: `Bump version to NEW_VERSION`
