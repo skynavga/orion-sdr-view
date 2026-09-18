@@ -9,6 +9,26 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.32] - 2026-09-17
+
+### Changed
+
+- **Project docs reorganized.** `CLAUDE.md` shrinks to the project blurb and a
+  doc index; conventions, per-source layout rules, and "adding a signal
+  source" steps move to `docs/conventions.md`, `docs/source.md`, and
+  `docs/inputs.md`. `docs/acronyms.md` is renamed to `docs/terminology.md`
+  and split into Acronyms and Glossary sections.
+- **Agent-skills configuration added** for the mattpocock-skills plugin:
+  `docs/agents/{issue-tracker,triage-labels,domain}.md`, linked from a new
+  `CLAUDE.md` "Agent skills" section.
+
+### Fixed
+
+- **Clippy lints newly added in Rust 1.98** (`chunks_exact_to_as_chunks`,
+  `manual_slice_fill`) that were failing CI: `chunks_exact` calls with a
+  constant chunk size replaced with `as_chunks`, and manual black-fill loops
+  replaced with `slice::fill`.
+
 ## [0.0.31] - 2026-08-18
 
 ### Added

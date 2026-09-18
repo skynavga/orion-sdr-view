@@ -3,9 +3,10 @@
   SPDX-License-Identifier: MIT OR Apache-2.0
 -->
 
-# Acronym Glossary
+# Terminology
 
-Expansions for the acronyms used across the `orion-sdr-view` source, docs and on-screen display.
+Acronym expansions and other domain terms used across the `orion-sdr-view` source, docs and
+on-screen display.
 
 This is the **viewer's** glossary: HUD field labels, config keys, and the signal concepts a user
 meets on screen. For the DSP internals behind them — equalizers, carrier plans, code families,
@@ -14,6 +15,8 @@ which this one deliberately does not duplicate in depth.
 
 <!-- A glossary row is one entry; wrapping it would split an entry across lines for no gain. -->
 <!-- markdownlint-disable MD013 -->
+
+## Acronyms
 
 | Acronym | Expansion | Notes |
 | ------- | --------- | ----- |
@@ -78,5 +81,14 @@ which this one deliberately does not duplicate in depth.
 | YAML | YAML Ain't Markup Language | The configuration format; see [configuration.md](configuration.md) |
 | Δf | Frequency error | Residual carrier offset the COFDM receiver measures, in Hz |
 | Δt | Delay spread | Channel delay spread. Blank by design — a flat channel measures a large spread that depends only on the occupancy |
+
+## Glossary
+
+| Term | Meaning | Notes |
+| ---------- | ------------------------------------------------ | ----- |
+| Burst | A source's on-air interval | Runs for `sig_secs`; 100 or more means it never ends, shown as `cont`. See [cofdm.md](cofdm.md) |
+| Gap | The silent interval between bursts | `gap_secs`. Resets the receiver and restarts its frame accounting, so a run that outlasts a burst reports only the frames since the last gap |
+| Edge guard | Null carriers reserved at each occupied-band edge | Narrows the occupied band from inside, moving the strongest `sinc` generators inward; composes with the `Bandwidth` fraction rather than replacing it. See [cofdm.md](cofdm.md) |
+| Full scale | A source's own peak amplitude, not `1.0` | What `dBFS`, `lvl`, `pk` and `OVL` are measured against — COFDM's modulator peaks well above unity |
 
 <!-- markdownlint-enable MD013 -->
